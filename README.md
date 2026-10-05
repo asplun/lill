@@ -94,7 +94,7 @@ lill/
 
 ## API 文档
 
-见 [docs/API.md](docs/API.md)
+见 [docs/API文档.md](docs/API文档.md)
 
 ## License
 

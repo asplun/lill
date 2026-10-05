@@ -21,11 +21,10 @@ echo "   引用文件: $REFERENCED"
 
 echo "▶ 3. 上传所有被引用的 CSS"
 for css in $REFERENCED; do
-  scp "dist/_astro/$css" "$SERVER:$REMOTE/frontend/_astro/" 2>/dev/null || scp "_astro/$css" "$SERVER:$REMOTE/frontend/_astro/"
+  scp "_astro/$css" "$SERVER:$REMOTE/frontend/_astro/"
 done
 
 echo "▶ 4. 上传页面 HTML（自动遍历所有 index.html，含 admin/install 等子目录）"
-cd "$LOCAL/frontend/dist"
 find . -name 'index.html' -o -name '404.html' | while read -r f; do
   rel="${f#./}"
   dir=$(dirname "$rel")
