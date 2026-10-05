@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.astro/
+
+# Database & uploads (sensitive)
+backend/data/*.db
+backend/data/*.db-*
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Backup files
+*.bak
+*.bak.*
+backend/db.js
+backend/server.js.bak*
+
+# Environment & logs
+.env
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp
+tmp/
+temp/

@@ -1,0 +1,40 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="首页">
+  <div id="posts-list"><div class="loading"><div class="spinner"></div></div></div>
+  <div id="pagination" class="pagination"></div>
+</BaseLayout>
+
+<script>
+  for (let i = 0; i < 300 && !window.lillTheme; i++) await new Promise(r => setTimeout(r, 10));
+  const T = window.lillTheme;
+  const API = window.lillAPI;
+  await T.ready;
+
+  const page = parseInt(new URLSearchParams(location.search).get('page')) || 1;
+  const perPage = parseInt(T.val('posts_per_page', '10')) || 10;
+  const full = T.val('home_mode', 'excerpt') === 'full' ? '&full=1' : '';
+  const el = document.getElementById('posts-list');
+
+  try {
+    const d = await API.get('/posts?page=' + page + '&pageSize=' + perPage + full);
+    const posts = (d && d.items) || [];
+    if (posts.length) {
+      el.innerHTML = posts.map(p => T.postCard(p)).join('');
+      const meta = d.meta || {};
+      if (meta.totalPages > 1) {
+        let pg = '';
+        if (meta.hasPrev) pg += '<a href="/?page=' + (page - 1) + '">← 上一页</a>';
+        pg += '<span>第 ' + page + ' / ' + meta.totalPages + ' 页</span>';
+        if (meta.hasNext) pg += '<a href="/?page=' + (page + 1) + '">下一页 →</a>';
+        document.getElementById('pagination').innerHTML = pg;
+      }
+    } else {
+      el.innerHTML = '<div class="empty"><p>还没有文章</p></div>';
+    }
+  } catch (err) {
+    el.innerHTML = '<div class="empty"><p>加载失败：' + T.esc(err.message) + '</p></div>';
+  }
+</script>

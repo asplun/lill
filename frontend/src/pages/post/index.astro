@@ -1,0 +1,138 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="">
+  <article class="post-detail" id="post-detail"><div class="loading"><div class="spinner"></div></div></article>
+  <div id="post-nav"></div>
+  <section class="comments" id="comments-section" style="display:none">
+    <h3 class="comments-title">评论 <span id="comment-count">0</span></h3>
+    <div id="comment-list" class="comment-list"></div>
+    <form id="comment-form" class="comment-form">
+      <h4>发表评论</h4>
+      <div class="comment-form-row">
+        <input type="text" id="cf-name" placeholder="昵称 *" required>
+        <input type="email" id="cf-email" placeholder="邮箱（不会公开）">
+        <input type="url" id="cf-url" placeholder="网站（可选）">
+      </div>
+      <textarea id="cf-content" rows="4" placeholder="说点什么..." required></textarea>
+      <div class="comment-form-footer">
+        <span id="cf-msg" class="comment-msg"></span>
+        <button type="submit" class="comment-submit">发表评论</button>
+      </div>
+    </form>
+  </section>
+</BaseLayout>
+
+<script>
+  for (let i = 0; i < 300 && !window.lillTheme; i++) await new Promise(r => setTimeout(r, 10));
+  const T = window.lillTheme;
+  const API = window.lillAPI;
+  await T.ready;
+
+  const slug = (location.pathname.split('/').filter(Boolean)[1]) || '';
+  const el = document.getElementById('post-detail');
+  let currentPostId = null;
+
+  function renderComments(data) {
+    const list = document.getElementById('comment-list');
+    const items = (data && data.items) || [];
+    document.getElementById('comment-count').textContent = (data && data.meta && data.meta.total) || 0;
+    if (!items.length) {
+      list.innerHTML = '<p class="comment-empty">还没有评论，来抢沙发吧~</p>';
+      return;
+    }
+    const avatarOf = (c, name) => c.avatar
+      ? '<img src="' + T.esc(c.avatar) + '" alt="">'
+      : '<span>' + T.esc(name.charAt(0).toUpperCase()) + '</span>';
+    const itemHtml = (c) => {
+      const name = c.nickname || c.author_name || '匿名';
+      return '<div class="comment-item" id="comment-' + T.esc(c.id) + '">' +
+        '<div class="comment-avatar">' + avatarOf(c, name) + '</div>' +
+        '<div class="comment-body"><div class="comment-head"><strong>' + T.esc(name) + '</strong><span>' + T.fmtDate(c.created_at) + '</span></div>' +
+        '<div class="comment-text">' + T.esc(c.content).replace(/\n/g, '<br>') + '</div></div></div>';
+    };
+    list.innerHTML = items.map(c => {
+      let html = itemHtml(c);
+      if (c.replies && c.replies.length) html += '<div class="comment-replies">' + c.replies.map(itemHtml).join('') + '</div>';
+      return html;
+    }).join('');
+  }
+
+  function loadComments(postId) {
+    API.get('/comments?postId=' + encodeURIComponent(postId))
+      .then(d => renderComments(d || {}))
+      .catch(() => {});
+  }
+
+  if (!slug) {
+    el.innerHTML = '<div class="empty"><p>文章不存在</p></div>';
+  } else {
+    try {
+      const post = await API.get('/posts/' + encodeURIComponent(slug));
+      currentPostId = post.id;
+      document.title = post.title + ' - ' + (document.title.split(' - ')[1] || 'lill');
+
+      let meta = '<span>📅 ' + T.fmtDate(post.published_at) + '</span>';
+      if (T.on('show_author') && post.author_nickname) meta += '<span>✍️ ' + T.esc(post.author_nickname) + '</span>';
+      if (T.on('show_category') && post.category_name) meta += '<span>📁 <a href="/category/' + T.esc(post.category_slug) + '">' + T.esc(post.category_name) + '</a></span>';
+      if (T.on('show_views')) meta += '<span>👁️ ' + (post.view_count || 0) + '</span>';
+
+      let html = '<h1 class="post-title">' + T.esc(post.title) + '</h1>' +
+        '<div class="post-meta">' + meta + '</div>' +
+        '<div class="post-content">' + (post.html_content || '') + '</div>';
+
+      if (T.on('show_tags') && post.tags && post.tags.length) {
+        html += '<div class="post-tags">' + post.tags.map(t =>
+          '<a href="/tag/' + T.esc(t.slug) + '"># ' + T.esc(t.name) + '</a>').join('') + '</div>';
+      }
+      el.innerHTML = html;
+
+      // 上一篇 / 下一篇
+      if (T.on('show_prevnext') && (post.prev || post.next)) {
+        let nav = '<div class="post-nav">';
+        nav += post.prev
+          ? '<a href="/post/' + T.esc(post.prev.slug) + '"><span>← 上一篇</span>' + T.esc(post.prev.title) + '</a>'
+          : '<span></span>';
+        nav += post.next
+          ? '<a class="next" href="/post/' + T.esc(post.next.slug) + '"><span>下一篇 →</span>' + T.esc(post.next.title) + '</a>'
+          : '<span></span>';
+        nav += '</div>';
+        document.getElementById('post-nav').innerHTML = nav;
+      }
+
+      // 评论区
+      if (T.on('show_comment')) {
+        document.getElementById('comments-section').style.display = '';
+        loadComments(post.id);
+
+        document.getElementById('comment-form').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const msg = document.getElementById('cf-msg');
+          const btn = e.target.querySelector('button[type="submit"]');
+          const payload = {
+            postId: currentPostId,
+            content: document.getElementById('cf-content').value,
+            authorName: document.getElementById('cf-name').value,
+            authorEmail: document.getElementById('cf-email').value,
+            authorUrl: document.getElementById('cf-url').value,
+          };
+          btn.disabled = true; btn.textContent = '提交中...'; msg.textContent = '';
+          try {
+            await API.post('/comments', payload);
+            msg.className = 'comment-msg comment-msg-ok';
+            msg.textContent = '评论已提交，等待审核后显示。';
+            e.target.reset();
+          } catch (err) {
+            msg.className = 'comment-msg comment-msg-err';
+            msg.textContent = err.message;
+          } finally {
+            btn.disabled = false; btn.textContent = '发表评论';
+          }
+        });
+      }
+    } catch (err) {
+      el.innerHTML = '<div class="empty"><p>文章不存在或加载失败</p></div>';
+    }
+  }
+</script>
