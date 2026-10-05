@@ -10,6 +10,12 @@ const token = Astro.cookies.get('lill_token')?.value;
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>lill 管理后台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <script is:inline>
+    // 未安装时跳转安装向导（异步检测，不阻塞正常使用）
+    fetch('/api/v1/install/status').then(r => r.json()).then(d => {
+      if (d && d.data && d.data.installed === false) location.replace('/admin/install/');
+    }).catch(() => {});
+  </script>
   <style is:global>
 *{margin:0;padding:0;box-sizing:border-box}
     :root{

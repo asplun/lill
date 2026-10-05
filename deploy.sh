@@ -24,14 +24,16 @@ for css in $REFERENCED; do
   scp "dist/_astro/$css" "$SERVER:$REMOTE/frontend/_astro/" 2>/dev/null || scp "_astro/$css" "$SERVER:$REMOTE/frontend/_astro/"
 done
 
-echo "▶ 4. 上传页面 HTML"
+echo "▶ 4. 上传页面 HTML（自动遍历所有 index.html，含 admin/install 等子目录）"
 cd "$LOCAL/frontend/dist"
-for dir in "" admin archive category page post search tag; do
-  if [ -z "$dir" ]; then
-    scp index.html "$SERVER:$REMOTE/frontend/index.html"
-  elif [ -f "$dir/index.html" ]; then
+find . -name 'index.html' -o -name '404.html' | while read -r f; do
+  rel="${f#./}"
+  dir=$(dirname "$rel")
+  if [ "$dir" = "." ]; then
+    scp "$rel" "$SERVER:$REMOTE/frontend/$rel"
+  else
     ssh "$SERVER" "mkdir -p $REMOTE/frontend/$dir"
-    scp "$dir/index.html" "$SERVER:$REMOTE/frontend/$dir/index.html"
+    scp "$rel" "$SERVER:$REMOTE/frontend/$rel"
   fi
 done
 

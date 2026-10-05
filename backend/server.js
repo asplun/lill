@@ -15,6 +15,7 @@ import { uid, slugify, renderMD, plainText } from './lib/utils.js';
 import { createAuth } from './lib/auth.js';
 import { json, error, parseBody, validators, logRequest } from './lib/http.js';
 import { createRouter } from './lib/router.js';
+import { register as registerInstall } from './routes/install.js';
 import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin.js';
@@ -94,22 +95,26 @@ db.exec(`
   );
 `);
 
-if (!db.prepare('SELECT id FROM users WHERE username = ?').get('admin')) {
-  const adminId = uid();
-  const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync('admin123', salt, 64).toString('hex');
-  db.prepare('INSERT INTO users (id, username, email, password, nickname, role) VALUES (?, ?, ?, ?, ?, ?)').run(adminId, 'admin', 'admin@lill.local', salt + ':' + hash, '管理员', 'admin');
-  const catId = uid();
-  db.prepare('INSERT INTO categories (id, name, slug, description) VALUES (?, ?, ?, ?)').run(catId, '未分类', 'uncategorized', '默认分类');
-  const defaults = { site_name: 'lill 博客', site_description: '一个轻量可扩展的博客系统', site_url: 'http://localhost:3000', posts_per_page: '10', allow_register: 'false', comment_moderation: 'true', active_theme: 'default' };
-  for (const [k, v] of Object.entries(defaults)) db.prepare('INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 1)').run(uid(), k, v);
-  console.log('✓ 默认数据已初始化 | admin / admin123');
+// ── 安装状态判定 ──
+// 已安装 = options.installed 为 true，或已存在任意用户（兼容历史站点）
+function isInstalled() {
+  const opt = db.prepare('SELECT value FROM options WHERE key = ?').get('installed');
+  if (opt && opt.value === 'true') return true;
+  return db.prepare('SELECT COUNT(*) AS c FROM users').get().c > 0;
+}
+// 兼容已有站点：自动补写 installed 标记，不重复初始化
+if (isInstalled() && !db.prepare('SELECT id FROM options WHERE key = ?').get('installed')) {
+  db.prepare('INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 1)').run(uid(), 'installed', 'true');
+  console.log('✓ 检测到已有站点，已标记为已安装');
+}
+if (!isInstalled()) {
+  console.log('⚠ 尚未安装：请访问 /admin/install/ 完成安装向导');
 }
 
-// ── 默认欢迎文章（幂等：仅在站点没有任何文章时创建，兼容已安装站点）──
+// ── 默认欢迎文章（幂等：仅已安装且没有任何文章时创建，兼容已安装站点）──
 {
   const postCount = db.prepare('SELECT COUNT(*) AS c FROM posts').get().c;
-  if (postCount === 0) {
+  if (isInstalled() && postCount === 0) {
     const admin = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
     let cat = db.prepare('SELECT id FROM categories ORDER BY created_at ASC LIMIT 1').get();
     if (!cat) {
@@ -254,6 +259,7 @@ const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate } = createAuth(JWT_
 // ════════════════════════════════════════
 const router = createRouter();
 const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, readThemeManifest, UPLOAD_DIR, checkRateLimit, loginLimiter };
+registerInstall(router, ctx);
 registerPublic(router, ctx);
 registerAuth(router, ctx);
 registerAdmin(router, ctx);
@@ -298,7 +304,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 公开 GET 接口缓存（提升前台性能，后台接口不缓存）
-  if (req.method === 'GET' && path.startsWith('/api/v1/') && !path.startsWith('/api/v1/admin/') && path !== '/api/v1/auth/me') {
+  if (req.method === 'GET' && path.startsWith('/api/v1/') && !path.startsWith('/api/v1/admin/') && !path.startsWith('/api/v1/install/') && path !== '/api/v1/auth/me') {
     res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   }
 
