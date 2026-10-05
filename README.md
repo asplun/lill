@@ -26,9 +26,9 @@
 
 ### 1. 环境要求
 
-- Node.js >= 18
-- SQLite 3（Node.js 内置 `node:sqlite`）
-- Nginx（生产环境）
+- **Node.js >= 22**（推荐 24 LTS，后端使用 `node:sqlite`，18/20 不支持）
+- SQLite 3（Node.js 内置 `node:sqlite`，无需单独安装）
+- Nginx / OpenResty（生产环境）
 
 ### 2. 安装
 
@@ -50,16 +50,26 @@ node server.js
 
 ### 3. 生产部署
 
+详细步骤见 **[docs/部署指南.md](docs/部署指南.md)**，含：
+
+- 🟢 **宝塔面板**部署（软件安装 → 建站 → Nginx 配置 → PM2 → SSL）
+- 🟢 **1Panel 面板**部署（OpenResty → 反向代理 → Node 环境 → SSL）
+- ⚙️ **裸机手动部署**
+- 🔧 升级维护与常见问题排查
+
+**快速版：**
+
 ```bash
 # 1. 构建前端
-cd frontend && pnpm run build
+cd frontend && pnpm install && pnpm run build
 
-# 2. 配置 Nginx
-# 将 frontend/dist/ 作为 root，/api/ 代理到后端 3000 端口
-
-# 3. 启动后端（PM2）
+# 2. 启动后端（PM2）
 cd ../backend
-pm2 start ecosystem.config.cjs
+openssl rand -hex 32          # 生成的密钥填入 ecosystem.config.js 的 JWT_SECRET
+pm2 start ecosystem.config.js && pm2 save
+
+# 3. Nginx：root 指向 frontend/dist，/api/ 反代到 127.0.0.1:3000
+#    完整配置模板见 docs/部署指南.md
 ```
 
 ### 4. 安装向导
@@ -77,24 +87,24 @@ pm2 start ecosystem.config.cjs
 lill/
 ├── backend/           # Node.js 后端
 │   ├── server.js      # 主服务
-│   ├── ecosystem.config.cjs  # PM2 配置
+│   ├── ecosystem.config.js   # PM2 配置
 │   └── data/          # SQLite 数据库
 ├── frontend/          # Astro 前端
 │   ├── src/           # 源码
 │   ├── public/        # 静态资源
 │   ├── themes/        # 主题目录
 │   └── dist/          # 构建输出
-├── docs/              # 文档
+├── docs/              # 文档（部署/主题/API）
 └── README.md
 ```
 
-## 主题开发
+## 文档
 
-见 [docs/主题开发指南.md](docs/主题开发指南.md)
-
-## API 文档
-
-见 [docs/API文档.md](docs/API文档.md)
+| 文档 | 内容 |
+|---|---|
+| [部署指南](docs/部署指南.md) | 宝塔面板 / 1Panel 面板 / 裸机部署、升级维护、问题排查 |
+| [主题开发指南](docs/主题开发指南.md) | 主题目录结构、`theme.json` 规范、模板标签、设置控件 |
+| [API 文档](docs/API文档.md) | 公开 / 认证 / 安装 / 管理接口完整参考 |
 
 ## License
 

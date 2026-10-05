@@ -26,7 +26,8 @@ export function register(router, ctx) {
     // Node.js 版本
     const nodeVer = process.version;
     const major = parseInt(nodeVer.replace('v', '').split('.')[0], 10);
-    checks.push({ name: 'Node.js 版本', pass: major >= 18, detail: nodeVer + (major >= 18 ? '' : '（需要 >= 18）') });
+    // node:sqlite 需要 Node 22+（18/20 不支持）
+    checks.push({ name: 'Node.js 版本', pass: major >= 22, detail: nodeVer + (major >= 22 ? '' : '（需要 >= 22，当前版本不支持 node:sqlite）') });
     // SQLite 支持
     let sqliteVer = 'unknown';
     try { sqliteVer = db.prepare('SELECT sqlite_version() AS v').get().v; } catch (e) { /* ignore */ }
