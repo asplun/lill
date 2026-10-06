@@ -700,13 +700,18 @@ document.querySelectorAll('.menu-item').forEach(el => {
 });
 document.getElementById('logout-btn').onclick = () => { localStorage.removeItem('lill_token'); location.href = '/admin/login'; };
 
-// 未登录直接跳登录页：认证失败时不再发起任何后台请求，避免刷屏 401 控制台错误
+// 未登录直接跳登录页：没有 token 时连 /auth/me 都不发，认证失败也不发起任何后台请求，
+// 避免后台控制台刷一堆 401（对标 Typecho 后台的干净加载）
 let authed = false;
-try {
-  user = await api('/auth/me', { timeout: 8000 });
-  authed = !!user;
-  if (user) document.getElementById('user-name').textContent = user.nickname || user.username;
-} catch (e) { authed = false; }
+if (!localStorage.getItem('lill_token')) {
+  authed = false;
+} else {
+  try {
+    user = await api('/auth/me', { timeout: 8000 });
+    authed = !!user;
+    if (user) document.getElementById('user-name').textContent = user.nickname || user.username;
+  } catch (e) { authed = false; }
+}
 if (!authed) {
   document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:#64748b">登录已过期，正在跳转登录页…</p></div>';
   location.href = '/admin/login';
