@@ -24,6 +24,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = parseInt(process.env.PORT) || 3000;
 const DB_PATH = process.env.DB_PATH || join(__dirname, 'data', 'lill.db');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || join(__dirname, 'uploads');
+const THEMES_DIR = process.env.THEMES_DIR || join(__dirname, '..', 'frontend', 'themes');
 const JWT_SECRET = process.env.JWT_SECRET || (() => {
   const s = require('node:crypto').randomBytes(32).toString('hex');
   console.warn('⚠️  JWT_SECRET 未设置，已生成随机密钥（重启后失效）');
@@ -50,6 +51,7 @@ db.exec(`
     password TEXT, comment_allowed INTEGER DEFAULT 1, view_count INTEGER DEFAULT 0,
     comment_count INTEGER DEFAULT 0, sticky INTEGER DEFAULT 0, "order" INTEGER DEFAULT 0,
     published_at TEXT, author_id TEXT NOT NULL, category_id TEXT, fields TEXT DEFAULT '{}',
+    template TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_posts_slug ON posts(slug);
@@ -94,6 +96,23 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 `);
+
+// ════════════════════════════════════════════════════════════
+// 结构迁移（幂等）：为历史数据库补齐新增列，老站点升级后自动生效
+// 对标 Typecho 的「独立页面自定义模板」：posts.template 保存所选模板 key（page-xxx）
+// ════════════════════════════════════════════════════════════
+function ensureColumn(table, column, ddl) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some(c => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      console.log(`✓ 迁移：${table}.${column} 已添加`);
+    }
+  } catch (e) { console.warn(`⚠ 迁移 ${table}.${column} 失败：${e.message}`); }
+}
+ensureColumn('posts', 'template', "template TEXT DEFAULT ''");
+ensureColumn('posts', 'cover_image', 'cover_image TEXT');
+ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
 
 // ── 安装状态判定 ──
 // 已安装 = options.installed 为 true，或已存在任意用户（兼容历史站点）
@@ -163,7 +182,7 @@ if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get('default')) {
 // 扫描主题目录，注册新主题（幂等）
 function readThemeManifest(themeId) {
   try {
-    const p = join(__dirname, '..', 'frontend', 'themes', themeId, 'theme.json');
+    const p = join(THEMES_DIR, themeId, 'theme.json');
     return JSON.parse(readFileSync(p, 'utf8'));
   } catch (e) { return null; }
 }
@@ -258,7 +277,7 @@ const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate } = createAuth(JWT_
 // 路由装配（顺序：公开 → 认证 → 后台）
 // ════════════════════════════════════════
 const router = createRouter();
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, readThemeManifest, UPLOAD_DIR, checkRateLimit, loginLimiter };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, readThemeManifest, UPLOAD_DIR, THEMES_DIR, checkRateLimit, loginLimiter };
 registerInstall(router, ctx);
 registerPublic(router, ctx);
 registerAuth(router, ctx);
@@ -304,8 +323,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 公开 GET 接口缓存（提升前台性能，后台接口不缓存）
+  // 注意：bootstrap 是前台数据的唯一入口，必须每次校验，否则发文章/改设置/换主题后前台会长时间不更新
   if (req.method === 'GET' && path.startsWith('/api/v1/') && !path.startsWith('/api/v1/admin/') && !path.startsWith('/api/v1/install/') && path !== '/api/v1/auth/me') {
-    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    if (path === '/api/v1/site/bootstrap') {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    }
   }
 
   // API 路由

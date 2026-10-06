@@ -3,11 +3,16 @@
  * 由 server.js 调用 register(router, ctx) 装配
  */
 import { randomBytes } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { listZipEntries, readZipEntry, safeEntryPath } from '../lib/zip.js';
+import { scanPageTemplates } from '../lib/themes.js';
+
+// 主题包中允许落盘的文件类型（其余一律忽略，防止可执行文件混入静态目录）
+const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
 
 export function register(router, ctx) {
-  const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, readThemeManifest, UPLOAD_DIR } = ctx;
+  const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, readThemeManifest, UPLOAD_DIR, THEMES_DIR } = ctx;
   const route = router.route;
 
   // 操作日志辅助函数
@@ -16,6 +21,22 @@ export function register(router, ctx) {
       db.prepare('INSERT INTO logs (id, action, detail, user_id, ip) VALUES (?, ?, ?, ?, ?)')
         .run(uid(), action, detail, userId, req?.headers?.['x-forwarded-for'] || req?.socket?.remoteAddress || null);
     } catch (e) { /* 日志记录失败不影响主流程 */ }
+  }
+
+  // 当前启用主题 id（themes 表为准，回退 options.active_theme）
+  function activeThemeId() {
+    const t = db.prepare('SELECT theme_id FROM themes WHERE active = 1').get();
+    if (t && t.theme_id) return t.theme_id;
+    const o = db.prepare("SELECT value FROM options WHERE key = 'active_theme'").get();
+    return (o && o.value) || 'default';
+  }
+
+  // 校验页面模板：仅允许当前主题中真实存在的 page-*.html
+  function normalizePageTemplate(type, template) {
+    if (type !== 'page' || !template) return '';
+    if (!/^page-[\w-]+$/.test(template)) return '';
+    const list = scanPageTemplates(activeThemeId(), THEMES_DIR);
+    return list.some(t => t.key === template) ? template : '';
   }
 
 const listPostsHandler = async (req, res, forcedType) => {
@@ -41,6 +62,13 @@ route('GET', '/api/v1/admin/posts', (req, res) => listPostsHandler(req, res), tr
 
 route('GET', '/api/v1/admin/pages', (req, res) => listPostsHandler(req, res, 'page'), true);
 
+// 当前主题可用的「独立页面模板」列表（对标 Typecho 的 page-xxx.php 下拉）
+route('GET', '/api/v1/admin/page-templates', async (req, res) => {
+  await authenticate(req);
+  const themeId = activeThemeId();
+  json(res, { theme: themeId, templates: scanPageTemplates(themeId, THEMES_DIR) });
+}, true);
+
 route('POST', '/api/v1/admin/posts', async (req, res) => {
   const auth = await authenticate(req);
   const body = await parseBody(req);
@@ -52,8 +80,9 @@ route('POST', '/api/v1/admin/posts', async (req, res) => {
   const status = body.status || 'draft';
   const publishedAt = body.publishedAt || (status === 'published' ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null);
   const excerpt = body.excerpt || plainText(body.content || '').substring(0, 200);
-  db.prepare('INSERT INTO posts (id, title, slug, content, html_content, excerpt, cover_image, type, status, sticky, published_at, author_id, category_id, fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(body.fields || {}));
+  const tpl = normalizePageTemplate(body.type || 'post', body.template);
+  db.prepare('INSERT INTO posts (id, title, slug, content, html_content, excerpt, cover_image, type, status, sticky, published_at, author_id, category_id, fields, template) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(body.fields || {}), tpl);
   if (body.tagNames?.length) { for (const name of body.tagNames) { const ts = slugify(name) || 'tag-' + Date.now().toString(36); let tag = db.prepare('SELECT id FROM tags WHERE slug = ?').get(ts); if (!tag) { const tid = uid(); db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)').run(tid, name, ts); tag = { id: tid }; } db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)').run(id, tag.id); } }
   logAction(auth.id, 'post.create', '创建文章: ' + body.title, req);
   json(res, db.prepare('SELECT * FROM posts WHERE id = ?').get(id), 201);
@@ -69,6 +98,7 @@ route('PUT', '/api/v1/admin/posts/:id', async (req, res, params) => {
   if (body.content !== undefined) validators.string(body.content, '内容', 50000);
   const updates = [], args = [];
   const fields = [['title','title'],['slug','slug'],['content','content'],['excerpt','excerpt'],['coverImage','cover_image'],['type','type'],['status','status'],['sticky','sticky'],['order','"order"'],['publishedAt','published_at'],['categoryId','category_id']];
+  if (body.template !== undefined) { updates.push('template = ?'); args.push(normalizePageTemplate(body.type || exist.type, body.template)); }
   for (const [f, d] of fields) { if (body[f] !== undefined) { updates.push(d + ' = ?'); args.push(f === 'sticky' ? (body[f] ? 1 : 0) : body[f]); } }
   if (body.content) updates.push('html_content = ?'), args.push(renderMD(body.content));
   if (body.excerpt === undefined && body.content) updates.push('excerpt = ?'), args.push(plainText(body.content).substring(0, 200));
@@ -331,6 +361,86 @@ route('PUT', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) 
   const merged = { ...config, ...body };
   db.prepare("UPDATE themes SET config = ? WHERE theme_id = ?").run(JSON.stringify(merged), params.themeId);
   json(res, merged);
+}, true);
+
+// 上传安装主题（zip）：对标 Typecho / WP 的「上传主题包」
+route('POST', '/api/v1/admin/themes/install', async (req, res) => {
+  const auth = await authenticate(req);
+  const body = await parseBody(req);
+  if (!body || !body.data) return error(res, '缺少主题包数据', 400);
+
+  let buf;
+  try { buf = Buffer.from(String(body.data).replace(/^data:[^,]*,/, ''), 'base64'); }
+  catch (e) { return error(res, '主题包数据无效', 400); }
+  if (buf.length < 22) return error(res, '主题包为空或已损坏', 400);
+  if (buf.length > 30 * 1024 * 1024) return error(res, '主题包过大（上限 30MB）', 400);
+
+  let entries;
+  try { entries = listZipEntries(buf); }
+  catch (e) { return error(res, e.message, 400); }
+  if (!entries.length) return error(res, '主题包为空', 400);
+
+  // 定位 theme.json（允许 zip 内再套一层目录）
+  let manifestEntry = null, prefix = '';
+  for (const e of entries) {
+    const p = safeEntryPath(e.name);
+    if (p && p.endsWith('theme.json') && p.split('/').length <= 2) { manifestEntry = e; prefix = p.slice(0, -'theme.json'.length); break; }
+  }
+  if (!manifestEntry) return error(res, '主题包内未找到 theme.json（必须位于根目录或一级子目录）', 400);
+
+  let manifest;
+  try { manifest = JSON.parse(readZipEntry(buf, manifestEntry).toString('utf8')); }
+  catch (e) { return error(res, 'theme.json 解析失败：' + e.message, 400); }
+
+  const themeId = String(manifest.id || '').trim();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(themeId)) return error(res, 'theme.json 的 id 非法（仅允许字母、数字、- 和 _，且以字母或数字开头）', 400);
+  if (!manifest.name) return error(res, 'theme.json 缺少 name 字段', 400);
+
+  const destDir = join(THEMES_DIR, themeId);
+  const staging = destDir + '.staging-' + Date.now().toString(36);
+  mkdirSync(staging, { recursive: true });
+
+  let written = 0, skipped = 0;
+  try {
+    for (const e of entries) {
+      const p = safeEntryPath(e.name);
+      if (!p || p.endsWith('/')) continue;                       // 目录项 / 越界路径
+      if (prefix && !p.startsWith(prefix)) continue;             // 不属于主题根
+      const rel = prefix ? p.slice(prefix.length) : p;
+      if (!rel || rel.startsWith('__MACOSX/') || rel.split('/').some(x => x === '__MACOSX' || x.startsWith('._'))) { skipped++; continue; }
+      const dot = rel.lastIndexOf('.');
+      const ext = dot >= 0 ? rel.slice(dot).toLowerCase() : '';
+      if (!THEME_ALLOWED_EXT.has(ext)) { skipped++; continue; }  // 非静态资源（含 .php）一律不落盘
+      const target = join(staging, rel);
+      if (!target.startsWith(staging + '/')) { skipped++; continue; }
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readZipEntry(buf, e));
+      written++;
+    }
+  } catch (e) {
+    return error(res, '解压失败：' + e.message, 400);
+  }
+  if (!written) return error(res, '主题包内没有可用的静态文件', 400);
+
+  // 校验落盘后的清单确实存在
+  if (!existsSync(join(staging, 'theme.json'))) return error(res, '主题包缺少 theme.json', 400);
+
+  // 覆盖安装：旧目录改名备份，便于回滚
+  if (existsSync(destDir)) {
+    try { renameSync(destDir, destDir + '.bak-' + Date.now().toString(36)); }
+    catch (e) { return error(res, '旧主题目录无法替换：' + e.message, 500); }
+  }
+  try { renameSync(staging, destDir); }
+  catch (e) { return error(res, '安装失败：' + e.message, 500); }
+
+  // 注册到主题表（幂等）
+  if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId)) {
+    db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), themeId, manifest.name, manifest.version || '1.0.0');
+  } else {
+    db.prepare('UPDATE themes SET name = ?, version = ? WHERE theme_id = ?').run(manifest.name, manifest.version || '1.0.0', themeId);
+  }
+  logAction(auth.id, 'theme.install', themeId + ' (' + written + ' files, ' + skipped + ' skipped)', req);
+  json(res, { themeId, name: manifest.name, version: manifest.version || '1.0.0', files: written, skipped }, 201);
 }, true);
 
 

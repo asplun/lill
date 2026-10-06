@@ -44,6 +44,19 @@ server {
         access_log off;
     }
 
+    # ── 静态资源目录：缺失即 404，禁止回退到 index.html ──
+    # （主题模板/样式缺失时必须报 404，否则会把首页 HTML 当成模板/CSS 返回）
+    location /themes/ {
+        try_files $uri =404;
+        expires 1h;
+        add_header Cache-Control "public";
+    }
+    location /_astro/ {
+        try_files $uri =404;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
     # ── 动态路由回退到各自的静态壳（Astro 静态站 + 前端渲染） ──
     location /post/     { try_files $uri $uri/ /post/index.html; }
     location /category/ { try_files $uri $uri/ /category/index.html; }

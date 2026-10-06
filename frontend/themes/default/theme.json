@@ -1,52 +1,211 @@
 {
   "id": "default",
   "name": "默认主题",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "lill 默认主题：经典博客布局，支持侧边栏组件、归档、搜索与多种显示开关",
   "author": "lill",
   "settings": [
-    { "group": "外观", "key": "color", "label": "主题色", "type": "color", "default": "#4f46e5" },
-    { "group": "外观", "key": "layout", "label": "整体布局", "type": "select", "default": "sidebar-right",
+    {
+      "group": "外观",
+      "key": "color",
+      "label": "主题色",
+      "type": "color",
+      "default": "#4f46e5"
+    },
+    {
+      "group": "外观",
+      "key": "layout",
+      "label": "整体布局",
+      "type": "select",
+      "default": "sidebar-right",
       "options": [
-        { "value": "sidebar-right", "label": "侧边栏右置" },
-        { "value": "sidebar-left", "label": "侧边栏左置" },
-        { "value": "full", "label": "通栏（无侧边栏）" }
+        {
+          "value": "sidebar-right",
+          "label": "侧边栏右置"
+        },
+        {
+          "value": "sidebar-left",
+          "label": "侧边栏左置"
+        },
+        {
+          "value": "full",
+          "label": "通栏（无侧边栏）"
+        }
       ]
     },
-    { "group": "外观", "key": "content_width", "label": "内容宽度", "type": "select", "default": "normal",
+    {
+      "group": "外观",
+      "key": "content_width",
+      "label": "内容宽度",
+      "type": "select",
+      "default": "normal",
       "options": [
-        { "value": "narrow", "label": "窄（760px）" },
-        { "value": "normal", "label": "标准（1000px）" },
-        { "value": "wide", "label": "宽（1200px）" }
+        {
+          "value": "narrow",
+          "label": "窄（760px）"
+        },
+        {
+          "value": "normal",
+          "label": "标准（1000px）"
+        },
+        {
+          "value": "wide",
+          "label": "宽（1200px）"
+        }
       ]
     },
-
-    { "group": "首页", "key": "home_mode", "label": "列表显示", "type": "select", "default": "excerpt",
+    {
+      "group": "首页",
+      "key": "home_mode",
+      "label": "列表显示",
+      "type": "select",
+      "default": "excerpt",
       "options": [
-        { "value": "excerpt", "label": "仅摘要" },
-        { "value": "full", "label": "全文输出" }
+        {
+          "value": "excerpt",
+          "label": "仅摘要"
+        },
+        {
+          "value": "full",
+          "label": "全文输出"
+        }
       ]
     },
-    { "group": "首页", "key": "posts_per_page", "label": "每页文章数", "type": "text", "default": "10" },
-    { "group": "首页", "key": "show_thumb", "label": "列表显示缩略图", "type": "checkbox", "default": "true" },
-    { "group": "首页", "key": "show_sticky", "label": "置顶标记", "type": "checkbox", "default": "true" },
-
-    { "group": "文章页", "key": "show_author", "label": "显示作者", "type": "checkbox", "default": "true" },
-    { "group": "文章页", "key": "show_category", "label": "显示分类", "type": "checkbox", "default": "true" },
-    { "group": "文章页", "key": "show_views", "label": "显示阅读量", "type": "checkbox", "default": "true" },
-    { "group": "文章页", "key": "show_tags", "label": "显示标签", "type": "checkbox", "default": "true" },
-    { "group": "文章页", "key": "show_prevnext", "label": "显示上一篇/下一篇", "type": "checkbox", "default": "true" },
-    { "group": "文章页", "key": "show_comment", "label": "显示评论区", "type": "checkbox", "default": "true" },
-
-    { "group": "侧边栏", "key": "sidebar_search", "label": "搜索框", "type": "checkbox", "default": "true" },
-    { "group": "侧边栏", "key": "sidebar_recent_posts", "label": "最新文章", "type": "checkbox", "default": "true" },
-    { "group": "侧边栏", "key": "sidebar_recent_comments", "label": "最新评论", "type": "checkbox", "default": "true" },
-    { "group": "侧边栏", "key": "sidebar_categories", "label": "分类目录", "type": "checkbox", "default": "true" },
-    { "group": "侧边栏", "key": "sidebar_tags", "label": "标签云", "type": "checkbox", "default": "true" },
-    { "group": "侧边栏", "key": "sidebar_archives", "label": "文章归档", "type": "checkbox", "default": "true" },
-    { "group": "侧边栏", "key": "sidebar_meta", "label": "站点信息", "type": "checkbox", "default": "true" },
-
-    { "group": "页脚", "key": "footer_text", "label": "底部文字", "type": "textarea", "default": "Powered by lill" },
-    { "group": "页脚", "key": "custom_css", "label": "自定义 CSS", "type": "textarea", "default": "" }
+    {
+      "group": "首页",
+      "key": "posts_per_page",
+      "label": "每页文章数",
+      "type": "text",
+      "default": "10"
+    },
+    {
+      "group": "首页",
+      "key": "show_thumb",
+      "label": "列表显示缩略图",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "首页",
+      "key": "show_sticky",
+      "label": "置顶标记",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "文章页",
+      "key": "show_author",
+      "label": "显示作者",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "文章页",
+      "key": "show_category",
+      "label": "显示分类",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "文章页",
+      "key": "show_views",
+      "label": "显示阅读量",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "文章页",
+      "key": "show_tags",
+      "label": "显示标签",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "文章页",
+      "key": "show_prevnext",
+      "label": "显示上一篇/下一篇",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "文章页",
+      "key": "show_comment",
+      "label": "显示评论区",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_search",
+      "label": "搜索框",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_recent_posts",
+      "label": "最新文章",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_recent_comments",
+      "label": "最新评论",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_categories",
+      "label": "分类目录",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_tags",
+      "label": "标签云",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_archives",
+      "label": "文章归档",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_meta",
+      "label": "站点信息",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "页脚",
+      "key": "footer_text",
+      "label": "底部文字",
+      "type": "textarea",
+      "default": "Powered by lill"
+    },
+    {
+      "group": "页脚",
+      "key": "custom_css",
+      "label": "自定义 CSS",
+      "type": "textarea",
+      "default": ""
+    }
+  ],
+  "templates": [
+    {
+      "file": "page-links.html",
+      "name": "友情链接"
+    },
+    {
+      "file": "page-full.html",
+      "name": "通栏页面"
+    }
   ]
 }

@@ -147,6 +147,19 @@ window.openPostEditor = async (type, id) => {
   if (id) { try { post = await api('/admin/posts/' + id); } catch (e) { return toast(e.message, 'error'); } }
   let cats = [];
   try { cats = await api('/admin/categories'); } catch (e) { cats = []; }
+  // 独立页面模板（对标 Typecho 页面编辑里的「自定义模板」下拉）
+  let pageTpls = [];
+  if (type === 'page') {
+    try { const r = await api('/admin/page-templates'); pageTpls = (r && r.templates) || []; } catch (e) { pageTpls = []; }
+  }
+  const curTpl = post ? (post.template || '') : '';
+  const tplOpts = ['<option value=""' + (curTpl ? '' : ' selected') + '>默认模板（page.html）</option>']
+    .concat(pageTpls.map(t => '<option value="' + escape(t.key) + '"' + (curTpl === t.key ? ' selected' : '') + '>' + escape(t.name) + '（' + escape(t.file) + '）</option>'))
+    .join('');
+  // 与 Typecho 一致：主题里没有 page-*.html 时不显示「页面模板」下拉
+  const tplGroup = (type === 'page' && pageTpls.length)
+    ? '<div class="form-group"><label>页面模板</label><select id="pe-template">' + tplOpts + '</select></div>'
+    : '';
   const catOpts = ['<option value="">无分类</option>'].concat((cats || []).map(c => '<option value="' + c.id + '"' + (post && post.category_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
   const st = post ? post.status : 'published';
   const statusOpts = [['draft', '草稿'], ['published', '发布'], ['pending', '待审核']].map(x => '<option value="' + x[0] + '"' + (st === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
@@ -156,10 +169,11 @@ window.openPostEditor = async (type, id) => {
   document.getElementById('content').innerHTML = '<div class="card">' +
     '<div class="form-group"><label>标题</label><input id="pe-title" placeholder="请输入标题" value="' + escape(post ? post.title : '') + '"></div>' +
     '<div class="editor-wrap"><div class="editor-pane"><textarea id="pe-content" placeholder="Markdown 内容...">' + escape(post ? post.content : '') + '</textarea></div><div class="preview-pane" id="pe-preview"></div></div>' +
-    '<div class="form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px">' +
+    '<div class="form-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px">' +
     '<div class="form-group"><label>状态</label><select id="pe-status">' + statusOpts + '</select></div>' +
     '<div class="form-group"><label>分类</label><select id="pe-cat">' + catOpts + '</select></div>' +
     '<div class="form-group"><label>标签（逗号分隔）</label><input id="pe-tags" value="' + escape(tagStr) + '" placeholder="tag1,tag2"></div>' +
+    tplGroup +
     '</div>' +
     '<div class="form-group"><label>摘要（可选）</label><textarea id="pe-excerpt" rows="2" placeholder="留空自动截取">' + escape(post ? post.excerpt : '') + '</textarea></div>' +
     '<button class="btn btn-primary" onclick="savePost(\'' + type + '\',' + (id ? '\'' + id + '\'' : 'null') + ')">' + (id ? '更新' : '保存') + '</button></div>';
@@ -175,6 +189,8 @@ window.savePost = async (type, id) => {
   if (!title) return toast('请填写标题', 'error');
   const tagNames = document.getElementById('pe-tags').value.split(',').map(s => s.trim()).filter(Boolean);
   const body = { title, content, status: document.getElementById('pe-status').value, type, categoryId: document.getElementById('pe-cat').value || null, excerpt: document.getElementById('pe-excerpt').value || null, tagNames };
+  // 仅当页面模板下拉存在时才提交 template，避免误清空已有设置
+  if (type === 'page') { const tsel = document.getElementById('pe-template'); if (tsel) body.template = tsel.value; }
   try {
     if (id) await api('/admin/posts/' + id, { method: 'PUT', body });
     else await api('/admin/posts', { method: 'POST', body });
@@ -410,10 +426,39 @@ async function renderThemes() {
   });
   else html += '<div class="empty">暂无主题</div>';
   html += '</div></div>';
+  html += '<div class="card" style="margin-top:20px"><h3 class="card-title">安装主题</h3>' +
+    '<p style="color:var(--text-light);font-size:13px;margin-bottom:12px">上传主题 ZIP 压缩包即可安装（包内需含 <code>theme.json</code>）。安装后不会自动启用，可先预览再切换。</p>' +
+    '<input type="file" id="themeZip" accept=".zip" style="display:none" onchange="uploadTheme(this)">' +
+    '<button class="btn btn-primary" onclick="document.getElementById(\'themeZip\').click()">+ 上传主题包 (.zip)</button>' +
+    '<span id="themeInstallMsg" style="margin-left:12px;font-size:13px;color:var(--text-light)"></span></div>';
   setTopbar('');
   document.getElementById('content').innerHTML = html;
 }
 window.renderThemes = renderThemes;
+
+window.uploadTheme = async (input) => {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const msg = document.getElementById('themeInstallMsg');
+  if (!/\.zip$/i.test(file.name)) { toast('请选择 .zip 主题包', 'error'); input.value = ''; return; }
+  if (file.size > 30 * 1024 * 1024) { toast('主题包不能超过 30MB', 'error'); input.value = ''; return; }
+  if (msg) msg.textContent = '正在上传并解压…';
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ''));
+      fr.onerror = () => reject(new Error('读取文件失败'));
+      fr.readAsDataURL(file);
+    });
+    const r = await api('/admin/themes/install', { method: 'POST', body: { name: file.name, data } });
+    toast('主题「' + (r.name || r.themeId) + '」安装成功');
+    renderThemes();
+  } catch (e) {
+    if (msg) msg.textContent = '';
+    toast(e.message || '安装失败', 'error');
+    input.value = '';
+  }
+};
 
 window.activateTheme = async (themeId) => { try { await api('/admin/themes/' + encodeURIComponent(themeId) + '/activate', { method: 'POST' }); toast('已切换主题'); renderThemes(); } catch (e) { toast(e.message, 'error'); } };
 
@@ -449,6 +494,8 @@ window.openThemeSettings = async (themeId) => {
           html += '<textarea id="' + id + '" rows="3">' + escape(v) + '</textarea>';
         } else if (f.type === 'checkbox') {
           html += '<label style="display:flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" id="' + id + '" style="width:auto"' + (v === 'true' || v === true ? ' checked' : '') + '> 启用</label>';
+        } else if (f.type === 'number') {
+          html += '<input type="number" id="' + id + '" value="' + escape(v) + '">';
         } else {
           html += '<input type="text" id="' + id + '" value="' + escape(v) + '">';
         }
@@ -653,11 +700,19 @@ document.querySelectorAll('.menu-item').forEach(el => {
 });
 document.getElementById('logout-btn').onclick = () => { localStorage.removeItem('lill_token'); location.href = '/admin/login'; };
 
+// 未登录直接跳登录页：认证失败时不再发起任何后台请求，避免刷屏 401 控制台错误
+let authed = false;
 try {
   user = await api('/auth/me', { timeout: 8000 });
+  authed = !!user;
   if (user) document.getElementById('user-name').textContent = user.nickname || user.username;
-} catch (e) { location.href = '/admin/login'; }
-render();
+} catch (e) { authed = false; }
+if (!authed) {
+  document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:#64748b">登录已过期，正在跳转登录页…</p></div>';
+  location.href = '/admin/login';
+} else {
+  render();
+}
 
 
 // ═══ 暴露给 HTML onclick（module 作用域限制） ═══

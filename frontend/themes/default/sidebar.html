@@ -1,0 +1,77 @@
+{if $theme.layout != 'full'}
+<aside class="sidebar">
+
+  {if $theme.sidebar_search}
+  <div class="widget">
+    <h3 class="widget-title">搜索</h3>
+    <form class="widget-search" action="/search" method="get" role="search">
+      <input type="search" name="q" placeholder="输入关键词…" value="{$page.query.q}">
+      <button type="submit">搜索</button>
+    </form>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_recent_posts && $sidebar.recentPosts}
+  <div class="widget">
+    <h3 class="widget-title">最新文章</h3>
+    <ul class="widget-list">
+      {loop $sidebar.recentPosts as $p}
+      <li><a href="{$p.url}">{$p.title}</a><span class="widget-meta">{$p.published_at|date}</span></li>
+      {/loop}
+    </ul>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_recent_comments && $sidebar.recentComments}
+  <div class="widget">
+    <h3 class="widget-title">最新评论</h3>
+    <ul class="widget-list widget-comments">
+      {loop $sidebar.recentComments as $c}
+      <li><a href="{$c.post_url}#comment-{$c.id}"><strong>{$c.author}</strong>：{$c.content|truncate:36}</a><span class="widget-meta">{$c.post_title}</span></li>
+      {/loop}
+    </ul>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_categories && $sidebar.categories}
+  <div class="widget">
+    <h3 class="widget-title">分类目录</h3>
+    <ul class="widget-list">
+      {loop $sidebar.categories as $cat}
+      <li><a href="{$cat.url}">{$cat.name}</a><span class="widget-count">{$cat.post_count}</span></li>
+      {/loop}
+    </ul>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_tags && $sidebar.tags}
+  <div class="widget">
+    <h3 class="widget-title">标签云</h3>
+    <div class="tag-cloud">
+      {loop $sidebar.tags as $tag}<a href="{$tag.url}">{$tag.name}</a>{/loop}
+    </div>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_archives && $sidebar.archives}
+  <div class="widget">
+    <h3 class="widget-title">文章归档</h3>
+    <ul class="widget-list">
+      {loop $sidebar.archives as $a}<li><a href="/archive?month={$a.ym}">{$a.ym}</a><span class="widget-count">{$a.count}</span></li>{/loop}
+    </ul>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_meta}
+  <div class="widget">
+    <h3 class="widget-title">站点信息</h3>
+    <ul class="widget-list">
+      <li><a href="/archive">文章归档</a></li>
+      <li><a href="/feed.xml">RSS 订阅</a></li>
+      <li><a href="/admin/">管理登录</a></li>
+    </ul>
+  </div>
+  {/if}
+
+</aside>
+{/if}

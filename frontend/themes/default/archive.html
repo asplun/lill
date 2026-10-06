@@ -1,0 +1,18 @@
+{include header}
+<main class="main-content">
+  <h2 class="page-heading">{$page.title}</h2>
+  {if $groups}
+    {loop $groups as $group}
+    <h3 class="archive-year">{$group.ym}（{$group.count}）</h3>
+    <ul class="archive-list">
+      {loop $group.posts as $post}
+      <li><a href="{$post.url}">{$post.title}</a><span>{$post.published_at|date}</span></li>
+      {/loop}
+    </ul>
+    {/loop}
+  {else}
+    <div class="empty"><p>暂无文章</p></div>
+  {/if}
+</main>
+{include sidebar}
+{include footer}

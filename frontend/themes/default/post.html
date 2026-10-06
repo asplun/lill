@@ -1,0 +1,75 @@
+{include header}
+<main class="main-content">
+  <article class="post-detail">
+    <h1 class="post-title">{$post.title}</h1>
+    <div class="post-meta">
+      <span>📅 {$post.published_at|date}</span>
+      {if $theme.show_author && $post.author_nickname}<span>✍️ {$post.author_nickname}</span>{/if}
+      {if $theme.show_category && $post.category_name}<span>📁 <a href="/category/{$post.category_slug}">{$post.category_name}</a></span>{/if}
+      {if $theme.show_views}<span>👁️ {$post.view_count}</span>{/if}
+    </div>
+    <div class="post-content">{$post.html_content|raw}</div>
+    {if $theme.show_tags && $post.tags}
+    <div class="post-tags">
+      {loop $post.tags as $tag}<a href="/tag/{$tag.slug}"># {$tag.name}</a>{/loop}
+    </div>
+    {/if}
+  </article>
+
+  {if $theme.show_prevnext && ($post.prev || $post.next)}
+  <nav class="post-nav">
+    {if $post.prev}<a href="{$post.prev.url}"><span>← 上一篇</span>{$post.prev.title}</a>{else}<span></span>{/if}
+    {if $post.next}<a class="next" href="{$post.next.url}"><span>下一篇 →</span>{$post.next.title}</a>{else}<span></span>{/if}
+  </nav>
+  {/if}
+
+  {if $theme.show_comment && $commentAllowed}
+  <section class="comments" id="comments">
+    <h3 class="comments-title">评论 <span>{$commentMeta.total}</span></h3>
+    <div class="comment-list">
+      {if $comments}
+        {loop $comments as $c}
+        <div class="comment-item" id="comment-{$c.id}">
+          <div class="comment-avatar">{if $c.avatar}<img src="{$c.avatar}" alt="">{else}{$c.author|truncate:1:''}{/if}</div>
+          <div class="comment-body">
+            <div class="comment-head"><strong>{$c.author}</strong><span>{$c.created_at|date}</span></div>
+            <div class="comment-text">{$c.content|nl2br}</div>
+          </div>
+        </div>
+        {if $c.replies}
+        <div class="comment-replies">
+          {loop $c.replies as $r}
+          <div class="comment-item" id="comment-{$r.id}">
+            <div class="comment-avatar">{if $r.avatar}<img src="{$r.avatar}" alt="">{else}{$r.author|truncate:1:''}{/if}</div>
+            <div class="comment-body">
+              <div class="comment-head"><strong>{$r.author}</strong><span>{$r.created_at|date}</span></div>
+              <div class="comment-text">{$r.content|nl2br}</div>
+            </div>
+          </div>
+          {/loop}
+        </div>
+        {/if}
+        {/loop}
+      {else}
+        <p class="comment-empty">还没有评论，来抢沙发吧~</p>
+      {/if}
+    </div>
+
+    <form class="comment-form lill-comment-form" data-post-id="{$post.id}">
+      <h4>发表评论</h4>
+      <div class="comment-form-row">
+        <input type="text" name="authorName" placeholder="昵称 *" required>
+        <input type="email" name="authorEmail" placeholder="邮箱（不会公开）">
+        <input type="url" name="authorUrl" placeholder="网站（可选）">
+      </div>
+      <textarea name="content" rows="4" placeholder="说点什么..." required></textarea>
+      <div class="comment-form-footer">
+        <span class="lill-comment-msg"></span>
+        <button type="submit" class="comment-submit">发表评论</button>
+      </div>
+    </form>
+  </section>
+  {/if}
+</main>
+{include sidebar}
+{include footer}

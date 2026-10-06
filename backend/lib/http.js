@@ -8,7 +8,8 @@ export const json = (res, data, status = 200) => {
 };
 
 export const error = (res, msg, status = 400) => {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  // 错误响应一律不缓存：否则 404 会被浏览器/CDN 缓存，导致新内容"明明存在却打不开"
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate' });
   res.end(JSON.stringify({ code: 1, message: msg, data: null }));
 };
 

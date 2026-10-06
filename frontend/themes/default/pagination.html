@@ -1,0 +1,7 @@
+{if $pagination && $pagination.totalPages > 1}
+<nav class="pagination">
+  {if $pagination.hasPrev}<a href="{$page.url}?page={$pagination.page - 1}">← 上一页</a>{/if}
+  <span>第 {$pagination.page} / {$pagination.totalPages} 页</span>
+  {if $pagination.hasNext}<a href="{$page.url}?page={$pagination.page + 1}">下一页 →</a>{/if}
+</nav>
+{/if}

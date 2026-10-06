@@ -1,188 +1,524 @@
 /**
- * lill 默认主题运行时
- * 职责：应用主题设置、渲染导航、渲染侧边栏 Widget、提供文章卡片等公共方法
- * 配置来源：window.__LILL_THEME__（构建时注入）或运行时 /api/v1/options/public
+ * ═══════════════════════════════════════════════════════════════
+ *  lill 主题引擎 + 运行时（Typecho 式：主题 = 模板文件夹）
+ * ═══════════════════════════════════════════════════════════════
+ *  主题作者只写 HTML + 模板标签，不需要写任何 JS 适配器。
+ *
+ *  标签语法
+ *    {$post.title}                 输出变量（自动 HTML 转义）
+ *    {$post.html_content|raw}      输出原始 HTML
+ *    {$post.published_at|date}     过滤器
+ *    {if $post.sticky}…{elseif}…{else}…{/if}
+ *    {loop $posts as $post}…{/loop}
+ *    {loop $tags as $i => $tag}…{/loop}
+ *    {include header}              引入同目录片段（共享作用域）
+ *    {* 注释 *}
+ *
+ *  过滤器
+ *    raw escape e date default truncate upper lower length count
+ *    json nl2br urlencode strip number
+ * ═══════════════════════════════════════════════════════════════
  */
-window.lillTheme = (function () {
-  const API = window.lillAPI;
-  const cfg = window.__LILL_THEME__ || {};
-  const opts = window.__LILL_OPTIONS__ || {};
-  let _resolveReady;
-  const ready = new Promise(r => { _resolveReady = r; });
+(function () {
+  'use strict';
 
-  // ─────────── 工具 ───────────
+  /* ══════════════════ 一、模板引擎 ══════════════════ */
+
   function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-  function fmtDate(d) {
-    if (!d) return '';
-    const x = new Date(String(d).replace(' ', 'T') + (String(d).includes('Z') ? '' : 'Z'));
-    return isNaN(x) ? '' : x.toLocaleDateString('zh-CN');
-  }
-  function val(key, fallback) {
-    const v = cfg[key];
-    return (v === undefined || v === null || v === '') ? (fallback !== undefined ? fallback : '') : v;
-  }
-  function on(key, fallback) {
-    const v = val(key, fallback === false ? 'false' : 'true');
-    return v === 'true' || v === true;
-  }
-
-  // ─────────── 文章卡片 ───────────
-  function postCard(p) {
-    const full = val('home_mode', 'excerpt') === 'full' && p.html_content;
-    const thumb = on('show_thumb', true) && p.cover_image;
-    const link = p.route || p.url || '/post/' + p.slug;
-    let meta = '<span>📅 ' + fmtDate(p.published_at) + '</span>';
-    if (on('show_author', true) && p.author_nickname) meta += '<span>✍️ ' + esc(p.author_nickname) + '</span>';
-    if (on('show_category', true) && p.category_name) meta += '<span>📁 <a href="' + esc(p.category_slug ? '/category/' + p.category_slug : '#') + '">' + esc(p.category_name) + '</a></span>';
-    if (on('show_views', true)) meta += '<span>👁️ ' + (p.view_count || 0) + '</span>';
-    const sticky = on('show_sticky', true) && p.sticky ? '<span class="sticky-badge">置顶</span>' : '';
-    return '<article class="post-card' + (thumb ? ' has-thumb' : '') + '">' +
-      (thumb ? '<a class="post-thumb" href="' + esc(link) + '"><img src="' + esc(p.cover_image) + '" alt="' + esc(p.title) + '" loading="lazy"></a>' : '') +
-      '<div class="post-card-body">' +
-        '<h2 class="post-title">' + sticky + '<a href="' + esc(link) + '">' + esc(p.title) + '</a></h2>' +
-        '<div class="post-meta">' + meta + '</div>' +
-        (full
-          ? '<div class="post-content">' + p.html_content + '</div>'
-          : '<div class="post-excerpt">' + esc(p.excerpt || '') + '</div><a class="read-more" href="' + esc(link) + '">阅读全文 →</a>') +
-      '</div></article>';
-  }
-
-  // ─────────── 导航 ───────────
-  async function renderNav() {
-    const nav = document.getElementById('site-nav');
-    if (!nav) return;
-    let html = '<a href="/">首页</a>';
-    try {
-      const [cats, pages] = await Promise.all([API.get('/categories'), API.get('/pages')]);
-      (cats || []).forEach(c => { html += '<a href="' + esc(c.route || c.url || '/category/' + c.slug) + '">' + esc(c.name) + '</a>'; });
-      (pages || []).forEach(p => { html += '<a href="/page/' + esc(p.slug) + '">' + esc(p.title) + '</a>'; });
-    } catch (e) {}
-    html += '<a href="/archive">归档</a>';
-    nav.innerHTML = html;
-    const path = location.pathname;
-    nav.querySelectorAll('a').forEach(a => {
-      const href = a.getAttribute('href');
-      if (href === path || (href !== '/' && path.startsWith(href))) a.classList.add('active');
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
 
-  // ─────────── 侧边栏 Widget ───────────
-  function widget(title, body) {
-    return '<div class="widget"><h3 class="widget-title">' + esc(title) + '</h3><div class="widget-body">' + body + '</div></div>';
-  }
-  function wSearch() {
-    const q = new URLSearchParams(location.search).get('q') || '';
-    return widget('搜索', '<form class="widget-search" role="search"><input type="search" name="q" placeholder="输入关键词…" value="' + esc(q) + '"><button type="submit">搜索</button></form>');
-  }
-  async function wRecentPosts() {
-    const d = await API.get('/posts?pageSize=5');
-    const list = (d && d.items) || [];
-    if (!list.length) return '';
-    return widget('最新文章', '<ul class="widget-list">' + list.map(p =>
-      '<li><a href="' + esc(p.route || p.url || '/post/' + p.slug) + '">' + esc(p.title) + '</a><span class="widget-meta">' + fmtDate(p.published_at) + '</span></li>').join('') + '</ul>');
-  }
-  async function wRecentComments() {
-    const list = await API.get('/comments/recent?limit=5');
-    if (!list || !list.length) return '';
-    return widget('最新评论', '<ul class="widget-list widget-comments">' + list.map(c =>
-      '<li><a href="' + esc(c.post_route || c.post_url || '/post/' + c.post_slug) + '#comment-' + esc(c.id) + '"><strong>' + esc(c.nickname || c.author_name || '匿名') + '</strong>：' + esc(String(c.content || '').substring(0, 40)) + '</a><span class="widget-meta">' + esc(c.post_title || '') + '</span></li>').join('') + '</ul>');
-  }
-  async function wCategories() {
-    const list = await API.get('/categories');
-    if (!list || !list.length) return '';
-    return widget('分类目录', '<ul class="widget-list">' + list.map(c =>
-      '<li><a href="' + esc(c.route || c.url || '/category/' + c.slug) + '">' + esc(c.name) + '</a><span class="widget-count">' + (c.post_count || 0) + '</span></li>').join('') + '</ul>');
-  }
-  async function wTags() {
-    const list = await API.get('/tags');
-    if (!list || !list.length) return '';
-    return widget('标签云', '<div class="tag-cloud">' + list.map(t =>
-      '<a href="' + esc(t.route || t.url || '/tag/' + t.slug) + '">' + esc(t.name) + '</a>').join('') + '</div>');
-  }
-  async function wArchives() {
-    const list = await API.get('/archives');
-    if (!list || !list.length) return '';
-    return widget('文章归档', '<ul class="widget-list">' + list.map(a =>
-      '<li><a href="/archive?month=' + esc(a.ym) + '">' + esc(a.ym) + '</a><span class="widget-count">' + a.count + '</span></li>').join('') + '</ul>');
-  }
-  function wMeta() {
-    return widget('站点信息', '<ul class="widget-list">' +
-      '<li><a href="/archive">文章归档</a></li>' +
-      '<li><a href="/feed.xml">RSS 订阅</a></li>' +
-      '<li><a href="/admin/">管理登录</a></li>' +
-      '</ul>');
+  function Safe(v) { this.v = String(v === null || v === undefined ? '' : v); }
+  Safe.prototype.toString = function () { return this.v; };
+
+  function fmtDate(v, fmt) {
+    if (!v) return '';
+    var s = String(v).replace(' ', 'T');
+    if (!/[Zz]|[+-]\d\d:?\d\d$/.test(s)) s += 'Z';
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return String(v);
+    var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+    var m = { Y: d.getFullYear(), m: pad(d.getMonth() + 1), d: pad(d.getDate()), H: pad(d.getHours()), i: pad(d.getMinutes()), s: pad(d.getSeconds()) };
+    if (!fmt || fmt === 'date') return m.Y + '-' + m.m + '-' + m.d;
+    return String(fmt).replace(/[YmdHis]/g, function (k) { return m[k]; });
   }
 
-  const WIDGETS = [
-    { key: 'sidebar_search', render: wSearch },
-    { key: 'sidebar_recent_posts', render: wRecentPosts },
-    { key: 'sidebar_recent_comments', render: wRecentComments },
-    { key: 'sidebar_categories', render: wCategories },
-    { key: 'sidebar_tags', render: wTags },
-    { key: 'sidebar_archives', render: wArchives },
-    { key: 'sidebar_meta', render: wMeta },
-  ];
+  var FILTERS = {
+    raw: function (v) { return new Safe(v); },
+    safe: function (v) { return new Safe(v); },
+    escape: esc,
+    e: esc,
+    date: fmtDate,
+    'default': function (v, d) { return (v === undefined || v === null || v === '') ? d : v; },
+    truncate: function (v, n, suffix) {
+      var s = String(v === null || v === undefined ? '' : v).replace(/<[^>]*>/g, '').trim();
+      n = parseInt(n) || 100;
+      return s.length > n ? s.slice(0, n) + (suffix === undefined ? '…' : suffix) : s;
+    },
+    upper: function (v) { return String(v == null ? '' : v).toUpperCase(); },
+    lower: function (v) { return String(v == null ? '' : v).toLowerCase(); },
+    length: function (v) { return (v && v.length) ? v.length : 0; },
+    count: function (v) { return (v && v.length) ? v.length : 0; },
+    json: function (v) { return JSON.stringify(v === undefined ? null : v); },
+    nl2br: function (v) { return new Safe(esc(v).replace(/\n/g, '<br>')); },
+    urlencode: function (v) { return encodeURIComponent(v == null ? '' : v); },
+    strip: function (v) { return String(v == null ? '' : v).replace(/<[^>]*>/g, ''); },
+    number: function (v) { return parseInt(v) || 0; }
+  };
 
-  async function renderSidebar() {
-    const sidebar = document.getElementById('sidebar');
-    if (!sidebar) return;
-    const active = WIDGETS.filter(w => on(w.key, true));
-    if (!active.length) { sidebar.style.display = 'none'; return; }
-    for (const w of active) {
-      const slot = document.createElement('div');
-      slot.className = 'widget-slot';
-      sidebar.appendChild(slot);
-      try {
-        const html = await w.render();
-        if (html) slot.innerHTML = html; else slot.remove();
-      } catch (e) { slot.remove(); }
+  /* ── 1.1 解析：源码 → AST ── */
+  function parse(src) {
+    var root = { t: 'root', c: [] };
+    var stack = [root];
+    var i = 0, text = '';
+    function cur() { return stack[stack.length - 1]; }
+    function flush() { if (text) { cur().c.push({ t: 'text', v: text }); text = ''; } }
+
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (ch !== '{') { text += ch; i++; continue; }
+
+      if (src.substr(i, 2) === '{*') {                       // 注释
+        var ce = src.indexOf('*}', i + 2);
+        if (ce < 0) { text += src.slice(i); break; }
+        i = ce + 2; continue;
+      }
+
+      var e = src.indexOf('}', i + 1);
+      if (e < 0) { text += src.slice(i); break; }
+      var tag = src.slice(i + 1, e).trim();
+      var ok = true;
+
+      if (tag.charAt(0) === '$') {
+        flush(); cur().c.push({ t: 'out', e: tag });
+
+      } else if (/^if\s/.test(tag)) {
+        flush();
+        var nIf = { t: 'if', b: [{ cond: tag.slice(3).trim(), c: [] }], e: null };
+        cur().c.push(nIf);
+        // 压入「条件帧」：c 指向当前分支的正文数组，ifn 指回 if 节点
+        stack.push({ c: nIf.b[0].c, ifn: nIf });
+
+      } else if (/^else\s?if\s/.test(tag)) {
+        var frIf = stack[stack.length - 1];
+        if (stack.length < 2 || !frIf.ifn || frIf.ifn.e) { ok = false; }
+        else {
+          flush();
+          var brIf = { cond: tag.replace(/^else\s?if\s+/, '').trim(), c: [] };
+          frIf.ifn.b.push(brIf); frIf.c = brIf.c;
+        }
+
+      } else if (tag === 'else') {
+        var feIf = stack[stack.length - 1];
+        if (stack.length < 2 || !feIf.ifn || feIf.ifn.e) { ok = false; }
+        else { flush(); feIf.ifn.e = []; feIf.c = feIf.ifn.e; }
+
+      } else if (tag === '/if') {
+        if (stack.length < 2 || !stack[stack.length - 1].ifn) { ok = false; } else { flush(); stack.pop(); }
+
+      } else if (/^loop\s/.test(tag)) {
+        var m = tag.slice(5).trim().match(/^(.+?)\s+as\s+(\$[\w$]+)\s*(?:=>\s*(\$[\w$]+))?$/);
+        if (!m) { ok = false; }
+        else {
+          flush();
+          var nLoop = { t: 'loop', e: m[1].trim(), val: m[2], key: m[3] || null, c: [] };
+          cur().c.push(nLoop); stack.push(nLoop);
+        }
+
+      } else if (tag === '/loop') {
+        if (stack.length < 2) { ok = false; } else { flush(); stack.pop(); }
+
+      } else if (/^include\s/.test(tag)) {
+        flush();
+        cur().c.push({ t: 'inc', name: tag.slice(8).trim().replace(/^['"]|['"]$/g, '') });
+
+      } else { ok = false; }
+
+      if (ok) { i = e + 1; continue; }
+      text += '{'; i++;   // 不是模板标签（例如 CSS 的 .a{color:red}）→ 当作文本
     }
-    sidebar.querySelectorAll('form.widget-search').forEach(f => {
-      f.addEventListener('submit', e => {
-        e.preventDefault();
-        const q = f.querySelector('input').value.trim();
-        if (q) location.href = '/search?q=' + encodeURIComponent(q);
+    flush();
+    return root;
+  }
+
+  /* ── 1.2 include 展开：把片段内联进 AST（天然共享作用域） ── */
+  function expand(nodes, partials) {
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.t === 'inc') {
+        var src = partials[n.name];
+        if (src !== undefined) {
+          var sub = expand(parse(src).c, partials);
+          for (var j = 0; j < sub.length; j++) out.push(sub[j]);
+        }
+        continue;
+      }
+      if (n.t === 'if') {
+        out.push({
+          t: 'if',
+          b: n.b.map(function (br) { return { cond: br.cond, c: expand(br.c, partials) }; }),
+          e: n.e ? expand(n.e, partials) : null
+        });
+        continue;
+      }
+      if (n.t === 'loop') { out.push({ t: 'loop', e: n.e, val: n.val, key: n.key, c: expand(n.c, partials) }); continue; }
+      out.push(n);
+    }
+    return out;
+  }
+
+  /* ── 1.3 收集模板引用到的片段名 ── */
+  function collectIncludes(nodes, acc) {
+    nodes.forEach(function (n) {
+      if (n.t === 'inc') acc.push(n.name);
+      else if (n.t === 'if') {
+        collectIncludes(n.b.reduce(function (a, b) { return a.concat(b.c); }, []), acc);
+        if (n.e) collectIncludes(n.e, acc);
+      } else if (n.t === 'loop') collectIncludes(n.c, acc);
+    });
+    return acc;
+  }
+
+  /* ── 1.4 表达式 ── */
+  function exprOf(s) {
+    return String(s)
+      .replace(/\s+and\s+/g, ' && ')
+      .replace(/\s+or\s+/g, ' || ')
+      .replace(/^\s*not\s+/, '!');
+  }
+  // 取值加保护：任意一层为 undefined 也不会中断整页渲染
+  function guard(s) { return '__g(function(){return (' + exprOf(s) + ');})'; }
+
+  function splitTop(s, sep) {
+    var parts = [], depth = 0, q = null, cur = '';
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i);
+      if (q) { cur += c; if (c === q) q = null; continue; }
+      if (c === '"' || c === "'") { q = c; cur += c; continue; }
+      if (c === '(' || c === '[') { depth++; cur += c; continue; }
+      if (c === ')' || c === ']') { depth--; cur += c; continue; }
+      if (c === sep && depth === 0) { parts.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    parts.push(cur);
+    return parts;
+  }
+
+  function outputExpr(raw) {
+    var parts = splitTop(raw, '|').map(function (p) { return p.trim(); });
+    var v = guard(parts.shift());
+    parts.forEach(function (p) {
+      var m = p.match(/^([A-Za-z_]\w*)\s*(?::([\s\S]*))?$/);
+      if (!m) return;
+      var name = m[1], args = m[2];
+      if (args === undefined || args === '') {
+        v = '__f[' + JSON.stringify(name) + '](' + v + ')';
+      } else {
+        var list = splitTop(args, ':').map(function (a) { return guard(a); });
+        v = '__f[' + JSON.stringify(name) + '](' + v + ',' + list.join(',') + ')';
+      }
+    });
+    return v;
+  }
+
+  var seq = 0;
+  function gen(nodes) {
+    var s = '';
+    nodes.forEach(function (n) {
+      if (n.t === 'text') { s += '__h.push(' + JSON.stringify(n.v) + ');'; return; }
+      if (n.t === 'out') { s += '__h.push(__o(' + outputExpr(n.e) + '));'; return; }
+      if (n.t === 'if') {
+        n.b.forEach(function (br, i) { s += (i === 0 ? 'if(' : 'else if(') + guard(br.cond) + '){' + gen(br.c) + '}'; });
+        if (n.e) s += 'else{' + gen(n.e) + '}';
+        return;
+      }
+      if (n.t === 'loop') {
+        var id = ++seq;
+        var arr = '__a' + id, idx = '__i' + id, key = '__k' + id, item = '__v' + id;
+        s += 'var ' + arr + '=__iter(' + guard(n.e) + ');';
+        s += 'for(var ' + idx + '=0;' + idx + '<' + arr + '.length;' + idx + '++){';
+        s += 'var ' + key + '=' + arr + '[' + idx + '][0],' + item + '=' + arr + '[' + idx + '][1];';
+        s += n.val + '=' + item + ';';
+        if (n.key) s += n.key + '=' + key + ';';
+        s += gen(n.c) + '}';
+        return;
+      }
+    });
+    return s;
+  }
+
+  function compile(nodes) {
+    var src = 'with(__s){' + gen(nodes) + '}';
+    try {
+      return new Function('__s', '__h', '__o', '__g', '__f', '__iter', src);
+    } catch (err) {
+      throw new Error('模板语法错误：' + err.message);
+    }
+  }
+
+  function iter(v) {
+    if (!v) return [];
+    if (Array.isArray(v)) return v.map(function (x, i) { return [i, x]; });
+    if (typeof v === 'object') return Object.keys(v).map(function (k) { return [k, v[k]]; });
+    return [];
+  }
+
+  // 只有 $ 开头的名字进入 with 作用域（模板变量），避免遮蔽引擎内部的 __h/__g 等
+  function makeScope(obj) {
+    var target = obj || {};
+    return new Proxy(target, {
+      has: function (t, k) { return typeof k === 'string' && k.charCodeAt(0) === 36; },
+      get: function (t, k) {
+        if (t[k] !== undefined) return t[k];
+        return (typeof k === 'string' && k.charAt(0) === '$') ? t[k.slice(1)] : undefined;
+      }
+    });
+  }
+
+  var Engine = {
+    esc: esc,
+    fmtDate: fmtDate,
+    filters: FILTERS,
+    parse: parse,
+    collectIncludes: collectIncludes,
+    render: function (source, partials, scope) {
+      var ast = expand(parse(source).c, partials || {});
+      var fn = compile(ast);
+      var out = [];
+      fn(makeScope(scope || {}), out,
+        function (v) { return (v instanceof Safe) ? v.v : esc(v); },
+        function (f) { try { return f(); } catch (e) { return undefined; } },
+        FILTERS, iter);
+      return out.join('');
+    }
+  };
+
+  window.LillEngine = Engine;
+
+  /* ══════════════════ 二、运行时 ══════════════════ */
+
+  var app = document.getElementById('lill-app');
+  if (!app) return;
+
+  var API = window.lillAPI;
+  var pageType = app.getAttribute('data-page') || 'index';
+  var segs = location.pathname.split('/').filter(Boolean);
+  var slug = (pageType === 'post' || pageType === 'page' || pageType === 'category' || pageType === 'tag') ? (segs[1] || '') : '';
+  var qs = new URLSearchParams(location.search);
+  var pageNum = parseInt(qs.get('page')) || 1;
+  var keyword = qs.get('q') || '';
+  var month = qs.get('month') || '';
+
+  function setLoading() {
+    app.innerHTML = '<div class="lill-loading"><span class="lill-spinner"></span></div>';
+  }
+  function fail(msg) {
+    app.innerHTML = '<div class="lill-error"><h2>页面加载失败</h2><p>' + esc(msg) + '</p><p><a href="/">返回首页</a></p></div>';
+  }
+  function assetUrl(themeId, file) {
+    return '/themes/' + encodeURIComponent(themeId) + '/' + file;
+  }
+  function fetchText(url) {
+    return fetch(url, { cache: 'no-cache' }).then(function (r) {
+      return r.ok ? r.text() : null;
+    }).catch(function () { return null; });
+  }
+
+  // 递归加载模板 + 它引用到的所有片段
+  function loadTemplate(themeId, name, partials, seen) {
+    return fetchText(assetUrl(themeId, name + '.html')).then(function (src) {
+      if (src === null) return null;
+      partials[name] = src;   // ← 关键：把片段存入共享表，{include} 才能取到
+      var incs = collectIncludes(parse(src).c, []);
+      var jobs = [];
+      incs.forEach(function (inc) {
+        if (partials[inc] !== undefined || seen[inc]) return;
+        seen[inc] = true;
+        jobs.push(loadTemplate(themeId, inc, partials, seen));
+      });
+      return Promise.all(jobs).then(function () { return src; });
+    });
+  }
+
+  var FALLBACK = { index: [], post: ['index'], page: ['index'], archive: ['index'], category: ['index'], tag: ['index'], search: ['index'], '404': ['index'] };
+
+  function loadPageTemplate(themeId, type, extraFallback) {
+    var names = [type].concat(extraFallback || []).concat(FALLBACK[type] || []);
+    var partials = {}, seen = {};
+    function attempt(idx) {
+      if (idx >= names.length) return Promise.resolve(null);
+      return loadTemplate(themeId, names[idx], partials, seen).then(function (src) {
+        if (src === null) return attempt(idx + 1);
+        return { src: src, partials: partials };
+      });
+    }
+    return attempt(0);
+  }
+
+  function applyHead(boot) {
+    var site = boot.site || {}, page = boot.page || {}, theme = boot.theme || {};
+    var title = page.title || site.name || '';
+    document.title = (page.type === 'index' || !title) ? (site.name || 'lill') : (title + ' - ' + (site.name || 'lill'));
+    var md = document.querySelector('meta[name="description"]');
+    if (md && site.description) md.setAttribute('content', site.description);
+    if (theme.custom_css) {
+      var st = document.createElement('style');
+      st.id = 'lill-theme-custom-css';
+      st.textContent = theme.custom_css;
+      document.head.appendChild(st);
+    }
+    var assets = boot.themeAssets || {};
+    if (!assets.head) return Promise.resolve();
+    return fetchText(assetUrl(boot.themeId, 'head.html')).then(function (headSrc) {
+      if (!headSrc) return;
+      var html = Engine.render(headSrc, {}, { site: site, theme: theme, page: page, options: boot.options || {}, nav: boot.nav || [] });
+      var tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      Array.prototype.slice.call(tmp.childNodes).forEach(function (n) { document.head.appendChild(n); });
+    });
+  }
+
+  function enhance() {
+    // 评论表单：主题写 <form class="lill-comment-form" data-post-id="…">，运行时负责提交
+    Array.prototype.slice.call(app.querySelectorAll('form.lill-comment-form')).forEach(function (form) {
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var msg = form.querySelector('.lill-comment-msg');
+        var btn = form.querySelector('[type=submit]');
+        var g = function (n) { var el = form.querySelector('[name=' + n + ']'); return el ? el.value : ''; };
+        var body = { postId: form.getAttribute('data-post-id'), content: g('content'), authorName: g('authorName'), authorEmail: g('authorEmail'), authorUrl: g('authorUrl') };
+        if (!body.content.trim()) { if (msg) { msg.className = 'lill-comment-msg is-error'; msg.textContent = '请填写评论内容'; } return; }
+        if (btn) btn.disabled = true;
+        API.post('/comments', body).then(function () {
+          if (msg) { msg.className = 'lill-comment-msg is-ok'; msg.textContent = '评论已提交，审核通过后显示'; }
+          form.reset();
+        }).catch(function (err) {
+          if (msg) { msg.className = 'lill-comment-msg is-error'; msg.textContent = err.message || '提交失败'; }
+        }).then(function () { if (btn) btn.disabled = false; });
+      });
+    });
+    // 深色模式开关：<button data-lill-toggle="dark">
+    Array.prototype.slice.call(app.querySelectorAll('[data-lill-toggle="dark"]')).forEach(function (b) {
+      b.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var on = document.documentElement.classList.toggle('lill-dark');
+        try { localStorage.setItem('lill_dark', on ? '1' : '0'); } catch (e) {}
       });
     });
   }
 
-  // ─────────── 应用主题设置 ───────────
-  function applyConfig() {
-    const root = document.documentElement;
-    root.style.setProperty('--primary', val('color', '#4f46e5'));
-    document.body.classList.add('layout-' + val('layout', 'sidebar-right'));
-    document.body.classList.add('width-' + val('content_width', 'normal'));
-    const css = val('custom_css', '');
-    if (css) {
-      const style = document.createElement('style');
-      style.textContent = css;
-      document.head.appendChild(style);
+  function loadThemeScript(themeId, assets) {
+    if (assets && assets.script === false) return Promise.resolve();
+    return new Promise(function (resolve) {
+      var url = assetUrl(themeId, 'theme.js');
+      var s = document.createElement('script');
+      s.src = url + '?_=' + Date.now();
+      s.onload = resolve; s.onerror = resolve;
+      document.body.appendChild(s);
+    });
+  }
+
+  // 兼容旧版「shell.html + theme.js 适配器」主题
+  function legacyRender(themeId, boot) {
+    return fetchText(assetUrl(themeId, 'shell.html')).then(function (shell) {
+      if (shell === null) return false;
+      var site = boot.site || {};
+      var html = shell
+        .replace(/\{\{\s*site_name\s*\}\}/g, esc(site.name))
+        .replace(/\{\{\s*site_description\s*\}\}/g, esc(site.description))
+        .replace(/\{\{\s*content\s*\}\}/g, '<div class="lill-legacy-slot"></div>');
+      app.innerHTML = html;
+      if (!window.lillTheme) {
+        var cfg = boot.theme || {};
+        window.lillTheme = {
+          esc: esc, fmtDate: fmtDate, cfg: cfg, opts: boot.options || {}, ready: Promise.resolve(),
+          val: function (k, d) { var v = cfg[k]; return (v === undefined || v === null || v === '') ? (d === undefined ? '' : d) : v; },
+          on: function (k, d) { var v = cfg[k]; if (v === undefined || v === null || v === '') v = d; return v === true || v === 'true'; },
+          postCard: function () { return ''; }, renderNav: function () {}, renderSidebar: function () {}, applyConfig: function () {}
+        };
+      }
+      var css = document.createElement('link');
+      css.rel = 'stylesheet'; css.href = assetUrl(themeId, 'theme.css');
+      document.head.appendChild(css);
+      var s = document.createElement('script');
+      s.src = assetUrl(themeId, 'theme.js') + '?_=' + Date.now();
+      document.body.appendChild(s);
+      return true;
+    });
+  }
+
+  function applyThemeBody(scope) {
+    var t = scope.theme || {};
+    if (t.layout) document.body.classList.add('layout-' + t.layout);
+    if (t.content_width) document.body.classList.add('width-' + t.content_width);
+    if (t.color) document.documentElement.style.setProperty('--primary', t.color);
+  }
+
+  function render(boot) {
+    var themeId = boot.themeId || 'default';
+    var scope = {
+      site: boot.site || {}, theme: boot.theme || {}, page: boot.page || {},
+      nav: boot.nav || [], sidebar: boot.sidebar || {}, options: boot.options || {},
+      themeMeta: boot.themeMeta || {}, data: boot.data || {}
+    };
+    // data.* 平铺到顶层，模板里直接写 {$posts} / {$post} / {$comments}
+    Object.keys(boot.data || {}).forEach(function (k) { scope[k] = boot.data[k]; });
+    window.__LILL_SCOPE__ = scope;
+
+    // 老式「shell.html + theme.js 适配器」主题：没有任何页面模板，
+    // 直接走兼容渲染，避免对 index.html 之类的无意义 404 探测
+    var tplList = (boot.themeAssets || {}).templates || [];
+    var PAGE_TPL = ['index', 'post', 'page', 'archive', 'category', 'tag', 'search', '404'];
+    var hasPageTpl = PAGE_TPL.some(function (n) { return tplList.indexOf(n) !== -1; });
+    if (tplList.length > 0 && !hasPageTpl) {
+      return legacyRender(themeId, boot).then(function (done) {
+        if (!done) throw new Error('主题「' + themeId + '」缺少可识别的模板（既无 index.html，也无 shell.html）');
+      });
     }
-    const footer = document.getElementById('footer-text');
-    if (footer) footer.innerHTML = val('footer_text', 'Powered by lill') + ' &copy; ' + new Date().getFullYear();
+
+    // 独立页面自定义模板：后台为页面选了 page-xxx 模板时优先使用
+    var tplName = pageType;
+    if (pageType === 'page' && boot.data && boot.data.pageTemplate) tplName = boot.data.pageTemplate;
+
+    return loadPageTemplate(themeId, tplName, tplName !== 'page' ? ['page'] : null).then(function (tpl) {
+      if (!tpl) {
+        return legacyRender(themeId, boot).then(function (done) {
+          if (!done) throw new Error('主题「' + themeId + '」缺少 ' + tplName + '.html 模板');
+        });
+      }
+      if (!boot.themeAssets || boot.themeAssets.style !== false) {
+        var css = document.createElement('link');
+        css.rel = 'stylesheet';
+        css.href = assetUrl(themeId, 'style.css') + '?v=' + encodeURIComponent((boot.themeMeta || {}).version || '1');
+        document.head.appendChild(css);
+      }
+
+      var html;
+      try { html = Engine.render(tpl.src, tpl.partials, scope); }
+      catch (err) { throw new Error('主题模板渲染失败：' + err.message); }
+
+      app.innerHTML = html;
+      applyThemeBody(scope);
+      enhance();
+      return loadThemeScript(themeId, boot.themeAssets);
+    });
   }
 
-  async function init() {
-    // 始终拉取最新配置，保证后台改主题设置后前台立即生效
-    try {
-      const o = await API.get('/options/public');
-      Object.assign(opts, o || {});
-      Object.assign(cfg, (o && o.theme_config) || {});
-      try { localStorage.setItem('lill_theme_cache', JSON.stringify(cfg)); } catch (e) {}
-    } catch (e) {}
-    // 应用全局站点配置
-    if (opts.site_name) document.title = opts.site_name;
-    if (opts.site_description) { const meta = document.querySelector('meta[name="description"]'); if (meta) meta.content = opts.site_description; }
-    applyConfig();
-    renderNav();
-    renderSidebar();
-    _resolveReady();
-  }
+  setLoading();
+  try { if (localStorage.getItem('lill_dark') === '1') document.documentElement.classList.add('lill-dark'); } catch (e) {}
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
-
-  return { esc, fmtDate, val, on, postCard, cfg, opts, ready, renderNav, renderSidebar, applyConfig };
+  API.get('/site/bootstrap?type=' + encodeURIComponent(pageType) +
+    '&slug=' + encodeURIComponent(slug) +
+    '&page=' + pageNum +
+    '&path=' + encodeURIComponent(location.pathname) +
+    '&q=' + encodeURIComponent(keyword) +
+    '&month=' + encodeURIComponent(month))
+    .then(function (boot) {
+      return applyHead(boot).then(function () { return render(boot); });
+    })
+    .catch(function (err) { fail(err && err.message ? err.message : '未知错误'); });
 })();

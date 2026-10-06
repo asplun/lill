@@ -1,0 +1,13 @@
+{include header}
+<main class="main-content">
+  {if $posts}
+    {loop $posts as $post}
+      {include post-card}
+    {/loop}
+  {else}
+    <div class="empty"><p>还没有文章</p></div>
+  {/if}
+  {include pagination}
+</main>
+{include sidebar}
+{include footer}

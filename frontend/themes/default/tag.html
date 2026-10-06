@@ -1,0 +1,17 @@
+{include header}
+<main class="main-content">
+  <h2 class="page-heading">{$page.title}</h2>
+  {if $page.type == 'search' && $pagination && $pagination.total > 0}
+  <p class="lill-search-result-tip">共找到 {$pagination.total} 篇文章</p>
+  {/if}
+  {if $posts}
+    {loop $posts as $post}
+      {include post-card}
+    {/loop}
+    {include pagination}
+  {else}
+    <div class="empty"><p>{if $page.type == 'search'}没有找到相关文章{else}该{$page.type == 'tag' ? '标签' : '分类'}下暂无文章{/if}</p></div>
+  {/if}
+</main>
+{include sidebar}
+{include footer}

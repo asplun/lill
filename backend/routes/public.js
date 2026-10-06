@@ -2,6 +2,13 @@
  * lill 公开 API（前台使用，无需登录）
  * 由 server.js 调用 register(router, ctx) 装配
  */
+import { existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { scanThemeAssets, scanPageTemplates } from '../lib/themes.js';
+
+const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
+
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, authenticate, readThemeManifest } = ctx;
   const route = router.route;
@@ -40,6 +47,212 @@ function getPermalinkUrl(type, post, category, tag) {
   }
   return { url: '', route: '' };
 }
+
+
+// ════════════════════════════════════════
+// 主题渲染引导数据 /api/v1/site/bootstrap
+// 主题引擎一次请求拿全渲染所需数据，主题作者只需写 HTML + 标签
+// ════════════════════════════════════════
+function getOption(k, d) { const r = db.prepare('SELECT value FROM options WHERE key = ?').get(k); return (r && r.value) || d; }
+
+function buildThemeOptions() {
+  const rows = db.prepare('SELECT key, value FROM options WHERE autoload = 1').all();
+  const r = {}; rows.forEach(x => { r[x.key] = x.value; });
+  const activeTheme = db.prepare('SELECT * FROM themes WHERE active = 1').get();
+  if (activeTheme) {
+    let saved = {};
+    try { saved = JSON.parse(activeTheme.config || '{}'); } catch (e) { saved = {}; }
+    const manifest = readThemeManifest(activeTheme.theme_id);
+    const defaults = {};
+    if (manifest && Array.isArray(manifest.settings)) {
+      manifest.settings.forEach(f => { if (f.default !== undefined) defaults[f.key] = f.default; });
+    }
+    const cfg = { ...defaults, ...saved };
+    // 按 manifest 声明做类型规整，模板里可直接 {if $theme.xxx} 判断
+    if (manifest && Array.isArray(manifest.settings)) {
+      manifest.settings.forEach(f => {
+        const v = cfg[f.key];
+        if (v === undefined) return;
+        if (f.type === 'checkbox') cfg[f.key] = (v === true || v === 'true' || v === '1' || v === 1 || v === 'on');
+        else if (f.type === 'number') cfg[f.key] = Number(v) || 0;
+      });
+    }
+    r.theme_config = cfg;
+    r.active_theme = activeTheme.theme_id;
+    r.theme_meta = manifest ? { id: manifest.id, name: manifest.name, version: manifest.version, author: manifest.author, description: manifest.description, screenshot: manifest.screenshot || '' } : {};
+  } else {
+    r.theme_config = {}; r.active_theme = 'default'; r.theme_meta = {};
+  }
+  return r;
+}
+
+function decoratePost(p) {
+  const r = getPermalinkUrl('post', p, p.category_slug ? { slug: p.category_slug } : null);
+  p.permalink = r.url;
+  p.route = r.route;
+  p.url = r.route;              // 模板中 {$post.url} 直接用可访问地址
+  p.date = p.published_at || p.created_at || '';
+  return p;
+}
+
+function listPosts(o) {
+  const page = Math.max(1, parseInt(o.page) || 1);
+  const pageSize = Math.max(1, parseInt(o.pageSize) || 10);
+  const typeFilter = o.type || 'post';
+  let where = `WHERE p.status = 'published' AND p.type = ?`;
+  const params = [typeFilter];
+  if (o.categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(o.categorySlug); }
+  if (o.tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(o.tag); }
+  if (o.keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${o.keyword}%`, `%${o.keyword}%`, `%${o.keyword}%`); }
+  const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
+  const items = db.prepare(`
+    SELECT p.id, p.title, p.slug, p.excerpt, p.cover_image, p.view_count, p.sticky, p.published_at, p.created_at, p.category_id,
+           u.nickname as author_nickname, c.name as category_name, c.slug as category_slug${o.full ? ', p.html_content' : ''}
+    FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id
+    ${where} ORDER BY p.sticky DESC, p.published_at DESC, p.created_at DESC LIMIT ? OFFSET ?
+  `).all(...params, pageSize, (page - 1) * pageSize);
+  items.forEach(decoratePost);
+  return { items, meta: { total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)), hasNext: page * pageSize < total, hasPrev: page > 1 } };
+}
+
+function listCategories() {
+  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts WHERE category_id = c.id AND status = 'published') as post_count FROM categories c ORDER BY sort_order, name`).all();
+  cats.forEach(c => { const r = getPermalinkUrl('category', null, c); c.permalink = r.url; c.route = r.route; c.url = r.route; });
+  return cats;
+}
+
+function listTags() {
+  const tags = db.prepare(`SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND p.status = 'published') as post_count FROM tags t ORDER BY t.name`).all();
+  tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t); t.permalink = r.url; t.route = r.route; t.url = r.route; });
+  return tags;
+}
+
+function listArchives() {
+  return db.prepare(`SELECT strftime('%Y-%m', published_at) as ym, COUNT(*) as count FROM posts WHERE type = 'post' AND status = 'published' AND published_at IS NOT NULL GROUP BY ym ORDER BY ym DESC`).all();
+}
+
+function listRecentComments(limit) {
+  const items = db.prepare(`
+    SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
+           p.title as post_title, p.slug as post_slug, u.nickname, u.avatar
+    FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id
+    WHERE c.status = 'approved' ORDER BY c.created_at DESC LIMIT ?
+  `).all(limit || 5);
+  items.forEach(c => { c.post_url = '/post/' + c.post_slug; c.post_route = '/post/' + c.post_slug; c.author = c.nickname || c.author_name || '匿名'; });
+  return items;
+}
+
+route('GET', '/api/v1/site/bootstrap', async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const type = url.searchParams.get('type') || 'index';
+  const slug = url.searchParams.get('slug') || '';
+  const page = parseInt(url.searchParams.get('page')) || 1;
+  const q = url.searchParams.get('q') || '';
+  const month = url.searchParams.get('month') || '';
+
+  const options = buildThemeOptions();
+  const cfg = options.theme_config || {};
+  const perPage = parseInt(options.posts_per_page) || 10;
+  const activeThemeId = options.active_theme || 'default';
+  const pageTemplatesList = scanPageTemplates(activeThemeId, __themeDir);
+
+  const cats = listCategories();
+  const pagesList = db.prepare(`SELECT id, title, slug FROM posts WHERE type = 'page' AND status = 'published' ORDER BY "order" ASC, created_at ASC`).all();
+  const nav = [
+    { title: '首页', url: '/', type: 'index', slug: '', active: type === 'index' },
+    ...cats.map(c => ({ title: c.name, url: c.route, type: 'category', slug: c.slug, active: type === 'category' && slug === c.slug })),
+    ...pagesList.map(p => ({ title: p.title, url: '/page/' + p.slug, type: 'page', slug: p.slug, active: type === 'page' && slug === p.slug })),
+    { title: '归档', url: '/archive', type: 'archive', slug: '', active: type === 'archive' },
+  ];
+
+  const sidebar = {
+    recentPosts: listPosts({ pageSize: 5 }).items,
+    categories: cats,
+    tags: listTags(),
+    archives: listArchives(),
+    recentComments: listRecentComments(5),
+  };
+
+  const frontPath = url.searchParams.get('path') || '';
+  const pageInfo = { type, slug, url: frontPath || ('/' + (type === 'index' ? '' : type + '/')), title: '', query: { page, q, month } };
+  let data = {};
+
+  if (type === 'post' || type === 'page') {
+    const post = db.prepare('SELECT p.*, u.nickname as author_nickname, u.avatar as author_avatar, c.name as category_name, c.slug as category_slug FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE p.slug = ? AND p.status = \'published\'').get(slug);
+    if (!post) return error(res, '内容不存在', 404);
+    post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
+    post.prev = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at < ? ORDER BY published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
+    post.next = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at > ? ORDER BY published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
+    if (post.prev) post.prev.url = '/post/' + post.prev.slug;
+    if (post.next) post.next.url = '/post/' + post.next.slug;
+    decoratePost(post);
+    post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
+    pageInfo.title = post.title;
+    data.post = post;
+    // 独立页面自定义模板（对标 Typecho 的 page-xxx.php）
+    // 页面记录里的 template 字段保存模板 key（如 page-links），仅当主题里确实存在该文件时才生效
+    if (type === 'page' && post.template) {
+      const tpl = pageTemplatesList.find(t => t.key === post.template);
+      if (tpl) { data.pageTemplate = tpl.key; pageInfo.template = tpl.key; pageInfo.templateName = tpl.name; }
+    }
+    if (type === 'post') {
+      const total = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved' AND parent_id IS NULL`).get(post.id).c;
+      const items = db.prepare(`SELECT c.*, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? AND c.status = 'approved' AND c.parent_id IS NULL ORDER BY c.created_at DESC LIMIT 50`).all(post.id);
+      for (const c of items) c.replies = db.prepare(`SELECT c.*, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.parent_id = ? AND c.status = 'approved' ORDER BY c.created_at ASC`).all(c.id);
+      const norm = (c) => { c.author = c.nickname || c.author_name || '匿名'; c.date = c.created_at; return c; };
+      items.forEach(c => { norm(c); (c.replies || []).forEach(norm); });
+      data.comments = items;
+      data.commentMeta = { total };
+      data.commentAllowed = post.comment_allowed !== 0;
+    }
+  } else if (type === 'archive') {
+    const all = listPosts({ pageSize: 500, type: 'post' }).items;
+    const posts = month ? all.filter(p => String(p.published_at || '').startsWith(month)) : all;
+    const map = {};
+    posts.forEach(p => { const ym = String(p.published_at || '').substring(0, 7) || '未知'; (map[ym] = map[ym] || []).push(p); });
+    data.groups = Object.keys(map).sort().reverse().map(ym => ({ ym, count: map[ym].length, posts: map[ym] }));
+    data.month = month;
+    data.posts = posts;
+    pageInfo.title = month ? '归档：' + month : '文章归档';
+  } else if (type === 'category') {
+    const cat = cats.find(c => c.slug === slug) || null;
+    if (!cat) return error(res, '分类不存在', 404);
+    const d = listPosts({ categorySlug: slug, page, pageSize: perPage });
+    data.category = cat; data.posts = d.items; data.pagination = d.meta;
+    pageInfo.title = '分类：' + cat.name;
+  } else if (type === 'tag') {
+    const tag = listTags().find(t => t.slug === slug) || null;
+    if (!tag) return error(res, '标签不存在', 404);
+    const d = listPosts({ tag: slug, page, pageSize: perPage });
+    data.tag = tag; data.posts = d.items; data.pagination = d.meta;
+    pageInfo.title = '标签：' + tag.name;
+  } else if (type === 'search') {
+    const d = listPosts({ keyword: q, page, pageSize: perPage });
+    data.keyword = q; data.posts = d.items; data.pagination = d.meta;
+    pageInfo.title = q ? '搜索：' + q : '搜索';
+  } else if (type === 'index') {
+    const d = listPosts({ page, pageSize: perPage, full: cfg.home_mode === 'full' });
+    data.posts = d.items; data.pagination = d.meta;
+    pageInfo.title = options.site_name || '首页';
+  } else {
+    pageInfo.title = '页面不存在';
+    data.notFound = true;
+  }
+
+  json(res, {
+    options,
+    site: { name: options.site_name || 'lill 博客', description: options.site_description || '', url: (options.site_url || '').replace(/\/$/, ''), year: new Date().getFullYear() },
+    theme: cfg,
+    themeId: options.active_theme || 'default',
+    themeMeta: options.theme_meta || {},
+    themeAssets: scanThemeAssets(activeThemeId, __themeDir),
+    pageTemplates: pageTemplatesList,
+    nav,
+    sidebar,
+    page: pageInfo,
+    data,
+  });
+});
 
 
 // 文章列表（支持分页、分类、标签、关键词搜索）
