@@ -228,7 +228,23 @@ route('POST', '/api/v1/admin/media/upload', async (req, res) => {
   const safeExt = ['.jpg','.jpeg','.png','.gif','.webp','.svg','.pdf','.txt','.md','.zip'].includes(ext) ? ext : '';
   const filename = Date.now().toString(36) + '-' + randomBytes(4).toString('hex') + safeExt;
   const fp = join(UPLOAD_DIR, filename);
-  writeFileSync(fp, Buffer.from(body.data, 'base64'));
+  const fileBuf = Buffer.from(body.data, 'base64');
+  // MIME 魔数校验：防止伪装文件类型
+  const mimeMap = [
+    { ext: '.jpg', magic: [0xFF, 0xD8, 0xFF] },
+    { ext: '.jpeg', magic: [0xFF, 0xD8, 0xFF] },
+    { ext: '.png', magic: [0x89, 0x50, 0x4E, 0x47] },
+    { ext: '.gif', magic: [0x47, 0x49, 0x46, 0x38] },
+    { ext: '.webp', magic: [0x52, 0x49, 0x46, 0x46] },
+    { ext: '.pdf', magic: [0x25, 0x50, 0x44, 0x46] },
+    { ext: '.zip', magic: [0x50, 0x4B, 0x03, 0x04] },
+  ];
+  const mimeCheck = mimeMap.find(m => m.ext === safeExt);
+  if (mimeCheck) {
+    const ok = mimeCheck.magic.every((b, i) => fileBuf[i] === b);
+    if (!ok) return error(res, '文件类型与扩展名不符', 400);
+  }
+  writeFileSync(fp, fileBuf);
   const id = uid();
   const url = '/uploads/' + filename;
   const size = Buffer.from(body.data, 'base64').length;
@@ -338,6 +354,8 @@ route('POST', '/api/v1/admin/themes/:themeId/activate', async (req, res, params)
   if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(params.themeId)) db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), params.themeId, params.themeId, '1.0.0');
   db.prepare('UPDATE themes SET active = 0').run();
   db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(params.themeId);
+  // 同步更新 options.active_theme，消除双写不一致
+  db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), params.themeId);
   json(res, { themeId: params.themeId, active: true });
 }, true);
 
@@ -548,13 +566,27 @@ route('GET', '/api/v1/admin/logs', async (req, res) => {
 
 route('POST', '/api/v1/admin/backup', async (req, res) => {
   await authenticate(req);
-  const { copyFileSync } = await import('node:fs');
+  const { copyFileSync, existsSync, mkdirSync } = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
+  const { execSync } = await import('node:child_process');
   const __dirname = fileURLToPath(new URL('.', import.meta.url));
   const src = join(__dirname, '..', 'data', 'lill.db');
-  const dst = join(__dirname, '..', 'data', 'lill-backup-' + Date.now() + '.db');
+  const backupDir = join(__dirname, '..', 'data', 'backups');
+  mkdirSync(backupDir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dst = join(backupDir, 'lill-backup-' + ts + '.db');
   copyFileSync(src, dst);
-  json(res, { path: dst, message: '备份成功' });
+  // 同时打包 uploads/ 目录
+  const uploadsDir = join(__dirname, '..', 'uploads');
+  let uploadInfo = null;
+  if (existsSync(uploadsDir)) {
+    const zipPath = join(backupDir, 'lill-uploads-' + ts + '.zip');
+    try {
+      execSync(`cd "${uploadsDir}" && zip -r "${zipPath}" . -x '.*'`, { stdio: 'pipe' });
+      uploadInfo = { path: zipPath, message: '附件已打包' };
+    } catch (e) { uploadInfo = { message: '附件打包失败: ' + e.message }; }
+  }
+  json(res, { path: dst, uploads: uploadInfo, message: '备份成功' });
 }, true);
 
 route('GET', '/api/v1/admin/stats/dashboard', async (req, res) => {

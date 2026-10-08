@@ -56,6 +56,11 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_posts_slug ON posts(slug);
   CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status);
+  CREATE INDEX IF NOT EXISTS idx_posts_type ON posts(type);
+  CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(category_id);
+  CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at);
+  CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
+  CREATE INDEX IF NOT EXISTS idx_posts_type_status ON posts(type, status);
   CREATE TABLE IF NOT EXISTS categories (
     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
     description TEXT, parent_id TEXT, sort_order INTEGER DEFAULT 0,
@@ -304,6 +309,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';");
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -344,7 +351,7 @@ const server = http.createServer(async (req, res) => {
     const status = (e.message === '未登录' || e.message === 'Token expired' || e.message === 'Invalid') ? 401 : 500;
     logRequest(req.method, path, status, Date.now() - startTime);
     if (status === 401) error(res, '未登录', 401);
-    else error(res, e.message || '服务器错误', 500);
+    else { console.error('Internal error:', e); error(res, '服务器内部错误', 500); }
   }
 });
 

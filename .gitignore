@@ -36,3 +36,12 @@ Thumbs.db
 # Temp
 tmp/
 temp/
+
+# Legacy / backup dirs
+frontend/.backup/
+frontend/dist.old.*/
+frontend/themes/_legacy-default/
+frontend/themes/trim3/
+
+# Staging dirs
+*.staging-*
