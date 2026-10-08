@@ -56,7 +56,32 @@ export function register(router, ctx) {
   });
 
   // ── 执行安装 ──
-  route('POST', '/api/v1/install', async (req, res) => {
+  route('POST', '/api/v1/install/reset', async (req, res) => {
+  // 限流：同一 IP 每分钟最多 3 次重置尝试
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit('install-reset:' + ip, 3, 60 * 1000)) {
+    return error(res, '请求过于频繁，请稍后再试', 429);
+  }
+  const body = await parseBody(req);
+  if (body.confirm !== 'RESET') return error(res, '请确认重置操作（confirm: RESET）', 400);
+  try {
+    // 删除所有数据表
+    const tables = ['users', 'posts', 'categories', 'tags', 'post_tags', 'comments', 'media', 'options', 'logs', 'themes'];
+    db.exec('BEGIN');
+    for (const t of tables) {
+      db.exec('DROP TABLE IF EXISTS ' + t);
+    }
+    db.exec('COMMIT');
+    console.log('✓ 数据库已清空，请重新安装');
+    json(res, { reset: true, message: '数据库已清空，请重新安装' });
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
+    console.error('✗ 重置失败:', e.message);
+    return error(res, '重置失败：' + e.message, 500);
+  }
+});
+
+route('POST', '/api/v1/install', async (req, res) => {
     // 限流：同一 IP 每分钟最多 10 次安装尝试
     const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
     if (!checkRateLimit('install:' + ip, 10, 60 * 1000)) {

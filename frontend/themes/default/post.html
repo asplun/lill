@@ -34,6 +34,7 @@
           <div class="comment-body">
             <div class="comment-head"><strong>{$c.author}</strong><span>{$c.created_at|date}</span></div>
             <div class="comment-text">{$c.content|nl2br}</div>
+            <div class="comment-actions"><button class="comment-reply-btn" data-post-id="{$post.id}">回复</button></div>
           </div>
         </div>
         {if $c.replies}
@@ -62,9 +63,10 @@
         <input type="email" name="authorEmail" placeholder="邮箱（不会公开）">
         <input type="url" name="authorUrl" placeholder="网站（可选）">
       </div>
-      <textarea name="content" rows="4" placeholder="说点什么..." required></textarea>
+      <textarea name="content" rows="4" placeholder="说点什么..." required maxlength="2000"></textarea>
       <div class="comment-form-footer">
         <span class="lill-comment-msg"></span>
+        <span class="comment-char-count">0 / 2000</span>
         <button type="submit" class="comment-submit">发表评论</button>
       </div>
     </form>

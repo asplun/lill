@@ -9,6 +9,20 @@ import { scanThemeAssets, scanPageTemplates } from '../lib/themes.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
+// 主题配置内存缓存（5 秒 TTL，避免每次请求都 JSON.parse）
+const themeConfigCache = new Map();
+function getCachedThemeConfig(themeId) {
+  const cached = themeConfigCache.get(themeId);
+  if (cached && cached.timestamp > Date.now() - 5000) return cached.data;
+  const theme = db.prepare('SELECT * FROM themes WHERE theme_id = ? AND active = 1').get(themeId);
+  if (!theme) return {};
+  let config = {};
+  try { config = JSON.parse(theme.config || '{}'); } catch (e) {}
+  themeConfigCache.set(themeId, { data: config, timestamp: Date.now() });
+  return config;
+}
+function invalidateThemeConfigCache() { themeConfigCache.clear(); }
+
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, authenticate, readThemeManifest } = ctx;
   const route = router.route;
@@ -103,7 +117,7 @@ function listPosts(o) {
   const params = [typeFilter];
   if (o.categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(o.categorySlug); }
   if (o.tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(o.tag); }
-  if (o.keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${o.keyword}%`, `%${o.keyword}%`, `%${o.keyword}%`); }
+  if (o.keyword) { const kw = o.keyword.replace(/[%_]/g, ''); where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`); }
   const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
   const items = db.prepare(`
     SELECT p.id, p.title, p.slug, p.excerpt, p.cover_image, p.view_count, p.sticky, p.published_at, p.created_at, p.category_id,
@@ -327,7 +341,13 @@ route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
   post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
   post.prev = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at < ? ORDER BY published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
   post.next = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at > ? ORDER BY published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
-  db.prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?').run(post.id);
+  // 浏览计数去重：同一 IP 5 分钟内只计一次
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+    const recentView = db.prepare('SELECT created_at FROM logs WHERE action = ? AND ip = ? AND created_at > datetime(\'now\', \'-5 minutes\')').get('view:' + post.id, ip);
+    if (!recentView) {
+      db.prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?').run(post.id);
+      db.prepare('INSERT INTO logs (id, action, detail, ip) VALUES (?, ?, ?, ?)').run(uid(), 'view:' + post.id, post.id, ip);
+    }
   const postUrlResult = getPermalinkUrl('post', post, post.category_id ? { slug: post.category_slug } : null); post.url = postUrlResult.url; post.route = postUrlResult.route;
   json(res, post);
 });

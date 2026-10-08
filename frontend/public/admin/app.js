@@ -248,7 +248,10 @@ async function renderBackup() {
 }
 
 window.createBackup = async () => {
+  const btn = document.querySelector('button[onclick="createBackup()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '备份中...'; }
   try { const r = await api('/admin/backup', { method: 'POST' }); toast('备份成功: ' + r.path); } catch (e) { toast(e.message, 'error'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '立即创建备份'; } }
 };
 
 // ═══ 分类 ═══
@@ -511,13 +514,12 @@ window.openThemeSettings = async (themeId) => {
 };
 
 window.saveThemeSettings = async (themeId) => {
-  const schema = (await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings')).schema || [];
+  // 直接从 DOM 读取 schema（避免重复 GET 请求）
   const body = {};
-  schema.forEach(f => {
-    const el = document.getElementById('ts_' + f.key);
-    if (!el) return;
-    if (f.type === 'checkbox') body[f.key] = el.checked ? 'true' : 'false';
-    else body[f.key] = el.value;
+  document.querySelectorAll('[data-ts-key]').forEach(el => {
+    const key = el.getAttribute('data-ts-key');
+    if (el.type === 'checkbox') body[key] = el.checked ? 'true' : 'false';
+    else body[key] = el.value;
   });
   try {
     await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings', { method: 'PUT', body });

@@ -191,6 +191,20 @@ route('DELETE', '/api/v1/admin/tags/:id', async (req, res, params) => {
   json(res, { id: params.id });
 }, true);
 
+route('GET', '/api/v1/admin/comments/export', async (req, res) => {
+  const auth = await authenticate(req);
+  if (!['admin', 'editor'].includes(auth.role)) return error(res, '权限不足', 403);
+  const items = db.prepare('SELECT c.*, p.title as post_title, u.username FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id ORDER BY c.created_at DESC').all();
+  // CSV 格式导出
+  const header = 'ID,内容,文章,作者,邮箱,状态,日期\n';
+  const rows = items.map(c => {
+    const esc = s => '"' + String(s || '').replace(/"/g, '""') + '"';
+    return [c.id, esc(c.content), esc(c.post_title), esc(c.author_name || c.username), esc(c.author_email), c.status, c.created_at].join(',');
+  }).join('\n');
+  res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="comments.csv"' });
+  res.end('\uFEFF' + header + rows); // BOM for Excel
+}, true);
+
 route('GET', '/api/v1/admin/comments', async (req, res) => {
   await authenticate(req);
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -215,6 +229,7 @@ route('PATCH', '/api/v1/admin/comments/:id/status', async (req, res, params) => 
 
 route('DELETE', '/api/v1/admin/comments/:id', async (req, res, params) => {
   const auth = await authenticate(req);
+  if (!['admin', 'editor'].includes(auth.role)) return error(res, '权限不足', 403);
   db.prepare('DELETE FROM comments WHERE id = ?').run(params.id);
   logAction(auth.id, 'comment.delete', '删除评论: ' + params.id, req);
   json(res, { id: params.id });
@@ -248,7 +263,36 @@ route('POST', '/api/v1/admin/media/upload', async (req, res) => {
   const id = uid();
   const url = '/uploads/' + filename;
   const size = Buffer.from(body.data, 'base64').length;
-  db.prepare('INSERT INTO media (id, name, path, url, mime_type, size, alt, uploader_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, body.name, fp, url, body.mime || 'application/octet-stream', size, body.alt || null, auth.id);
+  // 读取图片尺寸（仅图片类型）
+  let width = null, height = null;
+  if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(safeExt)) {
+    try {
+      // 简单的图片尺寸读取（不依赖外部库）
+      if (safeExt === '.png') {
+        width = fileBuf.readUInt32BE(16);
+        height = fileBuf.readUInt32BE(20);
+      } else if (safeExt === '.gif') {
+        width = fileBuf.readUInt16LE(6);
+        height = fileBuf.readUInt16LE(8);
+      } else if (safeExt === '.jpg' || safeExt === '.jpeg') {
+        // JPEG 需要扫描 SOF 标记
+        let offset = 2;
+        while (offset < fileBuf.length - 9) {
+          if (fileBuf[offset] === 0xFF) {
+            const marker = fileBuf[offset + 1];
+            if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+              height = fileBuf.readUInt16BE(offset + 5);
+              width = fileBuf.readUInt16BE(offset + 7);
+              break;
+            }
+            const len = fileBuf.readUInt16BE(offset + 2);
+            offset += 2 + len;
+          } else { offset++; }
+        }
+      }
+    } catch (e) { /* 尺寸读取失败不影响上传 */ }
+  }
+  db.prepare('INSERT INTO media (id, name, path, url, mime_type, size, width, height, alt, uploader_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, body.name, fp, url, body.mime || 'application/octet-stream', size, width, height, body.alt || null, auth.id);
   json(res, db.prepare('SELECT * FROM media WHERE id = ?').get(id), 201);
 }, true);
 
@@ -262,8 +306,9 @@ route('GET', '/api/v1/admin/media', async (req, res) => {
 }, true);
 
 route('DELETE', '/api/v1/admin/media/:id', async (req, res, params) => {
-  await authenticate(req);
+  const auth = await authenticate(req);
   const media = db.prepare('SELECT * FROM media WHERE id = ?').get(params.id);
+  if (auth.role !== 'admin' && media.uploader_id !== auth.id) return error(res, '权限不足', 403);
   if (!media) return error(res, '文件不存在', 404);
   try { const { unlinkSync } = await import('node:fs'); unlinkSync(media.path); } catch {}
   db.prepare('DELETE FROM media WHERE id = ?').run(params.id);
@@ -280,7 +325,8 @@ route('GET', '/api/v1/admin/users', async (req, res) => {
 }, true);
 
 route('POST', '/api/v1/admin/users', async (req, res) => {
-  await authenticate(req);
+  const auth = await authenticate(req);
+  if (auth.role !== 'admin') return error(res, '权限不足', 403);
   const body = await parseBody(req);
   validators.required(body.username, '用户名');
   validators.string(body.username, '用户名', 50);
@@ -294,7 +340,8 @@ route('POST', '/api/v1/admin/users', async (req, res) => {
 }, true);
 
 route('PUT', '/api/v1/admin/users/:id', async (req, res, params) => {
-  await authenticate(req);
+  const auth = await authenticate(req);
+  if (auth.role !== 'admin') return error(res, '权限不足', 403);
   const body = await parseBody(req);
   const updates = [], args = [];
   for (const f of ['nickname', 'email', 'avatar', 'bio', 'role', 'status']) { if (body[f] !== undefined) { updates.push(f + ' = ?'); args.push(body[f]); } }
@@ -305,6 +352,8 @@ route('PUT', '/api/v1/admin/users/:id', async (req, res, params) => {
 
 route('DELETE', '/api/v1/admin/users/:id', async (req, res, params) => {
   const auth = await authenticate(req);
+  if (auth.role !== 'admin') return error(res, '权限不足', 403);
+  if (auth.id === params.id) return error(res, '不能删除自己', 400);
   db.prepare('DELETE FROM users WHERE id = ?').run(params.id);
   logAction(auth.id, 'user.delete', '删除用户: ' + params.id, req);
   json(res, { id: params.id });
@@ -378,6 +427,8 @@ route('PUT', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) 
   try { config = JSON.parse(theme.config || '{}'); } catch (e) {}
   const merged = { ...config, ...body };
   db.prepare("UPDATE themes SET config = ? WHERE theme_id = ?").run(JSON.stringify(merged), params.themeId);
+  // 清除主题配置缓存
+  if (typeof invalidateThemeConfigCache === 'function') invalidateThemeConfigCache();
   json(res, merged);
 }, true);
 
@@ -553,6 +604,15 @@ route('POST', '/api/v1/admin/posts/batch', async (req, res) => {
 
 // ═══ 新增：操作日志 ═══
 
+route('DELETE', '/api/v1/admin/logs', async (req, res) => {
+  const auth = await authenticate(req);
+  if (auth.role !== 'admin') return error(res, '权限不足', 403);
+  const body = await parseBody(req);
+  const days = parseInt(body.days) || 30;
+  const result = db.prepare("DELETE FROM logs WHERE created_at < datetime('now', '-' || ? || ' days')").run(days);
+  json(res, { deleted: result.changes });
+}, true);
+
 route('GET', '/api/v1/admin/logs', async (req, res) => {
   await authenticate(req);
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -586,6 +646,23 @@ route('POST', '/api/v1/admin/backup', async (req, res) => {
       uploadInfo = { path: zipPath, message: '附件已打包' };
     } catch (e) { uploadInfo = { message: '附件打包失败: ' + e.message }; }
   }
+  // 自动清理 30 天前的备份文件
+  try {
+    const { readdirSync, unlinkSync, statSync } = await import('node:fs');
+    const files = readdirSync(backupDir);
+    const now = Date.now();
+    let cleaned = 0;
+    for (const f of files) {
+      if (!f.startsWith('lill-backup-')) continue;
+      const fp = join(backupDir, f);
+      const stat = statSync(fp);
+      if (now - stat.mtimeMs > 30 * 24 * 60 * 60 * 1000) {
+        unlinkSync(fp);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) console.log('🧹 清理了 ' + cleaned + ' 个过期备份');
+  } catch (e) { /* 清理失败不影响备份 */ }
   json(res, { path: dst, uploads: uploadInfo, message: '备份成功' });
 }, true);
 
