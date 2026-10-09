@@ -9,6 +9,9 @@ window.lillAPI = (() => {
   // 当前页面渲染作用域：切换页面时取消上一页未完成的 GET 请求，避免竞态和"永久转圈"
   let renderScope = null;
 
+  // 请求去重：相同 method+path+body 的并发 GET 复用同一个 Promise
+  const pendingRequests = new Map();
+
   function newRenderScope() {
     if (renderScope) renderScope.abort();
     renderScope = new AbortController();
@@ -45,54 +48,63 @@ window.lillAPI = (() => {
     const scope = options.signal || (method === 'GET' ? (renderScope && renderScope.signal) : null);
     const timeoutMs = options.timeout || DEFAULT_TIMEOUT;
 
-    const controller = new AbortController();
-    const onScopeAbort = () => controller.abort();
-    if (scope) {
-      if (scope.aborted) throw new Error('请求已取消');
-      scope.addEventListener('abort', onScopeAbort, { once: true })();
-  pendingRequests.set(dedupeKey, promise);
-  try {
-    return await promise;
-  } finally {
-    pendingRequests.delete(dedupeKey);
-  }
-    }
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    const config = { method, headers, signal: controller.signal };
-    if (options.body !== undefined) config.body = JSON.stringify(options.body);
-
-    let res;
-    try {
-      res = await fetch(BASE + path, config);
-    } catch (e) {
-      if (scope && scope.aborted) throw new Error('请求已取消');
-      if (e.name === 'AbortError') throw new Error('请求超时，请重试');
-      throw new Error('网络错误，请检查连接');
-    } finally {
-      clearTimeout(timer);
-      if (scope) scope.removeEventListener('abort', onScopeAbort);
+    // 去重键：仅 GET 参与去重（写操作必须真实发出）
+    const dedupeKey = method + ' ' + path + ' ' + (options.body !== undefined ? JSON.stringify(options.body) : '');
+    if (method === 'GET' && pendingRequests.has(dedupeKey)) {
+      return pendingRequests.get(dedupeKey);
     }
 
-    const text = await res.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      throw new Error('服务器返回异常 (HTTP ' + res.status + ')');
-    }
-
-    if (data.code !== 0) {
-      if (res.status === 401) {
-        setToken(null);
-        setCSRFToken(null);
-        if (!location.pathname.startsWith('/admin/login')) {
-          location.href = '/admin/login';
-        }
+    const run = (async () => {
+      const controller = new AbortController();
+      const onScopeAbort = () => controller.abort();
+      if (scope) {
+        if (scope.aborted) throw new Error('请求已取消');
+        scope.addEventListener('abort', onScopeAbort, { once: true });
       }
-      throw new Error(data.message || '请求失败');
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      const config = { method, headers, signal: controller.signal };
+      if (options.body !== undefined) config.body = JSON.stringify(options.body);
+
+      let res;
+      try {
+        res = await fetch(BASE + path, config);
+      } catch (e) {
+        if (scope && scope.aborted) throw new Error('请求已取消');
+        if (e.name === 'AbortError') throw new Error('请求超时，请重试');
+        throw new Error('网络错误，请检查连接');
+      } finally {
+        clearTimeout(timer);
+        if (scope) scope.removeEventListener('abort', onScopeAbort);
+      }
+
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error('服务器返回异常 (HTTP ' + res.status + ')');
+      }
+
+      if (data.code !== 0) {
+        if (res.status === 401) {
+          setToken(null);
+          setCSRFToken(null);
+          if (!location.pathname.startsWith('/admin/login')) {
+            location.href = '/admin/login';
+          }
+        }
+        throw new Error(data.message || '请求失败');
+      }
+      return data.data;
+    })();
+
+    if (method === 'GET') {
+      pendingRequests.set(dedupeKey, run);
+      const cleanup = () => pendingRequests.delete(dedupeKey);
+      run.then(cleanup, cleanup);
     }
-    return data.data;
+    return run;
   }
 
   return {

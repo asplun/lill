@@ -20,14 +20,17 @@ export const slugify = (t) => {
  */
 export const renderMD = (md) => {
   if (!md) return '';
-  let html = String(md);
+  // 0. 先转义原始输入（防 XSS），之后所有转换都作用于已转义文本
+  let html = String(md)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 
-  // 1. 代码块（先处理，避免内部被转义）
+  // 1. 代码块（此时内容已转义，直接原样保留）
   const codeBlocks = [];
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
-    const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    codeBlocks.push('<pre><code class="language-' + (lang || 'text') + '">' + escaped + '</code></pre>');
+    codeBlocks.push('<pre><code class="language-' + (lang || 'text') + '">' + code.replace(/\n$/, '') + '</code></pre>');
     return '\x00CODE' + idx + '\x00';
   });
 
@@ -88,10 +91,14 @@ export const renderMD = (md) => {
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" loading="lazy">');
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
-  // 11. 段落
-  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  html = html.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
-  html = '<p>' + html + '</p>';
+  // 11. 段落：按空行分块；块级标签与代码块占位符不再被 <p> 包裹
+  const BLOCK = /^(<(h[1-6]|ul|ol|pre|blockquote|table|hr|div)\b|\x00CODE\d+\x00)/i;
+  html = html.split(/\n{2,}/).map((block) => {
+    const t = block.trim();
+    if (!t) return '';
+    if (BLOCK.test(t)) return t;
+    return '<p>' + t.replace(/\n/g, '<br>') + '</p>';
+  }).filter(Boolean).join('\n');
 
   // 12. 还原代码块
   html = html.replace(/\x00CODE(\d+)\x00/g, (_, i) => codeBlocks[parseInt(i)]);

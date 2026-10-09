@@ -47,6 +47,44 @@
 | 数据库 | SQLite |
 | 部署 | Nginx + PM2 |
 
+## 界面预览
+
+**前台（默认主题）**
+
+![前台首页](screenshots/front-home.png)
+
+| 文章页 | 归档页 |
+|:---:|:---:|
+| ![文章页](screenshots/front-post.png) | ![归档页](screenshots/front-archive.png) |
+
+**后台管理**（`/admin/`，与前台完全分离）
+
+![后台控制台](screenshots/admin-dashboard.png)
+
+| 文章管理 | 文章编辑器 |
+|:---:|:---:|
+| ![文章管理](screenshots/admin-posts.png) | ![文章编辑器](screenshots/admin-post-editor.png) |
+
+| 外观 · 主题列表 | 外观 · 主题专属设置 |
+|:---:|:---:|
+| ![主题列表](screenshots/admin-themes.png) | ![主题设置](screenshots/admin-theme-settings.png) |
+
+| 分类 | 标签 |
+|:---:|:---:|
+| ![分类](screenshots/admin-categories.png) | ![标签](screenshots/admin-tags.png) |
+
+| 评论 | 附件 |
+|:---:|:---:|
+| ![评论](screenshots/admin-comments.png) | ![附件](screenshots/admin-media.png) |
+
+| 用户 | 设置 |
+|:---:|:---:|
+| ![用户](screenshots/admin-users.png) | ![设置](screenshots/admin-settings.png) |
+
+| 登录 | 日志 | 备份 |
+|:---:|:---:|:---:|
+| ![登录](screenshots/admin-login.png) | ![日志](screenshots/admin-logs.png) | ![备份](screenshots/admin-backup.png) |
+
 ## 快速开始
 
 ### 1. 环境要求

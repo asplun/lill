@@ -44,6 +44,7 @@ db.exec(`
     role TEXT DEFAULT 'subscriber', status TEXT DEFAULT 'active',
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   );
+
   CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL,
     content TEXT NOT NULL DEFAULT '', html_content TEXT, excerpt TEXT, cover_image TEXT,
@@ -61,18 +62,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at);
   CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
   CREATE INDEX IF NOT EXISTS idx_posts_type_status ON posts(type, status);
-  CREATE INDEX IF NOT EXISTS idx_categories_slug ON categories(slug);
+
   CREATE TABLE IF NOT EXISTS categories (
     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
     description TEXT, parent_id TEXT, sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
-  CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(slug);
+  CREATE INDEX IF NOT EXISTS idx_categories_slug ON categories(slug);
+
   CREATE TABLE IF NOT EXISTS tags (
     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(slug);
+
   CREATE TABLE IF NOT EXISTS post_tags (post_id TEXT, tag_id TEXT, PRIMARY KEY (post_id, tag_id));
+
   CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY, content TEXT NOT NULL, status TEXT DEFAULT 'pending',
     user_agent TEXT, ip TEXT, parent_id TEXT, author_name TEXT, author_email TEXT, author_url TEXT,
@@ -81,26 +86,25 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
   CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
   CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
-  CREATE INDEX IF NOT EXISTS idx_media_uploader ON media(uploader_id);
-  CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
+
   CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, url TEXT NOT NULL,
     mime_type TEXT NOT NULL, size INTEGER DEFAULT 0, width INTEGER, height INTEGER,
     alt TEXT, post_id TEXT, uploader_id TEXT, created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_media_uploader ON media(uploader_id);
+  CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
+
   CREATE TABLE IF NOT EXISTS options (
     id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, value TEXT NOT NULL DEFAULT '',
     autoload INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS logs (
-    id TEXT PRIMARY KEY, action TEXT NOT NULL, detail TEXT,
-    user_id TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS logs (
     id TEXT PRIMARY KEY, action TEXT NOT NULL, detail TEXT,
     user_id TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now'))
   );
+
   CREATE TABLE IF NOT EXISTS themes (
     id TEXT PRIMARY KEY, theme_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
     version TEXT DEFAULT '1.0.0', active INTEGER DEFAULT 0, config TEXT DEFAULT '{}',
@@ -124,6 +128,28 @@ function ensureColumn(table, column, ddl) {
 ensureColumn('posts', 'template', "template TEXT DEFAULT ''");
 ensureColumn('posts', 'cover_image', 'cover_image TEXT');
 ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
+
+// ── 一次性修复：旧版 Markdown 渲染器会转义已生成的 HTML，导致正文显示成标签源码 ──
+// 修复后重新渲染全部文章的 html_content，保证老站点内容立刻恢复。
+{
+  const FIX_KEY = 'md_renderer_v2';
+  const done = db.prepare('SELECT id FROM options WHERE key = ?').get(FIX_KEY);
+  if (!done) {
+    try {
+      const rows = db.prepare("SELECT id, content FROM posts WHERE content IS NOT NULL AND content != ''").all();
+      const upd = db.prepare('UPDATE posts SET html_content = ? WHERE id = ?');
+      db.exec('BEGIN');
+      let n = 0;
+      for (const r of rows) { upd.run(renderMD(r.content), r.id); n++; }
+      db.prepare('INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 0)').run(uid(), FIX_KEY, 'done');
+      db.exec('COMMIT');
+      if (n) console.log(`✓ Markdown 修复：已重新渲染 ${n} 篇文章正文`);
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
+      console.warn('⚠ Markdown 重渲染失败：' + e.message);
+    }
+  }
+}
 
 // ── 安装状态判定 ──
 // 已安装 = options.installed 为 true，或已存在任意用户（兼容历史站点）
