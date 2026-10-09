@@ -14,7 +14,6 @@ backend/uploads/*
 # Backup files
 *.bak
 *.bak.*
-backend/db.js
 backend/server.js.bak*
 
 # Environment & logs
