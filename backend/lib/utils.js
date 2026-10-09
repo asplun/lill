@@ -111,6 +111,10 @@ export function plainText(md) {
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    // 短代码（{music .../}、{/music}、{tabs}、{x}、{hide} 等，含属性）不进入纯文本摘要
+    .replace(/\{\/?[a-zA-Z][^{}]*\}/g, ' ')
+    // BBCode 风格标记（[hide]…[/hide] 等）去标签、保留其中文字
+    .replace(/\[\/?[a-zA-Z][\w-]*[^\]]*\]/g, ' ')
     .replace(/[#>*`_~\-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

@@ -256,7 +256,7 @@ function readThemeManifest(themeId) {
 // 数据修复：已发布但缺少发布时间的历史文章，补上发布时间
 try {
   db.prepare("UPDATE posts SET published_at = COALESCE(created_at, datetime('now')) WHERE status = 'published' AND (published_at IS NULL OR published_at = '')").run();
-  const needFix = db.prepare("SELECT id, content, excerpt FROM posts WHERE excerpt LIKE '%\n%' OR excerpt LIKE '#%' OR excerpt LIKE '>%' OR excerpt LIKE '- %'").all();
+  const needFix = db.prepare("SELECT id, content, excerpt FROM posts WHERE excerpt LIKE '%\n%' OR excerpt LIKE '#%' OR excerpt LIKE '>%' OR excerpt LIKE '- %' OR excerpt LIKE '%{%' OR excerpt LIKE '%[hide%'").all();
   for (const row of needFix) {
     db.prepare('UPDATE posts SET excerpt = ? WHERE id = ?').run(plainText(row.content).substring(0, 200), row.id);
   }
