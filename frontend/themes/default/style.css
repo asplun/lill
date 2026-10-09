@@ -169,3 +169,88 @@ body.layout-full .sidebar{display:none}
 .page-links .links-card h3{font-size:15px;margin-bottom:6px}
 .page-links .links-card p{font-size:13px;color:var(--text-light);line-height:1.7;margin-bottom:8px}
 .page-links .links-card a{font-size:13px}
+
+/* ═══ 深色模式 ═══ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary: #818cf8;
+    --bg: #0f172a;
+    --text: #e2e8f0;
+    --text-light: #94a3b8;
+    --border: #334155;
+    --radius: 8px;
+    --card: #1e293b;
+  }
+  body { background: #0f172a; }
+  .site-header { background: var(--card); }
+  .post-card, .widget, .post-detail, .post-nav a { background: var(--card); }
+  .post-content pre { background: #0f172a; }
+  .post-content code { background: #334155; }
+  .post-content blockquote { background: #1e293b; }
+  .post-tags a, .tag-cloud a { background: #334155; }
+  .widget-search input { background: #0f172a; color: var(--text); border-color: var(--border); }
+  .widget-search button { background: var(--primary); }
+  .pagination a, .pagination span { background: var(--card); }
+  .sticky-badge { background: var(--primary); }
+}
+
+/* 手动切换深色模式 */
+body.lill-dark {
+  --primary: #818cf8;
+  --bg: #0f172a;
+  --text: #e2e8f0;
+  --text-light: #94a3b8;
+  --border: #334155;
+  --radius: 8px;
+  --card: #1e293b;
+  background: #0f172a;
+}
+body.lill-dark .site-header,
+body.lill-dark .post-card,
+body.lill-dark .widget,
+body.lill-dark .post-detail,
+body.lill-dark .post-nav a { background: var(--card); }
+body.lill-dark .post-content pre { background: #0f172a; }
+body.lill-dark .post-content code { background: #334155; }
+body.lill-dark .post-content blockquote { background: #1e293b; }
+body.lill-dark .post-tags a,
+body.lill-dark .tag-cloud a { background: #334155; }
+body.lill-dark .widget-search input { background: #0f172a; color: var(--text); border-color: var(--border); }
+body.lill-dark .pagination a,
+body.lill-dark .pagination span { background: var(--card); }
+
+/* ═══ 面包屑导航 ═══ */
+.breadcrumb{font-size:13px;color:var(--text-light);margin-bottom:16px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.breadcrumb a{color:var(--text-light)}
+.breadcrumb a:hover{color:var(--primary)}
+.breadcrumb .sep{color:var(--border)}
+.breadcrumb .current{color:var(--text)}
+
+/* ═══ 相关文章推荐 ═══ */
+.related-posts{margin-top:32px;padding-top:24px;border-top:1px solid var(--border)}
+.related-title{font-size:18px;margin-bottom:16px}
+.related-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.related-card{display:block;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;text-decoration:none;transition:box-shadow .2s}
+.related-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1);text-decoration:none}
+.related-card img{width:100%;height:120px;object-fit:cover}
+.related-info{padding:12px}
+.related-info h4{font-size:14px;line-height:1.5;margin-bottom:6px;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.related-date{font-size:12px;color:var(--text-light)}
+
+/* ═══ 分享按钮 ═══ */
+.post-share{display:flex;align-items:center;gap:10px;margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+.share-label{font-size:13px;color:var(--text-light)}
+.share-btn{display:inline-block;padding:6px 14px;font-size:12px;border-radius:16px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;transition:all .2s;text-decoration:none}
+.share-btn:hover{border-color:var(--primary);color:var(--primary);text-decoration:none}
+.share-weibo:hover{background:#e6162d;border-color:#e6162d;color:#fff}
+.share-twitter:hover{background:#1da1f2;border-color:#1da1f2;color:#fff}
+.share-facebook:hover{background:#1877f2;border-color:#1877f2;color:#fff}
+
+/* ═══ 移动端菜单 ═══ */
+.mobile-menu-toggle{display:none;background:none;border:none;font-size:24px;cursor:pointer;color:var(--text);padding:4px 8px}
+@media(max-width:768px){
+  .mobile-menu-toggle{display:block}
+  .site-nav{display:none;position:absolute;top:100%;left:0;right:0;background:var(--card);border-bottom:1px solid var(--border);padding:16px 20px;flex-direction:column;gap:12px;box-shadow:0 4px 12px rgba(0,0,0,.1)}
+  .site-nav.active{display:flex}
+  .site-header{position:relative}
+}

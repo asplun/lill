@@ -279,16 +279,26 @@ function checkRateLimit(key, max = 60, windowMs = 60 * 1000) {
   return true;
 }
 
+// 严格限流（用于敏感操作：登录、注册、评论等）
+function strictRateLimit(key, max = 10, windowMs = 60 * 1000) {
+  return checkRateLimit(key, max, windowMs);
+}
+
+// 获取客户端 IP
+function getClientIP(req) {
+  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+}
+
 // ════════════════════════════════════════
 // 认证
 // ════════════════════════════════════════
-const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate } = createAuth(JWT_SECRET);
+const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate, generateCSRFToken, verifyCSRFToken } = createAuth(JWT_SECRET);
 
 // ════════════════════════════════════════
 // 路由装配（顺序：公开 → 认证 → 后台）
 // ════════════════════════════════════════
 const router = createRouter();
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, readThemeManifest, UPLOAD_DIR, THEMES_DIR, checkRateLimit, loginLimiter };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, checkRateLimit, loginLimiter };
 registerInstall(router, ctx);
 registerPublic(router, ctx);
 registerAuth(router, ctx);
@@ -350,7 +360,16 @@ const server = http.createServer(async (req, res) => {
   if (!matched) { logRequest(req.method, path, 404, Date.now() - startTime); return error(res, 'API 不存在', 404); }
 
   try {
-    if (matched.auth) await authenticate(req);
+    if (matched.auth) {
+      await authenticate(req);
+      // CSRF 验证：写操作必须携带 CSRF token
+      if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+        const csrfToken = req.headers['x-csrf-token'];
+        if (!csrfToken || !verifyCSRFToken(req, csrfToken)) {
+          return error(res, 'CSRF 验证失败，请刷新页面重试', 403);
+        }
+      }
+    }
     await matched.fn(req, res, matched.params);
     logRequest(req.method, path, 200, Date.now() - startTime);
   } catch (e) {

@@ -201,4 +201,12 @@ route('POST', '/api/v1/install', async (req, res) => {
       return error(res, '安装失败：' + e.message, 500);
     }
   });
+
+  // 安装日志 - 获取安装日志
+  route('GET', '/api/v1/install/log', async (req, res) => {
+    const logPath = join(ROOT_DIR, 'install.log');
+    if (!existsSync(logPath)) return json(res, { logs: [] });
+    const logs = readFileSync(logPath, 'utf8').split('\n').filter(Boolean);
+    json(res, { logs: logs.slice(-100) });
+  });
 }

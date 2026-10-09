@@ -1,6 +1,6 @@
 /**
  * lill 统一 API 封装（前台 + 后台共用）
- * 统一错误处理、token 管理、401 跳转、请求超时、切页取消旧请求
+ * 统一错误处理、token 管理、CSRF 防护、401 跳转、请求超时、切页取消旧请求
  */
 window.lillAPI = (() => {
   const BASE = '/api/v1';
@@ -16,10 +16,16 @@ window.lillAPI = (() => {
   }
 
   function getToken() { return localStorage.getItem('lill_token'); }
+  function getCSRFToken() { return localStorage.getItem('lill_csrf_token'); }
 
   function setToken(token) {
     if (token) localStorage.setItem('lill_token', token);
     else localStorage.removeItem('lill_token');
+  }
+
+  function setCSRFToken(token) {
+    if (token) localStorage.setItem('lill_csrf_token', token);
+    else localStorage.removeItem('lill_csrf_token');
   }
 
   async function request(path, options = {}) {
@@ -29,6 +35,12 @@ window.lillAPI = (() => {
     if (token) headers.Authorization = 'Bearer ' + token;
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
+    // CSRF token：写操作自动带上
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+      const csrfToken = getCSRFToken();
+      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+    }
+
     // GET 默认绑定当前渲染作用域（切页自动取消）；写操作不绑定，避免误取消
     const scope = options.signal || (method === 'GET' ? (renderScope && renderScope.signal) : null);
     const timeoutMs = options.timeout || DEFAULT_TIMEOUT;
@@ -37,7 +49,13 @@ window.lillAPI = (() => {
     const onScopeAbort = () => controller.abort();
     if (scope) {
       if (scope.aborted) throw new Error('请求已取消');
-      scope.addEventListener('abort', onScopeAbort, { once: true });
+      scope.addEventListener('abort', onScopeAbort, { once: true })();
+  pendingRequests.set(dedupeKey, promise);
+  try {
+    return await promise;
+  } finally {
+    pendingRequests.delete(dedupeKey);
+  }
     }
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -67,6 +85,7 @@ window.lillAPI = (() => {
     if (data.code !== 0) {
       if (res.status === 401) {
         setToken(null);
+        setCSRFToken(null);
         if (!location.pathname.startsWith('/admin/login')) {
           location.href = '/admin/login';
         }
@@ -86,5 +105,7 @@ window.lillAPI = (() => {
     del: (path, o) => request(path, { method: 'DELETE', ...o }),
     getToken,
     setToken,
+    getCSRFToken,
+    setCSRFToken,
   };
 })();

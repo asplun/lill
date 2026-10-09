@@ -196,6 +196,48 @@
       "label": "自定义 CSS",
       "type": "textarea",
       "default": ""
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_hot_posts",
+      "label": "热门文章",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "侧边栏",
+      "key": "sidebar_hot_tags",
+      "label": "热门标签",
+      "type": "checkbox",
+      "default": "true"
+    },
+    {
+      "group": "社交",
+      "key": "social_weibo",
+      "label": "微博",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "group": "社交",
+      "key": "social_github",
+      "label": "GitHub",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "group": "社交",
+      "key": "social_twitter",
+      "label": "Twitter",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "group": "社交",
+      "key": "social_email",
+      "label": "邮箱",
+      "type": "text",
+      "default": ""
     }
   ],
   "templates": [

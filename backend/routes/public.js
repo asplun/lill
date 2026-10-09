@@ -69,6 +69,13 @@ function getPermalinkUrl(type, post, category, tag) {
 // ════════════════════════════════════════
 function getOption(k, d) { const r = db.prepare('SELECT value FROM options WHERE key = ?').get(k); return (r && r.value) || d; }
 
+// CDN 支持：如果配置了 CDN 域名，静态资源 URL 自动使用 CDN
+function getCdnUrl(path) {
+  const cdn = getOption('cdn_url', '');
+  if (!cdn) return path;
+  return cdn.replace(/\/$/, '') + path;
+}
+
 function buildThemeOptions() {
   const rows = db.prepare('SELECT key, value FROM options WHERE autoload = 1').all();
   const r = {}; rows.forEach(x => { r[x.key] = x.value; });
@@ -185,7 +192,12 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     tags: listTags(),
     archives: listArchives(),
     recentComments: listRecentComments(5),
+    hotPosts: db.prepare('SELECT title, slug, view_count FROM posts WHERE type = ? AND status = ? ORDER BY view_count DESC LIMIT 5').all('post', 'published'),
+    hotTags: db.prepare('SELECT t.name, t.slug, COUNT(pt.post_id) as count FROM tags t JOIN post_tags pt ON pt.tag_id = t.id JOIN posts p ON p.id = pt.post_id WHERE p.status = ? GROUP BY t.id ORDER BY count DESC LIMIT 10').all('published'),
   };
+  // 为热门文章添加 URL
+  sidebar.hotPosts.forEach(p => { p.url = '/post/' + p.slug; });
+  sidebar.hotTags.forEach(t => { t.url = '/tag/' + t.slug; });
 
   const frontPath = url.searchParams.get('path') || '';
   const pageInfo = { type, slug, url: frontPath || ('/' + (type === 'index' ? '' : type + '/')), title: '', query: { page, q, month } };
@@ -349,6 +361,36 @@ route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
       db.prepare('INSERT INTO logs (id, action, detail, ip) VALUES (?, ?, ?, ?)').run(uid(), 'view:' + post.id, post.id, ip);
     }
   const postUrlResult = getPermalinkUrl('post', post, post.category_id ? { slug: post.category_slug } : null); post.url = postUrlResult.url; post.route = postUrlResult.route;
+  
+  // 阅读时间估算（按每分钟 300 字计算）
+  const wordCount = (post.content || '').replace(/\s/g, '').length;
+  post.reading_time = Math.max(1, Math.ceil(wordCount / 300));
+  
+  // 相关文章推荐（同分类或同标签，最多 4 篇）
+  let relatedPosts = [];
+  if (post.category_id) {
+    relatedPosts = db.prepare('SELECT p.title, p.slug, p.cover_image, p.published_at, p.excerpt FROM posts p WHERE p.category_id = ? AND p.id != ? AND p.status = ? ORDER BY p.published_at DESC LIMIT 4').all(post.category_id, post.id, 'published');
+  }
+  if (relatedPosts.length < 4 && post.tags && post.tags.length > 0) {
+    const tagIds = post.tags.map(t => t.id);
+    const placeholders = tagIds.map(() => '?').join(',');
+    const moreRelated = db.prepare(`SELECT DISTINCT p.title, p.slug, p.cover_image, p.published_at, p.excerpt FROM posts p JOIN post_tags pt ON pt.post_id = p.id WHERE pt.tag_id IN (${placeholders}) AND p.id != ? AND p.status = ? LIMIT ?`).all(...tagIds, post.id, 'published', 4 - relatedPosts.length);
+    relatedPosts = relatedPosts.concat(moreRelated);
+  }
+  // 去重并限制数量
+  const seen = new Set();
+  relatedPosts = relatedPosts.filter(p => {
+    if (seen.has(p.slug)) return false;
+    seen.add(p.slug);
+    return true;
+  }).slice(0, 4);
+  // 添加 URL
+  relatedPosts.forEach(p => {
+    const r = getPermalinkUrl('post', p, null);
+    p.url = r.url;
+  });
+  post.relatedPosts = relatedPosts;
+  
   json(res, post);
 });
 

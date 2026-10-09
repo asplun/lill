@@ -54,7 +54,7 @@
         });
         const data = await res.json();
         if (data.code !== 0) throw new Error(data.message || '登录失败');
-        localStorage.setItem('lill_token', data.data.token);
+        localStorage.setItem('lill_token', data.data.token); if (data.data.csrfToken) localStorage.setItem('lill_csrf_token', data.data.csrfToken);
         location.href = '/admin/';
       } catch (e) {
         document.getElementById('err').textContent = (e.name === 'AbortError') ? '请求超时，请重试' : e.message;

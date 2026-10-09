@@ -2,7 +2,7 @@ let user = null;
 let page = 'dashboard';
 let pageNum = 1;
 
-const TITLES = { dashboard: '控制台', posts: '文章', pages: '页面', categories: '分类', tags: '标签', comments: '评论', media: '附件', themes: '外观', users: '用户', settings: '设置', logs: '日志', backup: '备份' };
+const TITLES = { dashboard: '控制台', posts: '文章', pages: '页面', categories: '分类', tags: '标签', comments: '评论', media: '附件', themes: '外观', users: '用户', settings: '设置', logs: '日志', backup: '备份', plugins: '插件' };
 
 // 统一 API 层：由 /api.js 提供的 window.lillAPI（前台后台共用）
 const api = (path, opts = {}) => window.lillAPI.request(path, opts);
@@ -61,6 +61,7 @@ async function render() {
       case 'settings': return await renderSettings();
       case 'logs': return await renderLogs();
       case 'backup': return await renderBackup();
+      case 'plugins': return await renderPlugins();
       default: c.innerHTML = '<div class="empty">页面不存在</div>';
     }
   } catch (e) {
@@ -416,8 +417,9 @@ async function renderThemes() {
   const themes = await api('/admin/themes');
   let html = '<div class="card"><h3 class="card-title">主题</h3><div class="theme-grid">';
   if (themes.length) themes.forEach(t => {
+    var screenshot = t.screenshot ? '<img src="' + escape(t.screenshot) + '" alt="" loading="lazy">' : '🎨';
     html += '<div class="theme-card' + (t.active ? ' active' : '') + '">' +
-      '<div class="thumb">🎨' + (t.active ? '<span class="theme-badge">使用中</span>' : '') + '</div>' +
+      '<div class="thumb">' + screenshot + (t.active ? '<span class="theme-badge">使用中</span>' : '') + '</div>' +
       '<div class="tv"><h3>' + escape(t.name) + '</h3>' +
       '<p>' + escape(t.description || '暂无描述') + '</p>' +
       '<div class="theme-meta"><span class="theme-version">v' + escape(t.version) + '</span>' +
@@ -736,3 +738,19 @@ window.renderComments = renderComments;
 window.renderMedia = renderMedia;
 window.renderUsers = renderUsers;
 window.renderSettings = renderSettings;
+
+// ═══ 插件 ═══
+async function renderPlugins() {
+  const r = await api('/admin/plugins');
+  const plugins = r || [];
+  setTopbar('');
+  const rows = plugins.map(p => '<tr><td><strong>' + escape(p.name || p.dir) + '</strong><br><small style="color:#64748b">' + escape(p.dir) + '</small></td><td>' + escape(p.version || '-') + '</td><td>' + escape(p.description || '-') + '</td><td><span class="badge ' + (p.active ? 'badge-success' : 'badge-secondary') + '">' + (p.active ? '已启用' : '未启用') + '</span></td><td class="actions"><button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button></td></tr>').join('');
+  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>版本</th><th>描述</th><th>状态</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">暂无插件</div></td></tr>') + '</tbody></table></div>';
+}
+window.togglePlugin = async (dir) => {
+  try {
+    await api('/admin/plugins/toggle', { method: 'POST', body: { dir } });
+    toast('已更新'); renderPlugins();
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.renderPlugins = renderPlugins;

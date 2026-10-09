@@ -75,3 +75,23 @@
 
 </aside>
 {/if}
+
+  {if $theme.sidebar_hot_posts && $sidebar.hotPosts}
+  <div class="widget">
+    <h3 class="widget-title">热门文章</h3>
+    <ul class="widget-list">
+      {loop $sidebar.hotPosts as $p}
+      <li><a href="{$p.url}">{$p.title}</a><span class="widget-meta">👁️ {$p.view_count}</span></li>
+      {/loop}
+    </ul>
+  </div>
+  {/if}
+
+  {if $theme.sidebar_hot_tags && $sidebar.hotTags}
+  <div class="widget">
+    <h3 class="widget-title">热门标签</h3>
+    <div class="tag-cloud">
+      {loop $sidebar.hotTags as $tag}<a href="{$tag.url}">{$tag.name}</a>{/loop}
+    </div>
+  </div>
+  {/if}

@@ -305,6 +305,13 @@
   if (!app) return;
 
   var API = window.lillAPI;
+
+  // 搜索防抖：输入停止 300ms 后才触发搜索
+  var searchDebounceTimer = null;
+  function debounceSearch(callback, delay) {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(callback, delay || 300);
+  }
   var pageType = app.getAttribute('data-page') || 'index';
   var segs = location.pathname.split('/').filter(Boolean);
   var slug = (pageType === 'post' || pageType === 'page' || pageType === 'category' || pageType === 'tag') ? (segs[1] || '') : '';
@@ -370,6 +377,12 @@
       st.id = 'lill-theme-custom-css';
       st.textContent = theme.custom_css;
       document.head.appendChild(st);
+    }
+    // head.html 支持：主题可在 head.html 中输出自定义 <head> 内容
+    if (boot.head_html) {
+      var headDiv = document.createElement('div');
+      headDiv.innerHTML = boot.head_html;
+      while (headDiv.firstChild) document.head.appendChild(headDiv.firstChild);
     }
     var assets = boot.themeAssets || {};
     if (!assets.head) return Promise.resolve();

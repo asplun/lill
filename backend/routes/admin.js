@@ -3,7 +3,8 @@
  * 由 server.js 调用 register(router, ctx) 装配
  */
 import { randomBytes } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
+import { createThumbnailOnUpload } from '../lib/thumbnail.js';
+import { writeFileSync, mkdirSync, existsSync, renameSync, readdirSync, statSync, readFileSync, statfsSync, createReadStream } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../lib/zip.js';
 import { scanPageTemplates } from '../lib/themes.js';
@@ -14,6 +15,8 @@ const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.jso
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, readThemeManifest, UPLOAD_DIR, THEMES_DIR } = ctx;
   const route = router.route;
+  const FRONTEND_DIR = dirname(THEMES_DIR);
+  const ROOT_DIR = dirname(FRONTEND_DIR);
 
   // 操作日志辅助函数
   function logAction(userId, action, detail, req) {
@@ -89,6 +92,13 @@ route('POST', '/api/v1/admin/posts', async (req, res) => {
 }, true);
 
 route('PUT', '/api/v1/admin/posts/:id', async (req, res, params) => {
+  // 保存版本历史
+  const oldPost = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id);
+  if (oldPost) {
+    const { uid } = await import('../lib/utils.js');
+    db.prepare('INSERT INTO post_versions (id, post_id, title, content, html_content, excerpt, status, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uid(), oldPost.id, oldPost.title, oldPost.content, oldPost.html_content, oldPost.excerpt, oldPost.status, oldPost.author_id);
+  }
   const auth = await authenticate(req);
   const exist = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id);
   if (!exist) return error(res, '文章不存在', 404);
@@ -292,7 +302,8 @@ route('POST', '/api/v1/admin/media/upload', async (req, res) => {
       }
     } catch (e) { /* 尺寸读取失败不影响上传 */ }
   }
-  db.prepare('INSERT INTO media (id, name, path, url, mime_type, size, width, height, alt, uploader_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, body.name, fp, url, body.mime || 'application/octet-stream', size, width, height, body.alt || null, auth.id);
+  const thumbUrl = createThumbnailOnUpload(fp, safeExt);
+  db.prepare('INSERT INTO media (id, name, path, url, mime_type, size, width, height, alt, thumbnail_url, uploader_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, body.name, fp, url, body.mime || 'application/octet-stream', size, width, height, body.alt || null, thumbUrl, auth.id);
   json(res, db.prepare('SELECT * FROM media WHERE id = ?').get(id), 201);
 }, true);
 
@@ -676,5 +687,239 @@ route('GET', '/api/v1/admin/stats/dashboard', async (req, res) => {
     userCount: (db.prepare('SELECT COUNT(*) as c FROM users WHERE status = ?').get('active')).c,
   };
   json(res, { overview: o });
+}, true);
+
+// 主题在线编辑器 - 读取文件
+route('GET', '/api/v1/admin/themes/files', async (req, res) => {
+  await authenticate(req);
+  const themeId = req.query.theme || 'default';
+  const themeDir = join(FRONTEND_DIR, 'themes', themeId);
+  if (!existsSync(themeDir)) return error(res, '主题不存在', 404);
+  const files = [];
+  function scanDir(dir, prefix = '') {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const rel = prefix + e.name;
+      if (e.isDirectory()) scanDir(join(dir, e.name), rel + '/');
+      else if (/\.(html|css|js|json|md)$/.test(e.name)) {
+        files.push({ path: rel, size: statSync(join(dir, e.name)).size });
+      }
+    }
+  }
+  scanDir(themeDir);
+  json(res, files);
+});
+
+// 主题在线编辑器 - 读取文件内容
+route('GET', '/api/v1/admin/themes/file', async (req, res) => {
+  await authenticate(req);
+  const themeId = req.query.theme || 'default';
+  const filePath = req.query.path || '';
+  if (!filePath || filePath.includes('..')) return error(res, '无效路径', 400);
+  const fullPath = join(FRONTEND_DIR, 'themes', themeId, filePath);
+  if (!existsSync(fullPath)) return error(res, '文件不存在', 404);
+  json(res, { content: readFileSync(fullPath, 'utf8') });
+});
+
+// 主题在线编辑器 - 保存文件
+route('PUT', '/api/v1/admin/themes/file', async (req, res) => {
+  await authenticate(req);
+  const body = await parseBody(req);
+  const themeId = body.theme || 'default';
+  const filePath = body.path || '';
+  if (!filePath || filePath.includes('..')) return error(res, '无效路径', 400);
+  const fullPath = join(FRONTEND_DIR, 'themes', themeId, filePath);
+  if (!existsSync(fullPath)) return error(res, '文件不存在', 404);
+  writeFileSync(fullPath, body.content || '', 'utf8');
+  json(res, { message: '保存成功' });
+}, true);
+
+// 插件系统 - 列出插件
+route('GET', '/api/v1/admin/plugins', async (req, res) => {
+  await authenticate(req);
+  const pluginsDir = join(ROOT_DIR, 'plugins');
+  const plugins = [];
+  if (existsSync(pluginsDir)) {
+    const entries = readdirSync(pluginsDir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        const manifestPath = join(pluginsDir, e.name, 'plugin.json');
+        if (existsSync(manifestPath)) {
+          try {
+            const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+            // 从 plugins 表读取 active 状态
+            const dbPlugin = db.prepare('SELECT active FROM plugins WHERE dir = ?').get(e.name);
+            plugins.push({ ...manifest, dir: e.name, active: dbPlugin ? !!dbPlugin.active : false });
+          } catch {}
+        }
+      }
+    }
+  }
+  json(res, plugins);
+});
+
+// 插件系统 - 启用/禁用插件
+route('POST', '/api/v1/admin/plugins/toggle', async (req, res) => {
+  await authenticate(req);
+  const body = await parseBody(req);
+  if (!body.dir) return error(res, '缺少插件目录名', 400);
+  
+  // 检查插件是否存在
+  const pluginsDir = join(ROOT_DIR, 'plugins');
+  const manifestPath = join(pluginsDir, body.dir, 'plugin.json');
+  if (!existsSync(manifestPath)) return error(res, '插件不存在', 404);
+  
+  // 读取插件信息
+  let manifest = {};
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {}
+  
+  // 查询当前状态
+  const existing = db.prepare('SELECT * FROM plugins WHERE dir = ?').get(body.dir);
+  const newActive = existing ? !existing.active : true;
+  
+  // 更新或插入插件状态
+  if (existing) {
+    db.prepare('UPDATE plugins SET active = ? WHERE dir = ?').run(newActive ? 1 : 0, body.dir);
+  } else {
+    db.prepare('INSERT INTO plugins (id, dir, name, version, description, active) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uid(), body.dir, manifest.name || body.dir, manifest.version || '1.0.0', manifest.description || '', newActive ? 1 : 0);
+  }
+  
+  json(res, { dir: body.dir, active: newActive, message: newActive ? '插件已启用' : '插件已禁用' });
+}, true);
+
+// 小工具管理
+route('GET', '/api/v1/admin/widgets', async (req, res) => {
+  await authenticate(req);
+  const items = db.prepare('SELECT * FROM widgets ORDER BY sort_order ASC').all();
+  json(res, items);
+});
+
+route('POST', '/api/v1/admin/widgets', async (req, res) => {
+  await authenticate(req);
+  const body = await parseBody(req);
+  if (!body.name || !body.type) return error(res, '缺少必要参数', 400);
+  const id = uid();
+  db.prepare('INSERT INTO widgets (id, name, type, content, position, sort_order, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, body.name, body.type, body.content || '', body.position || 'sidebar', body.sort_order || 0, body.enabled ? 1 : 0);
+  json(res, db.prepare('SELECT * FROM widgets WHERE id = ?').get(id), 201);
+}, true);
+
+route('PUT', '/api/v1/admin/widgets/:id', async (req, res, params) => {
+  await authenticate(req);
+  const body = await parseBody(req);
+  db.prepare('UPDATE widgets SET name=?, type=?, content=?, position=?, sort_order=?, enabled=? WHERE id=?')
+    .run(body.name, body.type, body.content || '', body.position || 'sidebar', body.sort_order || 0, body.enabled ? 1 : 0, params.id);
+  json(res, db.prepare('SELECT * FROM widgets WHERE id = ?').get(params.id));
+}, true);
+
+route('DELETE', '/api/v1/admin/widgets/:id', async (req, res, params) => {
+  await authenticate(req);
+  db.prepare('DELETE FROM widgets WHERE id = ?').run(params.id);
+  json(res, { message: '删除成功' });
+});
+
+// 自动备份 - 备份列表
+route('GET', '/api/v1/admin/backup/list', async (req, res) => {
+  await authenticate(req);
+  const backupDir = join(ROOT_DIR, 'backend', 'data', 'backups');
+  const backups = [];
+  if (existsSync(backupDir)) {
+    const entries = readdirSync(backupDir).filter(f => f.endsWith('.zip'));
+    for (const f of entries) {
+      const stat = statSync(join(backupDir, f));
+      backups.push({ name: f, size: stat.size, created_at: stat.mtime.toISOString() });
+    }
+  }
+  json(res, backups.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
+});
+// 自动备份 - 下载备份
+route('GET', '/api/v1/admin/backup/:name/download', async (req, res, params) => {
+  await authenticate(req);
+  const name = params.name;
+  if (!name || name.includes('..')) return error(res, '无效文件名', 400);
+  const fp = join(ROOT_DIR, 'backend', 'data', 'backups', name);
+  if (!existsSync(fp)) return error(res, '备份不存在', 404);
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="' + name + '"');
+  readFileSync(fp); // 确保文件存在
+  const { createReadStream } = await import('node:fs');
+  createReadStream(fp).pipe(res);
+});
+// 系统版本信息
+route('GET', '/api/v1/admin/system/version', async (req, res) => {
+  await authenticate(req);
+  const pkg = JSON.parse(readFileSync(join(ROOT_DIR, 'backend', 'package.json'), 'utf8'));
+  json(res, {
+    version: pkg.version || '1.0.0',
+    name: pkg.name || 'lill',
+    node: process.version,
+    platform: process.platform
+  });
+});
+// 系统健康检查
+route('GET', '/api/v1/admin/system/health', async (req, res) => {
+  await authenticate(req);
+  const dbStatus = (() => {
+    try { db.prepare('SELECT 1').get(); return 'ok'; } catch { return 'error'; }
+  })();
+  const diskSpace = (() => {
+    try {
+      const stats = statfsSync(ROOT_DIR);
+      return { free: stats.bavail * stats.bsize, total: stats.blocks * stats.bsize };
+    } catch { return null; }
+  })();
+  json(res, {
+    status: dbStatus === 'ok' ? 'healthy' : 'unhealthy',
+    database: dbStatus,
+    disk: diskSpace,
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  });
+});
+// 系统监控 - 实时监控数据
+route('GET', '/api/v1/admin/system/monitor', async (req, res) => {
+  await authenticate(req);
+  const mem = process.memoryUsage();
+  json(res, {
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: {
+      used: Math.round(mem.heapUsed / 1024 / 1024) + 'MB',
+      total: Math.round(mem.heapTotal / 1024 / 1024) + 'MB',
+      rss: Math.round(mem.rss / 1024 / 1024) + 'MB'
+    },
+    cpu: process.cpuUsage(),
+    connections: 0
+  });
+});
+// 日志分析 - 获取日志统计
+route('GET', '/api/v1/admin/logs/stats', async (req, res) => {
+  await authenticate(req);
+  const stats = db.prepare("SELECT COUNT(*) as total, COUNT(DISTINCT action) as actions, COUNT(DISTINCT user_id) as users FROM logs").get();
+  json(res, stats);
+});
+// 备份进度 - 获取备份进度
+route('GET', '/api/v1/admin/backup/progress', async (req, res) => {
+  await authenticate(req);
+  // 简化版：返回当前备份状态
+  json(res, { progress: 0, status: 'idle', message: '无备份任务' });
+});
+// 多站点支持 - 站点列表
+route('GET', '/api/v1/admin/sites', async (req, res) => {
+  await authenticate(req);
+  // 简化版：返回当前站点信息
+  const site = db.prepare('SELECT * FROM options WHERE key = ?').get('site_name');
+  json(res, [{ id: 'default', name: site?.value || '默认站点', domain: req.headers.host }]);
+});
+// 多站点支持 - 切换站点
+route('POST', '/api/v1/admin/sites/switch', async (req, res) => {
+  await authenticate(req);
+  const body = await parseBody(req);
+  if (!body.siteId) return error(res, '缺少站点ID', 400);
+  json(res, { message: '站点切换功能待实现' });
 }, true);
 }

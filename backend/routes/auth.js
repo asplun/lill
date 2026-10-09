@@ -3,7 +3,7 @@
  * 由 server.js 调用 register(router, ctx) 装配
  */
 export function register(router, ctx) {
-  const { db, json, error, parseBody, validators, uid, hashPwd, verifyPwd, signJWT, authenticate, loginLimiter } = ctx;
+  const { db, json, error, parseBody, validators, uid, hashPwd, verifyPwd, signJWT, authenticate, loginLimiter, generateCSRFToken } = ctx;
   const route = router.route;
 
 route('POST', '/api/v1/auth/login', async (req, res) => {
@@ -24,8 +24,10 @@ route('POST', '/api/v1/auth/login', async (req, res) => {
   }
 
   loginLimiter.reset(key);
-  const token = signJWT({ id: user.id, username: user.username, role: user.role });
-  json(res, { token, user: { id: user.id, username: user.username, nickname: user.nickname, email: user.email, role: user.role } });
+  const rememberMe = body.rememberMe || false;
+    const token = signJWT({ id: user.id, username: user.username, role: user.role }, rememberMe ? '30d' : '2h');
+  const csrfToken = generateCSRFToken();
+  json(res, { token, csrfToken, user: { id: user.id, username: user.username, nickname: user.nickname, email: user.email, role: user.role } });
 });
 
 route('GET', '/api/v1/auth/me', async (req, res) => {
@@ -65,11 +67,12 @@ route('POST', '/api/v1/auth/register', async (req, res) => {
   db.prepare('INSERT INTO users (id, username, email, password, nickname, role) VALUES (?, ?, ?, ?, ?, ?)')
     .run(id, body.username, body.email, hashPwd(body.password), body.username, 'subscriber');
   const token = signJWT({ id, username: body.username, role: 'subscriber' });
-  json(res, { token, user: { id, username: body.username, nickname: body.username, email: body.email, role: 'subscriber' } }, 201);
+  const csrfToken = generateCSRFToken();
+  json(res, { token, csrfToken, user: { id, username: body.username, nickname: body.username, email: body.email, role: 'subscriber' } }, 201);
 });
 
 // ════════════════════════════════════════
 // 管理 API（需要认证）
-// ════════════════════════════════════════
+// ════════════════════════════════════════════════
 
 }
