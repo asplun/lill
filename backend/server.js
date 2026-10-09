@@ -13,12 +13,18 @@ import { scryptSync, randomBytes } from 'node:crypto';
 
 import { uid, slugify, renderMD, plainText } from './lib/utils.js';
 import { createAuth } from './lib/auth.js';
-import { json, error, parseBody, validators, logRequest } from './lib/http.js';
+import { json, error, parseBody, validators, logRequest, setJsonTransform } from './lib/http.js';
 import { createRouter } from './lib/router.js';
 import { register as registerInstall } from './routes/install.js';
 import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin.js';
+import { loadThemeExtensions, registerThemeExtensions, resolveActiveThemeId } from './lib/theme-ext.js';
+import { createSettings } from './lib/settings.js';
+import { createMail } from './lib/mail.js';
+import { createSecurity } from './lib/security.js';
+import { createImageHost } from './lib/image-hosting.js';
+import { createFeed } from './lib/feed.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = parseInt(process.env.PORT) || 3000;
@@ -44,7 +50,6 @@ db.exec(`
     role TEXT DEFAULT 'subscriber', status TEXT DEFAULT 'active',
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   );
-
   CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL,
     content TEXT NOT NULL DEFAULT '', html_content TEXT, excerpt TEXT, cover_image TEXT,
@@ -75,9 +80,7 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(slug);
-
   CREATE TABLE IF NOT EXISTS post_tags (post_id TEXT, tag_id TEXT, PRIMARY KEY (post_id, tag_id));
-
   CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY, content TEXT NOT NULL, status TEXT DEFAULT 'pending',
     user_agent TEXT, ip TEXT, parent_id TEXT, author_name TEXT, author_email TEXT, author_url TEXT,
@@ -86,7 +89,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
   CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
   CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
-
   CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, url TEXT NOT NULL,
     mime_type TEXT NOT NULL, size INTEGER DEFAULT 0, width INTEGER, height INTEGER,
@@ -94,17 +96,14 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_media_uploader ON media(uploader_id);
   CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
-
   CREATE TABLE IF NOT EXISTS options (
     id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, value TEXT NOT NULL DEFAULT '',
     autoload INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   );
-
   CREATE TABLE IF NOT EXISTS logs (
     id TEXT PRIMARY KEY, action TEXT NOT NULL, detail TEXT,
     user_id TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now'))
   );
-
   CREATE TABLE IF NOT EXISTS themes (
     id TEXT PRIMARY KEY, theme_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
     version TEXT DEFAULT '1.0.0', active INTEGER DEFAULT 0, config TEXT DEFAULT '{}',
@@ -129,8 +128,10 @@ ensureColumn('posts', 'template', "template TEXT DEFAULT ''");
 ensureColumn('posts', 'cover_image', 'cover_image TEXT');
 ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
 
-// ── 一次性修复：旧版 Markdown 渲染器会转义已生成的 HTML，导致正文显示成标签源码 ──
-// 修复后重新渲染全部文章的 html_content，保证老站点内容立刻恢复。
+// ════════════════════════════════════════════════════════════
+// 一次性修复：旧版 Markdown 渲染器「先渲染后转义」，把已生成的 <h2>/<ul>/<strong>
+// 又转成了可见标签源码。修复渲染器后，这里按标记重渲染一次全部正文。
+// ════════════════════════════════════════════════════════════
 {
   const FIX_KEY = 'md_renderer_v2';
   const done = db.prepare('SELECT id FROM options WHERE key = ?').get(FIX_KEY);
@@ -143,7 +144,7 @@ ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
       for (const r of rows) { upd.run(renderMD(r.content), r.id); n++; }
       db.prepare('INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 0)').run(uid(), FIX_KEY, 'done');
       db.exec('COMMIT');
-      if (n) console.log(`✓ Markdown 修复：已重新渲染 ${n} 篇文章正文`);
+      console.log(`✓ Markdown 修复：已重新渲染 ${n} 篇文章正文`);
     } catch (e) {
       try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
       console.warn('⚠ Markdown 重渲染失败：' + e.message);
@@ -324,11 +325,29 @@ const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate, generateCSRFToken,
 // 路由装配（顺序：公开 → 认证 → 后台）
 // ════════════════════════════════════════
 const router = createRouter();
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, checkRateLimit, loginLimiter };
+const settings = createSettings(db, { themesDir: THEMES_DIR });
+const mail = createMail({ settings });
+const security = createSecurity({ db, settings });
+const imageHost = createImageHost({ settings, uploadDir: UPLOAD_DIR, siteUrl: settings.siteUrl() });
+setJsonTransform((data) => imageHost.signDeep(data));
+const feed = createFeed({ db, settings });
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed };
+/* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
+   主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
+   扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */
+const themeExts = await loadThemeExtensions(THEMES_DIR);
+const resolveActiveTheme = () => resolveActiveThemeId(db);
+ctx.themeExt = {
+  ids: () => [...themeExts.keys()],
+  get: (id) => themeExts.get(id) || null,
+  activeId: resolveActiveTheme,
+  active: () => themeExts.get(resolveActiveTheme()) || null,
+};
 registerInstall(router, ctx);
 registerPublic(router, ctx);
 registerAuth(router, ctx);
 registerAdmin(router, ctx);
+registerThemeExtensions(router, ctx, themeExts, resolveActiveTheme, (res) => error(res, 'API 不存在', 404));
 const REQUEST_TIMEOUT = 20000; // 请求级超时兜底：避免个别慢请求让前端长时间转圈
 const server = http.createServer(async (req, res) => {
   const startTime = Date.now();

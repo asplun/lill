@@ -2,7 +2,15 @@
  * lill HTTP 层：统一响应格式、请求体解析、输入验证、请求日志
  */
 
+/**
+ * 响应数据变换钩子：由 server.js 注入「输出层 CDN 签名」（对照原版 TriM3 在每次输出
+ * 时调用 tri3_qiniu_sign_url 的做法）。未注入或抛错时原样输出，绝不影响接口可用性。
+ */
+let jsonTransform = null;
+export function setJsonTransform(fn) { jsonTransform = (typeof fn === 'function') ? fn : null; }
+
 export const json = (res, data, status = 200) => {
+  if (jsonTransform) { try { data = jsonTransform(data); } catch (e) { /* 签名失败不影响响应 */ } }
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify({ code: 0, message: 'ok', data }));
 };
@@ -35,4 +43,27 @@ export function logRequest(method, path, status, duration) {
   const now = new Date().toISOString();
   const statusStr = status >= 500 ? '\x1b[31m' + status + '\x1b[0m' : status >= 400 ? '\x1b[33m' + status + '\x1b[0m' : '\x1b[32m' + status + '\x1b[0m';
   console.log(now + ' ' + method.padEnd(7) + ' ' + path.padEnd(50) + ' ' + statusStr + ' ' + duration + 'ms');
+}
+
+/**
+ * 访客真实 IP：优先 X-Real-IP（nginx 用 $remote_addr 写入，客户端无法伪造），
+ * 其次取 X-Forwarded-For 的**最后一段**（由最近的 nginx 追加，前面的段客户端可伪造），
+ * 最后退到 socket 地址。评论限速 / IP 黑名单 / 重复评论检测都依赖它。
+ */
+export function clientIp(req) {
+  try {
+    const h = (req && req.headers) ? req.headers : {};
+    const real = h['x-real-ip'];
+    if (real) {
+      const v = String(Array.isArray(real) ? real[0] : real).split(',')[0].trim();
+      if (v) return v.replace(/^::ffff:/, '');
+    }
+    const xff = h['x-forwarded-for'];
+    if (xff) {
+      const parts = String(Array.isArray(xff) ? xff[0] : xff).split(',').map(s => s.trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1].replace(/^::ffff:/, '');
+    }
+    const ra = (req && req.socket && req.socket.remoteAddress) || (req && req.connection && req.connection.remoteAddress) || '';
+    return String(ra).replace(/^::ffff:/, '');
+  } catch (e) { return ''; }
 }
