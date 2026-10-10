@@ -38,6 +38,10 @@ const token = Astro.cookies.get('lill_token')?.value;
       <a class="menu-item" data-page="settings"><span>⚙️</span>设置</a>
       <a class="menu-item" data-page="logs"><span>📋</span>日志</a>
       <a class="menu-item" data-page="backup"><span>💾</span>备份</a>
+      <div class="menu-section" id="plugin-menu-section" style="display:none">插件</div>
+      <div id="plugin-menus"></div>
+      <div class="menu-section">扩展</div>
+      <a class="menu-item" data-page="plugins"><span>🔌</span>插件管理</a>
     </nav>
     <div class="sidebar-footer">
       <div class="user"><div class="avatar">A</div><span class="name" id="user-name">Admin</span></div>

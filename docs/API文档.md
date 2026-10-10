@@ -15,6 +15,7 @@
 - [5. 管理 API（需登录）](#5-管理-api需登录)
 - [6. 错误码](#6-错误码)
 - [7. 主题开发相关](#7-主题开发相关)
+- [8. 插件开发相关](#8-插件开发相关)
 
 ---
 
@@ -617,6 +618,72 @@ PUT /admin/themes/default/settings
 }
 ```
 
+### 5.10 插件
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/admin/plugins` | 插件列表（扫描 `backend/plugins/`，含 `dir`、`active`） |
+| POST | `/admin/plugins/toggle` | 启用 / 禁用插件（**热加载，无需重启**） |
+| POST | `/admin/plugins/install` | 上传 ZIP 安装插件（base64） |
+| DELETE | `/admin/plugins/:dir` | 卸载插件（目录移入 `.trash-*` 回收，不直接删除） |
+| GET | `/admin/plugin-menus` | 插件注册的后台菜单项 |
+
+**插件列表响应：**
+
+```json
+[
+  {
+    "name": "Hello World",
+    "version": "1.0.0",
+    "description": "示例插件",
+    "author": "lill",
+    "dir": "hello-world",
+    "active": false
+  }
+]
+```
+
+**启用 / 禁用：**
+
+```json
+POST /admin/plugins/toggle
+{ "dir": "hello-world" }
+```
+
+```json
+{
+  "dir": "hello-world",
+  "active": true,
+  "hot": "ok",
+  "message": "插件已启用"
+}
+```
+
+> `active` 为切换后的状态。启用时服务会热加载 `index.js` 并调用 `activate(ctx)`；禁用时调用 `deactivate(ctx)` 并摘除该插件注册的路由、钩子与后台菜单。`hot` 为 `ok` 表示热加载成功，否则附带失败原因（插件已记入数据库，重启服务可重试加载）。
+
+**上传安装：**
+
+```json
+POST /admin/plugins/install
+{ "name": "my-plugin.zip", "data": "<base64 编码的 ZIP 内容>" }
+```
+
+```json
+{ "dir": "my-plugin", "name": "我的插件", "version": "1.0.0", "message": "插件已安装，请在列表中启用" }
+```
+
+> ZIP 支持「根目录直接是插件内容」或「带一层插件目录」两种结构；必须包含 `plugin.json`。安装后默认**未启用**。
+
+**插件后台菜单响应：**
+
+```json
+[
+  { "plugin": "hello-world", "id": "hello-world", "title": "Hello 插件", "icon": "👋", "order": 100 }
+]
+```
+
+> 插件运行时能力（`ctx.route` / `ctx.on` / `ctx.addAdminMenu` / `ctx.getConfig`）、可用钩子清单与完整示例，见 **[插件开发指南](./插件开发指南.md)**。
+
 ---
 
 ## 6. 错误码
@@ -662,5 +729,21 @@ if (body.code !== 0) throw new Error(body.message);
 完整的主题目录结构、`theme.json` 规范、模板标签与设置控件类型，见 **[主题开发指南](./主题开发指南.md)**。
 
 ---
+
+## 8. 插件开发相关
+
+插件通过 **运行时上下文 `ctx`** 注册路由、监听钩子、注册后台菜单、读写配置：
+
+| 能力 | 调用 |
+|---|---|
+| 注册 REST 路由 | `ctx.route(method, path, handler, auth?)` |
+| 监听系统钩子 | `ctx.on(hookName, handler)` |
+| 注册后台菜单 | `ctx.addAdminMenu({ id, title, icon, order })` |
+| 读写插件配置 | `ctx.getConfig(key, default)` / `ctx.setConfig(key, value)` |
+| 数据库 | `ctx.db` |
+
+**系统钩子：** `post.saved`、`post.deleted`、`comment.saved`、`comment.status`、`comment.deleted`、`user.created`、`user.login`、`media.uploaded`、`media.deleted`、`theme.activated`、`options.saved`。
+
+完整的插件目录结构、`plugin.json` 规范、`ctx` API、钩子参数与打包安装流程，见 **[插件开发指南](./插件开发指南.md)**。
 
 *本文档随代码同步维护。接口有变动时请同时更新本文件。*

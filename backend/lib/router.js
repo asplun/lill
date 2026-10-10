@@ -9,6 +9,10 @@ export function createRouter() {
     routes.set(method + ':' + path, { fn, auth });
   }
 
+  function removeRoute(method, path) {
+    return routes.delete(method + ':' + path);
+  }
+
   function matchRoute(method, path) {
     const exact = method + ':' + path;
     if (routes.has(exact)) return { ...routes.get(exact), params: {} };
@@ -29,5 +33,5 @@ export function createRouter() {
     return null;
   }
 
-  return { route, matchRoute, routes };
+  return { route, removeRoute, matchRoute, routes };
 }

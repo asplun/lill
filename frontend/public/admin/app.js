@@ -62,7 +62,9 @@ async function render() {
       case 'logs': return await renderLogs();
       case 'backup': return await renderBackup();
       case 'plugins': return await renderPlugins();
-      default: c.innerHTML = '<div class="empty">页面不存在</div>';
+      default:
+        if (page.startsWith('plugin:')) return renderPluginMenuPanel(page.slice(7));
+        c.innerHTML = '<div class="empty">页面不存在</div>';
     }
   } catch (e) {
     // 被新页面取代而取消的请求：静默忽略，交给新页面渲染
@@ -693,15 +695,36 @@ function mdToHtml(md) {
     .replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
 }
 
-// ═══ 导航 ═══
+// ═══ 导航（事件委托，兼容插件动态注入的菜单项）═══
 window.gotoPage = (p) => { pageNum = p; render(); };
-document.querySelectorAll('.menu-item').forEach(el => {
-  el.onclick = () => {
-    document.querySelectorAll('.menu-item').forEach(e => e.classList.remove('active'));
-    el.classList.add('active');
-    page = el.dataset.page; pageNum = 1; render();
-  };
+document.querySelector('.sidebar-menu').addEventListener('click', (ev) => {
+  const el = ev.target.closest('.menu-item');
+  if (!el) return;
+  // 插件菜单若给了 url，则直接跳转，不当作内部页面
+  if (el.dataset.url) { location.href = el.dataset.url; return; }
+  if (!el.dataset.page) return;
+  ev.preventDefault();
+  document.querySelectorAll('.menu-item').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  page = el.dataset.page; pageNum = 1; render();
 });
+
+// 拉取插件注册的后台菜单，注入到侧边栏「插件」分组
+async function loadPluginMenus() {
+  try {
+    const menus = await api('/admin/plugin-menus', { timeout: 8000 });
+    const box = document.getElementById('plugin-menus');
+    const section = document.getElementById('plugin-menu-section');
+    if (!box || !Array.isArray(menus) || !menus.length) return;
+    box.innerHTML = menus.map(m => {
+      const icon = m.icon || '🔌';
+      const url = m.url ? ' data-url="' + escape(m.url) + '"' : '';
+      const pageAttr = m.url ? '' : ' data-page="' + escape(m.page || ('plugin:' + m.id)) + '"';
+      return '<a class="menu-item"' + url + pageAttr + '><span>' + icon + '</span>' + escape(m.title || m.id) + '</a>';
+    }).join('');
+    if (section) section.style.display = '';
+  } catch (e) { /* 插件菜单加载失败不影响后台 */ }
+}
 document.getElementById('logout-btn').onclick = () => { localStorage.removeItem('lill_token'); location.href = '/admin/login'; };
 
 // 未登录直接跳登录页：没有 token 时连 /auth/me 都不发，认证失败也不发起任何后台请求，
@@ -720,6 +743,7 @@ if (!authed) {
   document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:#64748b">登录已过期，正在跳转登录页…</p></div>';
   location.href = '/admin/login';
 } else {
+  loadPluginMenus();
   render();
 }
 
@@ -743,14 +767,77 @@ window.renderSettings = renderSettings;
 async function renderPlugins() {
   const r = await api('/admin/plugins');
   const plugins = r || [];
-  setTopbar('');
-  const rows = plugins.map(p => '<tr><td><strong>' + escape(p.name || p.dir) + '</strong><br><small style="color:#64748b">' + escape(p.dir) + '</small></td><td>' + escape(p.version || '-') + '</td><td>' + escape(p.description || '-') + '</td><td><span class="badge ' + (p.active ? 'badge-success' : 'badge-secondary') + '">' + (p.active ? '已启用' : '未启用') + '</span></td><td class="actions"><button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button></td></tr>').join('');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>版本</th><th>描述</th><th>状态</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">暂无插件</div></td></tr>') + '</tbody></table></div>';
+  setTopbar('<input type="file" id="plugin-install-input" accept=".zip" style="display:none">'
+    + '<button class="btn btn-primary" onclick="document.getElementById(\'plugin-install-input\').click()">+ 上传插件</button>');
+  const fi = document.getElementById('plugin-install-input');
+  if (fi) fi.onchange = (e) => uploadPlugin(e.target);
+
+  const rows = plugins.map(p => {
+    const actions = '<button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button>'
+      + ' <button class="btn btn-sm btn-outline" style="color:#dc2626;border-color:#fca5a5" onclick="uninstallPlugin(\'' + escape(p.dir) + '\',\'' + escape(p.name || p.dir) + '\')">卸载</button>';
+    return '<tr><td><strong>' + escape(p.name || p.dir) + '</strong><br><small style="color:#64748b">' + escape(p.dir) + '</small></td>'
+      + '<td>' + escape(p.version || '-') + '</td>'
+      + '<td>' + escape(p.description || '-') + (p.author ? '<br><small style="color:#94a3b8">作者：' + escape(p.author) + '</small>' : '') + '</td>'
+      + '<td><span class="badge ' + (p.active ? 'badge-success' : 'badge-secondary') + '">' + (p.active ? '已启用' : '未启用') + '</span></td>'
+      + '<td class="actions">' + actions + '</td></tr>';
+  }).join('');
+
+  const hint = '<div class="card" style="margin-bottom:16px"><p style="margin:0;color:#64748b;font-size:13px">'
+    + '插件包为 ZIP，内部结构为 <code>&lt;插件目录&gt;/plugin.json</code> + <code>&lt;插件目录&gt;/index.js</code>，'
+    + '入口需导出 <code>activate(ctx)</code> 与 <code>deactivate(ctx)</code>。详见 <code>docs/插件开发指南.md</code>。</p></div>';
+
+  document.getElementById('content').innerHTML = hint
+    + '<div class="table-container"><table><thead><tr><th>名称</th><th>版本</th><th>描述</th><th>状态</th><th>操作</th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="5"><div class="empty">暂无插件，点击右上角上传安装</div></td></tr>')
+    + '</tbody></table></div>';
 }
+window.renderPlugins = renderPlugins;
+
+// 插件注册的后台菜单若未提供 url，则渲染一个通用面板（插件可通过 url 指向自定义页面）
+function renderPluginMenuPanel(id) {
+  setTopbar('');
+  document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">插件页面</h3>'
+    + '<p style="color:#64748b">插件「' + escape(id) + '」注册了后台菜单，但未提供自定义页面地址（url）。</p>'
+    + '<p style="color:#64748b">请在插件的 <code>ctx.addAdminMenu({ id, title, icon, order, url })</code> 中指定 <code>url</code>，'
+    + '指向插件自己提供的后台页面（例如主题/插件目录下的静态页面）。</p>'
+    + '<button class="btn btn-outline" onclick="page=\'plugins\';render()">前往插件管理</button></div>';
+}
+
 window.togglePlugin = async (dir) => {
   try {
-    await api('/admin/plugins/toggle', { method: 'POST', body: { dir } });
-    toast('已更新'); renderPlugins();
+    const r = await api('/admin/plugins/toggle', { method: 'POST', body: { dir } });
+    if (r && r.hot && r.hot !== 'ok') toast('状态已保存，但热加载失败：' + r.hot, 'error');
+    else toast(r && r.active ? '插件已启用' : '插件已禁用');
+    renderPlugins();
   } catch (e) { toast(e.message, 'error'); }
 };
-window.renderPlugins = renderPlugins;
+
+window.uninstallPlugin = async (dir, name) => {
+  if (!confirm('确定卸载插件「' + name + '」？目录会移动到回收区，可手动恢复。')) return;
+  try {
+    await api('/admin/plugins/' + encodeURIComponent(dir), { method: 'DELETE' });
+    toast('插件已卸载');
+    renderPlugins();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+window.uploadPlugin = async (input) => {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!/\.zip$/i.test(file.name)) { toast('请选择 .zip 插件包', 'error'); input.value = ''; return; }
+  if (file.size > 30 * 1024 * 1024) { toast('插件包不能超过 30MB', 'error'); input.value = ''; return; }
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ''));
+      fr.onerror = () => reject(new Error('读取文件失败'));
+      fr.readAsDataURL(file);
+    });
+    const r = await api('/admin/plugins/install', { method: 'POST', body: { name: file.name, data }, timeout: 120000 });
+    toast('插件「' + (r.name || r.dir) + '」安装成功，请在列表中启用');
+    renderPlugins();
+  } catch (e) {
+    toast(e.message || '安装失败', 'error');
+    input.value = '';
+  }
+};

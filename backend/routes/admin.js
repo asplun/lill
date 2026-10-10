@@ -13,7 +13,7 @@ import { scanPageTemplates } from '../lib/themes.js';
 const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
 
 export function register(router, ctx) {
-  const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, readThemeManifest, UPLOAD_DIR, THEMES_DIR } = ctx;
+  const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, deactivatePlugin, activatePlugin, loadPlugin, scanPlugins, loadPlugins, triggerHook, _activePlugins, _hooks } = ctx;
   const route = router.route;
   const FRONTEND_DIR = dirname(THEMES_DIR);
   const ROOT_DIR = dirname(FRONTEND_DIR);
@@ -88,7 +88,9 @@ route('POST', '/api/v1/admin/posts', async (req, res) => {
     .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(body.fields || {}), tpl);
   if (body.tagNames?.length) { for (const name of body.tagNames) { const ts = slugify(name) || 'tag-' + Date.now().toString(36); let tag = db.prepare('SELECT id FROM tags WHERE slug = ?').get(ts); if (!tag) { const tid = uid(); db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)').run(tid, name, ts); tag = { id: tid }; } db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)').run(id, tag.id); } }
   logAction(auth.id, 'post.create', '创建文章: ' + body.title, req);
-  json(res, db.prepare('SELECT * FROM posts WHERE id = ?').get(id), 201);
+  const created = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
+  try { triggerHook('post.saved', created, { isNew: true }); } catch {}
+  json(res, created, 201);
 }, true);
 
 route('PUT', '/api/v1/admin/posts/:id', async (req, res, params) => {
@@ -117,7 +119,9 @@ route('PUT', '/api/v1/admin/posts/:id', async (req, res, params) => {
   if (updates.length) { args.push(params.id); db.prepare(`UPDATE posts SET ${updates.join(', ')} WHERE id = ?`).run(...args); }
   if (body.tagNames !== undefined) { db.prepare('DELETE FROM post_tags WHERE post_id = ?').run(params.id); for (const name of body.tagNames) { const ts = slugify(name) || 'tag-' + Date.now().toString(36); let tag = db.prepare('SELECT id FROM tags WHERE slug = ?').get(ts); if (!tag) { const tid = uid(); db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)').run(tid, name, ts); tag = { id: tid }; } db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)').run(params.id, tag.id); } }
   logAction(auth.id, 'post.update', '更新文章: ' + (body.title || exist.title), req);
-  json(res, db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id));
+  const updated = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id);
+  try { triggerHook('post.saved', updated, { isNew: false }); } catch {}
+  json(res, updated);
 }, true);
 
 route('GET', '/api/v1/admin/posts/:id', async (req, res, params) => {
@@ -135,6 +139,7 @@ route('DELETE', '/api/v1/admin/posts/:id', async (req, res, params) => {
   if (auth.role === 'contributor' && exist.author_id !== auth.id) return error(res, '无权限', 403);
   db.prepare('DELETE FROM posts WHERE id = ?').run(params.id);
   logAction(auth.id, 'post.delete', '删除文章: ' + exist.title, req);
+  try { triggerHook('post.deleted', exist); } catch {}
   json(res, { id: params.id });
 }, true);
 
@@ -234,14 +239,17 @@ route('PATCH', '/api/v1/admin/comments/:id/status', async (req, res, params) => 
   if (!['approved', 'pending', 'spam', 'trash'].includes(status)) return error(res, '无效状态');
   db.prepare('UPDATE comments SET status = ? WHERE id = ?').run(status, params.id);
   logAction(auth.id, 'comment.status', '评论状态更新: ' + params.id + ' -> ' + status, req);
+  try { triggerHook('comment.status', { id: params.id, status }); } catch {}
   json(res, { id: params.id, status });
 }, true);
 
 route('DELETE', '/api/v1/admin/comments/:id', async (req, res, params) => {
   const auth = await authenticate(req);
   if (!['admin', 'editor'].includes(auth.role)) return error(res, '权限不足', 403);
+  const gone = db.prepare('SELECT * FROM comments WHERE id = ?').get(params.id);
   db.prepare('DELETE FROM comments WHERE id = ?').run(params.id);
   logAction(auth.id, 'comment.delete', '删除评论: ' + params.id, req);
+  try { triggerHook('comment.deleted', gone || { id: params.id }); } catch {}
   json(res, { id: params.id });
 }, true);
 
@@ -304,7 +312,9 @@ route('POST', '/api/v1/admin/media/upload', async (req, res) => {
   }
   const thumbUrl = createThumbnailOnUpload(fp, safeExt);
   db.prepare('INSERT INTO media (id, name, path, url, mime_type, size, width, height, alt, thumbnail_url, uploader_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, body.name, fp, url, body.mime || 'application/octet-stream', size, width, height, body.alt || null, thumbUrl, auth.id);
-  json(res, db.prepare('SELECT * FROM media WHERE id = ?').get(id), 201);
+  const mediaRow = db.prepare('SELECT * FROM media WHERE id = ?').get(id);
+  try { triggerHook('media.uploaded', mediaRow, { isNew: true }); } catch {}
+  json(res, mediaRow, 201);
 }, true);
 
 route('GET', '/api/v1/admin/media', async (req, res) => {
@@ -323,6 +333,7 @@ route('DELETE', '/api/v1/admin/media/:id', async (req, res, params) => {
   if (!media) return error(res, '文件不存在', 404);
   try { const { unlinkSync } = await import('node:fs'); unlinkSync(media.path); } catch {}
   db.prepare('DELETE FROM media WHERE id = ?').run(params.id);
+  try { triggerHook('media.deleted', media); } catch {}
   json(res, { id: params.id });
 }, true);
 
@@ -347,6 +358,8 @@ route('POST', '/api/v1/admin/users', async (req, res) => {
   const id = uid();
   db.prepare('INSERT INTO users (id, username, email, password, nickname, role) VALUES (?, ?, ?, ?, ?, ?)').run(id, body.username, body.email, hashPwd(body.password), body.nickname || body.username, body.role || 'subscriber');
   logAction(auth.id, 'user.create', '创建用户: ' + body.username, req);
+  const createdUser = db.prepare('SELECT id, username, nickname, email, role FROM users WHERE id = ?').get(id);
+  try { triggerHook('user.created', createdUser); } catch {}
   json(res, { id, username: body.username, role: body.role }, 201);
 }, true);
 
@@ -381,6 +394,7 @@ route('PUT', '/api/v1/admin/options', async (req, res) => {
     if (existing) db.prepare(`UPDATE options SET value = ?, autoload = ?, updated_at = datetime('now') WHERE key = ?`).run(item.value, autoload, item.key);
     else db.prepare('INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, ?)').run(uid(), item.key, item.value, autoload);
   }
+  try { triggerHook('options.saved', items); } catch {}
   json(res, { updated: items.length });
 }, true);
 
@@ -416,6 +430,7 @@ route('POST', '/api/v1/admin/themes/:themeId/activate', async (req, res, params)
   db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(params.themeId);
   // 同步更新 options.active_theme，消除双写不一致
   db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), params.themeId);
+  try { triggerHook('theme.activated', { themeId: params.themeId }); } catch {}
   json(res, { themeId: params.themeId, active: true });
 }, true);
 
@@ -738,12 +753,13 @@ route('PUT', '/api/v1/admin/themes/file', async (req, res) => {
 // 插件系统 - 列出插件
 route('GET', '/api/v1/admin/plugins', async (req, res) => {
   await authenticate(req);
-  const pluginsDir = join(ROOT_DIR, 'plugins');
+  const pluginsDir = PLUGINS_DIR;
   const plugins = [];
   if (existsSync(pluginsDir)) {
     const entries = readdirSync(pluginsDir, { withFileTypes: true });
     for (const e of entries) {
-      if (e.isDirectory()) {
+      // 跳过隐藏/临时/回收目录（.tmp-*、.trash-*、.bak-*、._* 等）
+      if (e.isDirectory() && !e.name.startsWith('.')) {
         const manifestPath = join(pluginsDir, e.name, 'plugin.json');
         if (existsSync(manifestPath)) {
           try {
@@ -764,9 +780,12 @@ route('POST', '/api/v1/admin/plugins/toggle', async (req, res) => {
   await authenticate(req);
   const body = await parseBody(req);
   if (!body.dir) return error(res, '缺少插件目录名', 400);
-  
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(body.dir) || body.dir.includes('..')) {
+    return error(res, '非法插件目录名', 400);
+  }
+
   // 检查插件是否存在
-  const pluginsDir = join(ROOT_DIR, 'plugins');
+  const pluginsDir = PLUGINS_DIR;
   const manifestPath = join(pluginsDir, body.dir, 'plugin.json');
   if (!existsSync(manifestPath)) return error(res, '插件不存在', 404);
   
@@ -788,7 +807,155 @@ route('POST', '/api/v1/admin/plugins/toggle', async (req, res) => {
       .run(uid(), body.dir, manifest.name || body.dir, manifest.version || '1.0.0', manifest.description || '', newActive ? 1 : 0);
   }
   
-  json(res, { dir: body.dir, active: newActive, message: newActive ? '插件已启用' : '插件已禁用' });
+  // 运行时热加载 / 卸载，无需重启服务
+  let hot = 'ok';
+  try {
+    if (newActive) {
+      await activatePlugin(body.dir);
+    } else {
+      deactivatePlugin(body.dir);
+    }
+  } catch (e) {
+    hot = 'reload_failed: ' + e.message;
+    console.error(`  ✗ 插件热加载失败：${body.dir} — ${e.message}`);
+  }
+
+  json(res, { dir: body.dir, active: newActive, hot, message: newActive ? '插件已启用' : '插件已禁用' });
+}, true);
+
+// 插件注册的后台菜单
+route('GET', '/api/v1/admin/plugin-menus', async (req, res) => {
+  await authenticate(req);
+  const menus = Array.isArray(ctx._adminMenus) ? ctx._adminMenus.slice().sort((a, b) => (a.order || 0) - (b.order || 0)) : [];
+  json(res, menus);
+}, true);
+
+// 插件系统 - 上传 ZIP 安装插件
+route('POST', '/api/v1/admin/plugins/install', async (req, res) => {
+  await authenticate(req);
+  const body = await parseBody(req);
+  if (!body.name || !body.data) return error(res, '缺少插件数据', 400);
+
+  // base64 解码
+  let buf;
+  try {
+    buf = Buffer.from(body.data, 'base64');
+  } catch {
+    return error(res, '无效的数据', 400);
+  }
+
+  // 解压到临时目录
+  const pluginsDir = PLUGINS_DIR;
+  mkdirSync(pluginsDir, { recursive: true });
+  const tmpDir = join(pluginsDir, '.tmp-' + uid());
+  mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    const entries = listZipEntries(buf);
+    // 检查根目录（去前缀后只剩一级的为顶层目录名）
+    const topDirs = new Set();
+    for (const e of entries) {
+      const parts = e.name.split('/').filter(Boolean);
+      if (parts.length > 0) topDirs.add(parts[0]);
+    }
+    // 支持直接打包 plugins/<dir>/xxx 或 <dir>/xxx 两种结构
+    let targetDir = topDirs.size === 1 ? [...topDirs][0] : String(body.name || '').replace(/\.[^.]+$/, '');
+    // 目录名安全校验，防路径穿越
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(targetDir) || targetDir.includes('..')) {
+      return error(res, '插件目录名非法（仅允许字母、数字、- _ .，且以字母或数字开头）', 400);
+    }
+
+    for (const e of entries) {
+      if (e.rawSize === 0 && e.name.endsWith('/')) continue; // 目录条目
+      const rel = e.name.split('/').filter(Boolean).slice(topDirs.size === 1 ? 1 : 0).join('/');
+      if (!rel) continue;
+      const safeRel = safeEntryPath(rel);
+      if (!safeRel) continue;
+      const safe = join(tmpDir, safeRel);
+      const data = readZipEntry(buf, e);
+      mkdirSync(dirname(safe), { recursive: true });
+      writeFileSync(safe, data);
+    }
+
+    // 解压时已剥离顶层目录，内容统一落在 tmpDir 根
+    const srcDir = tmpDir;
+
+    // 找到 plugin.json 的位置
+    const manifestFullPath = join(srcDir, 'plugin.json');
+
+    if (!existsSync(manifestFullPath)) {
+      // 清理临时目录
+      readdirSync(tmpDir).forEach(f => {
+        try { renameSync(join(tmpDir, f), join(pluginsDir, '.trash-' + uid() + '-' + f)); } catch {}
+      });
+      return error(res, 'ZIP 中未找到 plugin.json', 400);
+    }
+
+    // 读取 manifest
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestFullPath, 'utf8'));
+    } catch {
+      return error(res, 'plugin.json 格式错误', 400);
+    }
+
+    // 移动到正式位置
+    const finalDir = join(pluginsDir, targetDir);
+    if (existsSync(finalDir)) {
+      // 已存在则覆盖：先备份
+      renameSync(finalDir, join(pluginsDir, '.bak-' + uid() + '-' + targetDir));
+    }
+    renameSync(srcDir, finalDir);
+
+    // 写入数据库
+    const existing = db.prepare('SELECT id FROM plugins WHERE dir = ?').get(targetDir);
+    if (!existing) {
+      db.prepare('INSERT INTO plugins (id, dir, name, version, description, active) VALUES (?, ?, ?, ?, ?, 0)')
+        .run(uid(), targetDir, manifest.name || targetDir, manifest.version || '1.0.0', manifest.description || '');
+    }
+
+    // 清理临时目录
+    try {
+      readdirSync(tmpDir).forEach(f => {
+        try { renameSync(join(tmpDir, f), join(pluginsDir, '.trash-' + uid() + '-' + f)); } catch {}
+      });
+    } catch {}
+
+    json(res, { dir: targetDir, name: manifest.name || targetDir, version: manifest.version || '1.0.0', message: '插件已安装，请在列表中启用' }, 201);
+  } catch (e) {
+    // 清理临时目录
+    try {
+      readdirSync(tmpDir).forEach(f => {
+        try { renameSync(join(tmpDir, f), join(pluginsDir, '.trash-' + uid() + '-' + f)); } catch {}
+      });
+    } catch {}
+    return error(res, '安装失败: ' + e.message, 400);
+  }
+}, true);
+
+// 插件系统 - 卸载插件
+route('DELETE', '/api/v1/admin/plugins/:dir', async (req, res, params) => {
+  await authenticate(req);
+  const dir = params.dir;
+  // 防目录穿越：目录名只允许字母/数字/_/-/.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(dir) || dir.includes('..')) {
+    return error(res, '非法插件目录名', 400);
+  }
+  const pluginsDir = PLUGINS_DIR;
+  const pluginPath = join(pluginsDir, dir);
+
+  if (!existsSync(pluginPath)) return error(res, '插件不存在', 404);
+
+  // 先停用（未加载时为空操作），再清理数据库状态
+  try { deactivatePlugin(dir); } catch {}
+  db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run(dir);
+
+  // 移动到回收目录（不直接删除，可恢复）
+  const trashDir = join(pluginsDir, '.trash-' + uid() + '-' + dir);
+  renameSync(pluginPath, trashDir);
+  db.prepare('DELETE FROM plugins WHERE dir = ?').run(dir);
+
+  json(res, { dir, message: '插件已卸载' });
 }, true);
 
 // 小工具管理

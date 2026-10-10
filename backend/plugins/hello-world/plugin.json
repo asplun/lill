@@ -1,0 +1,6 @@
+{
+  "name": "Hello World",
+  "version": "1.0.0",
+  "description": "示例插件：演示插件系统的路由注册、hook 监听、后台菜单、配置存储能力",
+  "author": "lill"
+}

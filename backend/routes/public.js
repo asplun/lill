@@ -11,7 +11,7 @@ import { clientIp } from '../lib/http.js';
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
 export function register(router, ctx) {
-  const { db, json, error, parseBody, validators, uid, slugify, renderMD, authenticate, readThemeManifest } = ctx;
+  const { db, json, error, parseBody, validators, uid, slugify, renderMD, authenticate, readThemeManifest, triggerHook } = ctx;
   const { security, mail } = ctx;
   const route = router.route;
 
@@ -1147,6 +1147,7 @@ route('POST', '/api/v1/comments', async (req, res) => {
       res.setHeader('Set-Cookie', prev ? [].concat(prev, ck) : ck);
     } catch (e) { /* cookie 写失败不影响评论提交 */ }
   }
+  try { if (typeof triggerHook === 'function') triggerHook('comment.saved', row, { isNew: true }); } catch {}
   json(res, { id, status, pending: status !== 'approved', comment: shapeComment(row, post.author_id, user) }, 201);
 });
 

@@ -20,6 +20,7 @@ import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin.js';
 import { loadThemeExtensions, registerThemeExtensions, resolveActiveThemeId } from './lib/theme-ext.js';
+import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook } from './lib/plugin-ext.js';
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
 import { createSecurity } from './lib/security.js';
@@ -31,6 +32,7 @@ const PORT = parseInt(process.env.PORT) || 3000;
 const DB_PATH = process.env.DB_PATH || join(__dirname, 'data', 'lill.db');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || join(__dirname, 'uploads');
 const THEMES_DIR = process.env.THEMES_DIR || join(__dirname, '..', 'frontend', 'themes');
+const PLUGINS_DIR = process.env.PLUGINS_DIR || join(__dirname, 'plugins');
 const JWT_SECRET = process.env.JWT_SECRET || (() => {
   const s = require('node:crypto').randomBytes(32).toString('hex');
   console.warn('⚠️  JWT_SECRET 未设置，已生成随机密钥（重启后失效）');
@@ -107,6 +109,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS themes (
     id TEXT PRIMARY KEY, theme_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
     version TEXT DEFAULT '1.0.0', active INTEGER DEFAULT 0, config TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS plugins (
+    id TEXT PRIMARY KEY, dir TEXT UNIQUE NOT NULL, name TEXT,
+    version TEXT DEFAULT '1.0.0', description TEXT, active INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
 `);
@@ -331,7 +338,7 @@ const security = createSecurity({ db, settings });
 const imageHost = createImageHost({ settings, uploadDir: UPLOAD_DIR, siteUrl: settings.siteUrl() });
 setJsonTransform((data) => imageHost.signDeep(data));
 const feed = createFeed({ db, settings });
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
 /* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
    主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
    扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */
@@ -345,9 +352,24 @@ ctx.themeExt = {
 };
 registerInstall(router, ctx);
 registerPublic(router, ctx);
+/* 插件运行时接口：必须在 registerAdmin 之前挂到 ctx，
+   否则后台路由在注册时解构不到这些函数。 */
+ctx.route = (method, path, fn, auth) => router.route(method, path, fn, auth);
+ctx.router = router;
+ctx.loadPlugin = (dir) => loadPlugin(dir, PLUGINS_DIR);
+ctx.scanPlugins = () => scanPlugins(PLUGINS_DIR);
+ctx.activatePlugin = (dir) => activatePlugin(dir, PLUGINS_DIR, ctx);
+ctx.deactivatePlugin = (dir) => deactivatePlugin(dir, ctx._activePlugins);
+
 registerAuth(router, ctx);
 registerAdmin(router, ctx);
 registerThemeExtensions(router, ctx, themeExts, resolveActiveTheme, (res) => error(res, 'API 不存在', 404));
+
+/* 插件运行时：加载 backend/plugins/ 下所有 active=1 的插件。
+   插件通过 ctx.route() 注册路由、ctx.on() 监听 hook、ctx.addAdminMenu() 注册后台菜单。
+   插件报错不影响 core 运行。 */
+const activePlugins = await loadPlugins(PLUGINS_DIR, ctx);
+ctx._activePlugins = activePlugins;
 const REQUEST_TIMEOUT = 20000; // 请求级超时兜底：避免个别慢请求让前端长时间转圈
 const server = http.createServer(async (req, res) => {
   const startTime = Date.now();
