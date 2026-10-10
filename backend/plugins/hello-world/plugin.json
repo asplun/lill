@@ -1,6 +1,62 @@
 {
-  "name": "Hello World",
-  "version": "1.0.0",
-  "description": "示例插件：演示插件系统的路由注册、hook 监听、后台菜单、配置存储能力",
-  "author": "lill"
+  "name": "Hello World 公告栏",
+  "version": "1.1.0",
+  "description": "默认示例插件，同时是一个可用的小工具：在站点展示一条可配置的公告，并提供公开接口给主题调用",
+  "author": "lill",
+  "settings": [
+    {
+      "group": "公告内容",
+      "key": "enabled",
+      "label": "启用公告",
+      "type": "checkbox",
+      "default": true
+    },
+    {
+      "group": "公告内容",
+      "key": "text",
+      "label": "公告文字",
+      "type": "textarea",
+      "default": "欢迎来到 lill 博客系统！"
+    },
+    {
+      "group": "公告内容",
+      "key": "position",
+      "label": "显示位置",
+      "type": "select",
+      "default": "top",
+      "options": [
+        { "value": "top", "label": "页面顶部" },
+        { "value": "footer", "label": "页脚" },
+        { "value": "sidebar", "label": "侧边栏" }
+      ]
+    },
+    {
+      "group": "外观",
+      "key": "bg_color",
+      "label": "背景色",
+      "type": "color",
+      "default": "#4f46e5"
+    },
+    {
+      "group": "外观",
+      "key": "text_color",
+      "label": "文字颜色",
+      "type": "color",
+      "default": "#ffffff"
+    },
+    {
+      "group": "高级",
+      "key": "max_shows",
+      "label": "最多显示次数（0 = 不限）",
+      "type": "number",
+      "default": 0
+    },
+    {
+      "group": "高级",
+      "key": "track_events",
+      "label": "记录文章/评论事件",
+      "type": "checkbox",
+      "default": true
+    }
+  ]
 }

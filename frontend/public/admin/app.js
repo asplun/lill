@@ -63,6 +63,7 @@ async function render() {
       case 'backup': return await renderBackup();
       case 'plugins': return await renderPlugins();
       default:
+        if (page.startsWith('plugin-settings:')) return openPluginSettings(page.slice(16));
         if (page.startsWith('plugin:')) return renderPluginMenuPanel(page.slice(7));
         c.innerHTML = '<div class="empty">页面不存在</div>';
     }
@@ -469,6 +470,56 @@ window.uploadTheme = async (input) => {
 
 window.activateTheme = async (themeId) => { try { await api('/admin/themes/' + encodeURIComponent(themeId) + '/activate', { method: 'POST' }); toast('已切换主题'); renderThemes(); } catch (e) { toast(e.message, 'error'); } };
 
+// ═══ 通用设置表单（主题设置 / 插件设置共用）═══
+// schema 来自 theme.json 的 settings 或 plugin.json 的 settings，结构一致
+// keyAttr：写到每个控件上的属性名，保存时按它回读表单值
+function settingsFormHTML(schema, values, keyAttr) {
+  const groups = [], groupMap = {};
+  schema.forEach(f => {
+    const g = f.group || '常规';
+    if (!groupMap[g]) { groupMap[g] = []; groups.push(g); }
+    groupMap[g].push(f);
+  });
+  let html = '';
+  groups.forEach(g => {
+    html += '<div class="settings-group"><h4 class="settings-group-title">' + escape(g) + '</h4>';
+    groupMap[g].forEach(f => {
+      const raw = values[f.key] !== undefined ? values[f.key] : (f.default !== undefined ? f.default : '');
+      const v = (raw === null || raw === undefined) ? '' : String(raw);
+      const id = keyAttr + '_' + f.key;
+      const attr = ' ' + keyAttr + '="' + escape(f.key) + '"';
+      html += '<div class="form-group"><label>' + escape(f.label || f.key) + '</label>';
+      if (f.type === 'color') {
+        html += '<input type="color" id="' + id + '" value="' + escape(v) + '"' + attr + '>';
+      } else if (f.type === 'select') {
+        html += '<select id="' + id + '"' + attr + '>' + (f.options || []).map(o => '<option value="' + escape(o.value) + '"' + (v === String(o.value) ? ' selected' : '') + '>' + escape(o.label) + '</option>').join('') + '</select>';
+      } else if (f.type === 'textarea') {
+        html += '<textarea id="' + id + '" rows="3"' + attr + '>' + escape(v) + '</textarea>';
+      } else if (f.type === 'checkbox') {
+        html += '<label style="display:flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" id="' + id + '" style="width:auto"' + (v === 'true' ? ' checked' : '') + attr + '> 启用</label>';
+      } else if (f.type === 'number') {
+        html += '<input type="number" id="' + id + '" value="' + escape(v) + '"' + attr + '>';
+      } else {
+        html += '<input type="text" id="' + id + '" value="' + escape(v) + '"' + attr + '>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  return html;
+}
+
+// 按 keyAttr 从 DOM 回读表单值
+function readSettingsForm(keyAttr) {
+  const body = {};
+  document.querySelectorAll('[' + keyAttr + ']').forEach(el => {
+    const key = el.getAttribute(keyAttr);
+    if (el.type === 'checkbox') body[key] = el.checked ? 'true' : 'false';
+    else body[key] = el.value;
+  });
+  return body;
+}
+
 window.openThemeSettings = async (themeId) => {
   currentThemeId = themeId;
   const r = await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings');
@@ -481,35 +532,7 @@ window.openThemeSettings = async (themeId) => {
     html += '<div class="empty">该主题没有可配置的选项</div>';
   } else {
     // 按 group 分组渲染（对标 Typecho / WP 的主题设置面板）
-    const groups = [], groupMap = {};
-    schema.forEach(f => {
-      const g = f.group || '常规';
-      if (!groupMap[g]) { groupMap[g] = []; groups.push(g); }
-      groupMap[g].push(f);
-    });
-    groups.forEach(g => {
-      html += '<div class="settings-group"><h4 class="settings-group-title">' + escape(g) + '</h4>';
-      groupMap[g].forEach(f => {
-        const v = values[f.key] !== undefined ? values[f.key] : (f.default !== undefined ? f.default : '');
-        const id = 'ts_' + f.key;
-        html += '<div class="form-group"><label>' + escape(f.label || f.key) + '</label>';
-        if (f.type === 'color') {
-          html += '<input type="color" id="' + id + '" value="' + escape(v) + '">';
-        } else if (f.type === 'select') {
-          html += '<select id="' + id + '">' + (f.options || []).map(o => '<option value="' + escape(o.value) + '"' + (v === o.value ? ' selected' : '') + '>' + escape(o.label) + '</option>').join('') + '</select>';
-        } else if (f.type === 'textarea') {
-          html += '<textarea id="' + id + '" rows="3">' + escape(v) + '</textarea>';
-        } else if (f.type === 'checkbox') {
-          html += '<label style="display:flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" id="' + id + '" style="width:auto"' + (v === 'true' || v === true ? ' checked' : '') + '> 启用</label>';
-        } else if (f.type === 'number') {
-          html += '<input type="number" id="' + id + '" value="' + escape(v) + '">';
-        } else {
-          html += '<input type="text" id="' + id + '" value="' + escape(v) + '">';
-        }
-        html += '</div>';
-      });
-      html += '</div>';
-    });
+    html += settingsFormHTML(schema, values, 'data-ts-key');
     html += '<button class="btn btn-primary" onclick="saveThemeSettings(\'' + escape(themeId) + '\')">保存设置</button>';
   }
   html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="renderThemes()">← 返回主题列表</button></div></div>';
@@ -518,13 +541,8 @@ window.openThemeSettings = async (themeId) => {
 };
 
 window.saveThemeSettings = async (themeId) => {
-  // 直接从 DOM 读取 schema（避免重复 GET 请求）
-  const body = {};
-  document.querySelectorAll('[data-ts-key]').forEach(el => {
-    const key = el.getAttribute('data-ts-key');
-    if (el.type === 'checkbox') body[key] = el.checked ? 'true' : 'false';
-    else body[key] = el.value;
-  });
+  // 直接从 DOM 读取已渲染的字段（避免重复 GET 请求）
+  const body = readSettingsForm('data-ts-key');
   try {
     await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings', { method: 'PUT', body });
     toast('已保存');
@@ -773,7 +791,11 @@ async function renderPlugins() {
   if (fi) fi.onchange = (e) => uploadPlugin(e.target);
 
   const rows = plugins.map(p => {
-    const actions = '<button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button>'
+    const settingsBtn = p.hasSettings
+      ? '<button class="btn btn-sm btn-primary" onclick="openPluginSettings(\'' + escape(p.dir) + '\')">设置</button> '
+      : '';
+    const actions = settingsBtn
+      + '<button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button>'
       + ' <button class="btn btn-sm btn-outline" style="color:#dc2626;border-color:#fca5a5" onclick="uninstallPlugin(\'' + escape(p.dir) + '\',\'' + escape(p.name || p.dir) + '\')">卸载</button>';
     return '<tr><td><strong>' + escape(p.name || p.dir) + '</strong><br><small style="color:#64748b">' + escape(p.dir) + '</small></td>'
       + '<td>' + escape(p.version || '-') + '</td>'
@@ -792,16 +814,57 @@ async function renderPlugins() {
     + '</tbody></table></div>';
 }
 window.renderPlugins = renderPlugins;
+window.renderPluginMenuPanel = renderPluginMenuPanel;
 
-// 插件注册的后台菜单若未提供 url，则渲染一个通用面板（插件可通过 url 指向自定义页面）
-function renderPluginMenuPanel(id) {
+// 插件注册的后台菜单：优先按 page 打开插件自己的页面；
+// 未指定 page 时，若插件声明了 settings 就打开设置页，否则给出明确提示（不再是死胡同）。
+async function renderPluginMenuPanel(id) {
   setTopbar('');
-  document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">插件页面</h3>'
-    + '<p style="color:#64748b">插件「' + escape(id) + '」注册了后台菜单，但未提供自定义页面地址（url）。</p>'
-    + '<p style="color:#64748b">请在插件的 <code>ctx.addAdminMenu({ id, title, icon, order, url })</code> 中指定 <code>url</code>，'
-    + '指向插件自己提供的后台页面（例如主题/插件目录下的静态页面）。</p>'
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  let plugins = [];
+  try { plugins = (await api('/admin/plugins')) || []; } catch (e) { plugins = []; }
+  const p = plugins.find(x => x.dir === id);
+  if (p && p.hasSettings) return openPluginSettings(id);
+  c.innerHTML = '<div class="card"><h3 class="card-title">插件页面</h3>'
+    + '<p style="color:#64748b">插件「' + escape(p ? (p.name || id) : id) + '」注册了后台菜单，但没有可打开的后台页面。</p>'
+    + '<p style="color:#64748b">插件可以：① 在 <code>plugin.json</code> 里写 <code>settings</code>，后台会自动生成设置页；'
+    + '② 在 <code>ctx.addAdminMenu({ ..., page: \'plugin-settings:&lt;目录名&gt;\' })</code> 中指向设置页；'
+    + '③ 用 <code>url</code> 指向插件自带的页面。</p>'
     + '<button class="btn btn-outline" onclick="page=\'plugins\';render()">前往插件管理</button></div>';
 }
+
+// ═══ 插件设置页（对标 Typecho 插件配置面板 / WP 插件设置页）═══
+async function openPluginSettings(dir) {
+  setTopbar('');
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  let r;
+  try { r = await api('/admin/plugins/' + encodeURIComponent(dir) + '/config'); }
+  catch (e) { c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="page=\'plugins\';render()">← 返回插件列表</button></div>'; return; }
+
+  const schema = r.schema || [];
+  const values = r.values || {};
+  let html = '<div class="card"><h3 class="card-title">插件设置 — ' + escape(r.name || dir) + '</h3>';
+  if (!schema.length) {
+    html += '<div class="empty">该插件没有声明可配置项（<code>plugin.json</code> 的 <code>settings</code> 为空）</div>';
+  } else {
+    html += '<p style="color:#64748b;font-size:13px;margin-top:-4px">这些字段来自插件目录下的 <code>plugin.json</code>，保存后插件通过 <code>ctx.getConfig()</code> 读取。</p>';
+    html += settingsFormHTML(schema, values, 'data-ps-key');
+    html += '<button class="btn btn-primary" onclick="savePluginSettings(\'' + escape(dir) + '\')">保存设置</button>';
+  }
+  html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="page=\'plugins\';render()">← 返回插件列表</button></div></div>';
+  c.innerHTML = html;
+}
+window.openPluginSettings = openPluginSettings;
+
+window.savePluginSettings = async (dir) => {
+  const body = readSettingsForm('data-ps-key');
+  try {
+    await api('/admin/plugins/' + encodeURIComponent(dir) + '/config', { method: 'PUT', body });
+    toast('设置已保存');
+  } catch (e) { toast(e.message, 'error'); }
+};
 
 window.togglePlugin = async (dir) => {
   try {

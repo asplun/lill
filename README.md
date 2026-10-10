@@ -9,7 +9,8 @@
 - **前后端分离**：后端只处理 `/api/*`，前端静态文件由 Nginx 直接服务
 - **主题系统**：主题放在 `frontend/themes/` 下，`theme.json` 声明元数据与设置项
 - **主题后端扩展**：主题自带 `backend/index.js`（对标 Typecho 的 `functions.php`），可注册私有接口、短代码、页面模板数据；core 不含任何具体主题实现，换主题零改动
-- **插件系统**：`backend/plugins/<dir>/{plugin.json,index.js}`，插件可注册 REST 路由、监听系统钩子、注册后台菜单、读写独立配置；后台「扩展 → 插件管理」上传 ZIP 即装，启用/禁用**热加载无需重启**（对标 Typecho 的 `Plugin::activate()` / WordPress 的 `add_action`）
+- **插件系统**：`backend/plugins/<dir>/{plugin.json,index.js}`，插件可注册 REST 路由、监听系统钩子、注册后台菜单、读写独立配置；`plugin.json` 声明 `settings` 后后台**自动生成插件设置页**；上传 ZIP 即装，启用/禁用**热加载无需重启**（对标 Typecho 的 `Plugin::activate()` / WordPress 的 `add_action`）
+- **默认插件**：自带「Hello World 公告栏」，开箱可用——后台可配置公告文字/位置/配色，前台通过 `GET /api/v1/hello` 读取
 - **多用户**：支持多用户角色（管理员、编辑、作者）
 - **评论分组**：评论按文章分组，支持审核、回复
 - **永久链接**：自定义 URL 结构（`/archives/{cid}/`、`/category/{slug}/` 等）

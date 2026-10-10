@@ -766,7 +766,14 @@ route('GET', '/api/v1/admin/plugins', async (req, res) => {
             const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
             // 从 plugins 表读取 active 状态
             const dbPlugin = db.prepare('SELECT active FROM plugins WHERE dir = ?').get(e.name);
-            plugins.push({ ...manifest, dir: e.name, active: dbPlugin ? !!dbPlugin.active : false });
+            // 列表不返回完整 settings（体积），只标记是否可配置；详细结构走 /config 接口
+            const { settings, ...meta } = manifest;
+            plugins.push({
+              ...meta,
+              dir: e.name,
+              active: dbPlugin ? !!dbPlugin.active : false,
+              hasSettings: Array.isArray(settings) && settings.length > 0
+            });
           } catch {}
         }
       }
@@ -828,6 +835,63 @@ route('GET', '/api/v1/admin/plugin-menus', async (req, res) => {
   await authenticate(req);
   const menus = Array.isArray(ctx._adminMenus) ? ctx._adminMenus.slice().sort((a, b) => (a.order || 0) - (b.order || 0)) : [];
   json(res, menus);
+}, true);
+
+// 插件设置 - 读取配置结构（plugin.json 的 settings）+ 当前值
+// 对标 Typecho 插件面板 / WordPress 插件设置页：插件声明字段，后台自动生成表单
+route('GET', '/api/v1/admin/plugins/:dir/config', async (req, res, params) => {
+  await authenticate(req);
+  const dir = params.dir;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(dir) || dir.includes('..')) return error(res, '非法插件目录名', 400);
+  const manifestPath = join(PLUGINS_DIR, dir, 'plugin.json');
+  if (!existsSync(manifestPath)) return error(res, '插件不存在', 404);
+
+  let manifest = {};
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch {}
+  const schema = Array.isArray(manifest.settings) ? manifest.settings : [];
+
+  const values = {};
+  for (const f of schema) {
+    if (!f || !f.key) continue;
+    const row = db.prepare('SELECT value FROM options WHERE key = ?').get(`plugin_${dir}_${f.key}`);
+    if (row) {
+      try { values[f.key] = JSON.parse(row.value); } catch { values[f.key] = row.value; }
+    } else if (f.default !== undefined) {
+      values[f.key] = f.default;
+    }
+  }
+  json(res, { dir, name: manifest.name || dir, active: !!db.prepare('SELECT active FROM plugins WHERE dir = ?').get(dir)?.active, schema, values });
+}, true);
+
+// 插件设置 - 保存（只接受 plugin.json settings 中声明过的 key）
+route('PUT', '/api/v1/admin/plugins/:dir/config', async (req, res, params) => {
+  await authenticate(req);
+  const dir = params.dir;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(dir) || dir.includes('..')) return error(res, '非法插件目录名', 400);
+  const manifestPath = join(PLUGINS_DIR, dir, 'plugin.json');
+  if (!existsSync(manifestPath)) return error(res, '插件不存在', 404);
+
+  const body = await parseBody(req);
+  let manifest = {};
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch {}
+  const schema = Array.isArray(manifest.settings) ? manifest.settings : [];
+
+  // 按字段类型归一化，再 JSON 序列化存储 —— 与 ctx.getConfig() 的 JSON.parse 读取保持一致
+  const coerce = (f, v) => {
+    if (f.type === 'checkbox') return v === true || v === 'true' || v === '1' || v === 1;
+    if (f.type === 'number') { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+    return v;
+  };
+  const stmt = db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')");
+  let saved = 0;
+  for (const f of schema) {
+    if (!f || !f.key) continue;
+    if (!Object.prototype.hasOwnProperty.call(body, f.key)) continue;
+    stmt.run(uid(), `plugin_${dir}_${f.key}`, JSON.stringify(coerce(f, body[f.key])));
+    saved++;
+  }
+  try { triggerHook('plugin.config.saved', { dir, values: body }); } catch {}
+  json(res, { dir, saved, message: '设置已保存' });
 }, true);
 
 // 插件系统 - 上传 ZIP 安装插件

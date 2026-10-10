@@ -627,6 +627,8 @@ PUT /admin/themes/default/settings
 | POST | `/admin/plugins/install` | 上传 ZIP 安装插件（base64） |
 | DELETE | `/admin/plugins/:dir` | 卸载插件（目录移入 `.trash-*` 回收，不直接删除） |
 | GET | `/admin/plugin-menus` | 插件注册的后台菜单项 |
+| GET | `/admin/plugins/:dir/config` | 插件设置结构（`plugin.json` 的 `settings`）+ 当前值 |
+| PUT | `/admin/plugins/:dir/config` | 保存插件设置（只接受 schema 中声明过的 key） |
 
 **插件列表响应：**
 
@@ -673,6 +675,36 @@ POST /admin/plugins/install
 ```
 
 > ZIP 支持「根目录直接是插件内容」或「带一层插件目录」两种结构；必须包含 `plugin.json`。安装后默认**未启用**。
+
+**插件设置响应：**
+
+```json
+{
+  "dir": "hello-world",
+  "name": "Hello World 公告栏",
+  "active": true,
+  "schema": [
+    { "group": "公告内容", "key": "enabled", "label": "启用公告", "type": "checkbox", "default": true },
+    { "group": "公告内容", "key": "text", "label": "公告文字", "type": "textarea", "default": "欢迎来到 lill 博客系统！" }
+  ],
+  "values": { "enabled": true, "text": "欢迎来到 lill 博客系统！" }
+}
+```
+
+**保存插件设置：**
+
+```json
+PUT /admin/plugins/hello-world/config
+{ "enabled": true, "text": "你好，lill！" }
+```
+
+```json
+{ "dir": "hello-world", "saved": 2, "message": "设置已保存" }
+```
+
+> 值按 `type` 归一化（`checkbox` → boolean、`number` → number、其余 → string）后写入 `options` 表，
+> key 前缀为 `plugin_<目录名>_`，插件用 `ctx.getConfig()` 读到的就是这份数据。
+> 未在 `settings` 中声明的字段会被忽略（不会写入）。
 
 **插件后台菜单响应：**
 
@@ -742,7 +774,7 @@ if (body.code !== 0) throw new Error(body.message);
 | 读写插件配置 | `ctx.getConfig(key, default)` / `ctx.setConfig(key, value)` |
 | 数据库 | `ctx.db` |
 
-**系统钩子：** `post.saved`、`post.deleted`、`comment.saved`、`comment.status`、`comment.deleted`、`user.created`、`user.login`、`media.uploaded`、`media.deleted`、`theme.activated`、`options.saved`。
+**系统钩子：** `post.saved`、`post.deleted`、`comment.saved`、`comment.status`、`comment.deleted`、`user.created`、`user.login`、`media.uploaded`、`media.deleted`、`theme.activated`、`options.saved`、`plugin.config.saved`。
 
 完整的插件目录结构、`plugin.json` 规范、`ctx` API、钩子参数与打包安装流程，见 **[插件开发指南](./插件开发指南.md)**。
 
