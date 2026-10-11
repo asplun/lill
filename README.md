@@ -10,7 +10,7 @@
 - **主题系统**：主题放在 `frontend/themes/` 下，`theme.json` 声明元数据与设置项
 - **主题后端扩展**：主题自带 `backend/index.js`（对标 Typecho 的 `functions.php`），可注册私有接口、短代码、页面模板数据；core 不含任何具体主题实现，换主题零改动
 - **插件系统**：`backend/plugins/<dir>/{plugin.json,index.js}`，插件可注册 REST 路由、监听系统钩子、注册后台菜单、读写独立配置；`plugin.json` 声明 `settings` 后后台**自动生成插件设置页**；上传 ZIP 即装，启用/禁用**热加载无需重启**（对标 Typecho 的 `Plugin::activate()` / WordPress 的 `add_action`）
-- **默认插件**：自带「Hello World 公告栏」，开箱可用——后台可配置公告文字/位置/配色，前台通过 `GET /api/v1/hello` 读取
+- **默认插件**：自带「Hello World 公告栏」，首次启动自动启用——后台可配置公告文字/位置/配色，默认主题会直接显示，其他主题可通过 `GET /api/v1/hello` 读取
 - **多用户**：支持多用户角色（管理员、编辑、作者）
 - **评论分组**：评论按文章分组，支持审核、回复
 - **永久链接**：自定义 URL 结构（`/archives/{cid}/`、`/category/{slug}/` 等）
@@ -22,7 +22,7 @@
 ### 安全特性
 - **CSRF 防护**：所有写操作自动携带 CSRF Token
 - **登录验证码**：SVG 验证码，防止暴力破解
-- **多因素认证**：TOTP 支持
+- **多因素认证**：已内置标准 TOTP（RFC 6238）校验与密钥生成，供后续接入登录流程；当前登录默认不强制二次验证
 - **速率限制**：API 请求频率限制
 - **安全响应头**：X-Content-Type-Options、X-Frame-Options 等
 
@@ -130,8 +130,8 @@ cd frontend && pnpm install && pnpm run build
 
 # 2. 启动后端（PM2）
 cd ../backend
-openssl rand -hex 32          # 生成的密钥填入 ecosystem.config.js 的 JWT_SECRET
-pm2 start ecosystem.config.js && pm2 save
+openssl rand -hex 32          # 生成的密钥填入 ecosystem.config.cjs 的 JWT_SECRET
+pm2 start ecosystem.config.cjs && pm2 save
 
 # 3. Nginx：root 指向 frontend/dist，/api/ 反代到 127.0.0.1:3000
 #    完整配置模板见 docs/部署指南.md
@@ -152,7 +152,7 @@ pm2 start ecosystem.config.js && pm2 save
 lill/
 ├── backend/           # Node.js 后端
 │   ├── server.js      # 主服务
-│   ├── ecosystem.config.js   # PM2 配置
+│   ├── ecosystem.config.cjs  # PM2 配置
 │   └── data/          # SQLite 数据库
 ├── frontend/          # Astro 前端
 │   ├── src/           # 源码

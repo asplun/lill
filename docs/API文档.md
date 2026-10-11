@@ -63,6 +63,23 @@ Authorization: Bearer <token>
 
 token 通过 [`POST /auth/login`](#31-登录) 或 [`POST /install`](#42-执行安装) 获取，默认有效期见后端配置。
 
+受保护接口每次请求都读取数据库中的当前账号和角色。账号停用、删除后，旧 token 返回 `401`；角色调整立即影响旧 token 的权限。有效账号无权执行操作时返回 `403`。写操作还需携带登录/安装响应中的 `csrfToken`，请求头为 `X-CSRF-Token`。
+
+#### 管理 API 权限
+
+| 角色 | 文章和独立页面 | 分类/标签 | 评论管理 | 媒体管理 | 用户、设置、主题、插件、备份、日志及系统接口 |
+|---|---|---|---|---|---|
+| `admin` 管理员 | 全部 | 全部 | 全部 | 全部 | 允许 |
+| `editor` 编辑 | 全部 | 全部 | 全部 | 全部 | 禁止 |
+| `author` 作者 | 仅自己的内容，可发布 | 只读并选用已有项 | 禁止 | 上传、列出和删除自己的媒体 | 禁止 |
+| `contributor` 投稿者 | 仅自己的草稿，不可发布 | 只读并选用已有项 | 禁止 | 上传、列出和删除自己的媒体 | 禁止 |
+| `subscriber` 订阅者 | 禁止 | 禁止 | 禁止 | 禁止 | 禁止 |
+
+- 作者/投稿者不能通过 `tagNames` 创建新标签；可关联已有标签。页面模板列表可供有撰写权限的用户读取。
+- 单篇读取、更新、删除以及最近文章列表使用相同的归属限制。批量文章操作先检查所有 ID，任何一项不存在或无权限都会拒绝整个请求，不修改其他项。
+- `/auth/me` 和 `/auth/profile` 仅要求有效账号，不要求管理权限。
+- `/api/v1/admin/*` 扩展接口默认仅管理员可调用；扩展可显式注册 `{ auth: true, roles: ['admin', 'editor'] }` 策略。公开扩展接口不受此默认策略影响。
+
 ### 1.4 分页格式
 
 列表类接口统一返回：
@@ -90,6 +107,10 @@ token 通过 [`POST /auth/login`](#31-登录) 或 [`POST /install`](#42-执行�
 ---
 
 ## 2. 公开 API（无需登录）
+
+公开内容必须同时满足 `status = published`、`visibility = public`，且未设置密码。文章列表、详情、页面、bootstrap、归档、RSS、分类/标签计数、评论及点赞入口均遵循此限制。`status=draft` 等查询参数不会放宽访问权限；直接读取受限内容返回 `404`。目前没有访客密码文章解锁接口。
+
+公开文章使用字段白名单，不返回 `password`。bootstrap 的 `theme` 和 `options.theme_config` 均过滤已声明的后端私用配置键。
 
 ### 2.1 文章列表
 
@@ -368,6 +389,8 @@ Content-Type: application/json
 
 ## 4. 安装 API
 
+安装状态查询和首次安装可匿名访问；安装完成后不能重复安装。系统不提供 `/api/v1/install/reset` 接口，该地址返回 `404`，不会清空数据库。
+
 ### 4.1 安装状态
 
 ```
@@ -412,6 +435,7 @@ Content-Type: application/json
 {
   "installed": true,
   "token": "eyJhbGciOi...",
+  "csrfToken": "随机 CSRF token",
   "user": { "id": "u1", "username": "admin", "nickname": "admin", "email": "a@b.com", "role": "admin" }
 }
 ```
@@ -419,7 +443,8 @@ Content-Type: application/json
 **行为说明：**
 
 - 事务化执行，失败自动回滚
-- 创建：管理员账号、站点配置、默认分类「未分类」、默认主题、Hello World 文章
+- 创建：管理员账号、站点配置、默认分类「未分类」、默认主题、Hello World 文章，并自动启用内置「Hello World 公告栏」插件
+- 返回的 `csrfToken` 要与 `token` 一起保存；后台所有写操作都要通过 `X-CSRF-Token` 请求头带回
 - 已安装时返回 `403`；同一 IP 每分钟最多 10 次尝试（超出返回 `429`）
 
 ---

@@ -25,8 +25,33 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import crypto from 'node:crypto';
 
 function isJunk(name) { return name.startsWith('._') || name.startsWith('.'); }
+
+/**
+ * 登记内置插件。
+ *
+ * 内置插件与用户上传插件不同：第一次启动时应立即可用，但不能在后续
+ * 启动时覆盖管理员已经保存的启用/停用状态。
+ */
+export function ensureBuiltinPlugin(db, pluginsDir, dir) {
+  if (!db || !pluginsDir || !dir) return false;
+  const manifestPath = join(pluginsDir, dir, 'plugin.json');
+  if (!existsSync(manifestPath)) return false;
+  if (db.prepare('SELECT id FROM plugins WHERE dir = ?').get(dir)) return false;
+
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return false;
+  }
+
+  db.prepare('INSERT INTO plugins (id, dir, name, version, description, active) VALUES (?, ?, ?, ?, ?, 1)')
+    .run(crypto.randomUUID(), dir, manifest.name || dir, manifest.version || '1.0.0', manifest.description || '');
+  return true;
+}
 
 /** 扫描插件目录，返回 Map<dir, manifest> */
 export function scanPlugins(pluginsDir) {

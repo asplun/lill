@@ -22,6 +22,7 @@ export async function activate(ctx) {
   //   const r = await fetch('/api/v1/hello'); const { data } = await r.json();
   //   if (data.enabled) renderBanner(data.text, data.position, data.bg_color, data.text_color);
   ctx.route('GET', '/api/v1/hello', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     const shows = ctx.getConfig('show_count', 0);
     const maxShows = Number(ctx.getConfig('max_shows', 0)) || 0;
     const withinLimit = maxShows === 0 || shows < maxShows;

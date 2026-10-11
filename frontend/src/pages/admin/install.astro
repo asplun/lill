@@ -245,6 +245,7 @@
           admin_password: password,
         }, { timeout: 30000 });
         if (r && r.token) localStorage.setItem('lill_token', r.token);
+        if (r && r.csrfToken) localStorage.setItem('lill_csrf_token', r.csrfToken);
         document.getElementById('installing').style.display = 'none';
         document.getElementById('doneBox').style.display = 'block';
         document.querySelectorAll('.step').forEach(s => { if (+s.dataset.step <= 4) s.classList.add('done'); });
