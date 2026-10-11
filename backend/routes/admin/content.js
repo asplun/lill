@@ -5,6 +5,32 @@ export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, triggerHook } = ctx;
   const { route, canManagePost, validatePostWrite, logAction, activeThemeId, normalizePageTemplate, listPostsHandler } = helpers;
   const { THEMES_DIR } = ctx;
+
+  /** 规范自定义别名：保留字母（含中文等 Unicode 字母）、数字与连字符，其余折叠为 - */
+  const normalizeSlug = (raw) => String(raw).trim().toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^\p{L}\p{N}-]+/gu, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const slugTaken = (slug, excludeId) => !!db.prepare(
+    excludeId ? 'SELECT id FROM posts WHERE slug = ? AND id != ?' : 'SELECT id FROM posts WHERE slug = ?'
+  ).get(...(excludeId ? [slug, excludeId] : [slug]));
+  /** 自动别名：优先使用标题，重复时追加 -2、-3…（对齐 WordPress/Typecho 习惯） */
+  const autoSlug = (title, excludeId) => {
+    const base = normalizeSlug(title) || 'post-' + Date.now().toString(36);
+    let candidate = base, n = 2;
+    while (slugTaken(candidate, excludeId)) candidate = base + '-' + n++;
+    return candidate;
+  };
+  /** 解析请求里的别名：留空则自动生成，自定义则校验格式与唯一性 */
+  const resolveSlug = (raw, title, excludeId) => {
+    if (raw === undefined || raw === null || String(raw).trim() === '') return { slug: autoSlug(title, excludeId) };
+    if (String(raw).trim().length > 200) return { error: '别名长度不能超过 200 个字符' };
+    const slug = normalizeSlug(raw);
+    if (!slug) return { error: '别名无效：请使用字母、数字、中文或连字符' };
+    if (slugTaken(slug, excludeId)) return { error: '别名「' + slug + '」已被占用，请换一个', taken: true };
+    return { slug };
+  };
   route('GET', '/api/v1/admin/posts', (req, res) => listPostsHandler(req, res));
   route('GET', '/api/v1/admin/pages', (req, res) => listPostsHandler(req, res, 'page'));
   route('GET', '/api/v1/admin/page-templates', async (req, res) => {
@@ -21,7 +47,9 @@ export function register(router, ctx, helpers) {
     validators.string(body.title, '标题', 200);
     if (body.content) validators.string(body.content, '内容', 50000);
     const id = uid();
-    const slug = body.slug || slugify(body.title) + '-' + Date.now().toString(36);
+    const slugResult = resolveSlug(body.slug, body.title);
+    if (slugResult.error) return error(res, slugResult.error, slugResult.taken ? 409 : 400);
+    const slug = slugResult.slug;
     const status = body.status || 'draft';
     const publishedAt = body.publishedAt || (status === 'published' ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null);
     const excerpt = body.excerpt || plainText(body.content || '').substring(0, 200);
@@ -57,7 +85,13 @@ export function register(router, ctx, helpers) {
     db.prepare('INSERT INTO post_versions (id, post_id, title, content, html_content, excerpt, status, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(uid(), exist.id, exist.title, exist.content, exist.html_content, exist.excerpt, exist.status, exist.author_id);
     const updates = [], args = [];
-    const fields = [['title','title'],['slug','slug'],['content','content'],['excerpt','excerpt'],['coverImage','cover_image'],['type','type'],['status','status'],['sticky','sticky'],['order','"order"'],['publishedAt','published_at'],['categoryId','category_id']];
+    const fields = [['title','title'],['content','content'],['excerpt','excerpt'],['coverImage','cover_image'],['type','type'],['status','status'],['sticky','sticky'],['order','"order"'],['publishedAt','published_at'],['categoryId','category_id']];
+    // 自定义别名单独处理：留空保持原值，避免误改导致旧链接失效
+    if (body.slug !== undefined && String(body.slug).trim() !== '') {
+      const slugResult = resolveSlug(body.slug, exist.title, exist.id);
+      if (slugResult.error) return error(res, slugResult.error, slugResult.taken ? 409 : 400);
+      updates.push('slug = ?'); args.push(slugResult.slug);
+    }
     if (body.template !== undefined) { updates.push('template = ?'); args.push(normalizePageTemplate(body.type || exist.type, body.template)); }
     for (const [f, d] of fields) if (body[f] !== undefined) { updates.push(d + ' = ?'); args.push(f === 'sticky' ? (body[f] ? 1 : 0) : body[f]); }
     if (body.content) updates.push('html_content = ?'), args.push(renderMD(body.content));

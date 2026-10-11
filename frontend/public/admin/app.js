@@ -145,59 +145,316 @@ function sc(icon, val, label) {
 }
 
 // ═══ 文章 / 页面 ═══
+// ── Markdown 编辑器工具（工具栏 / 快捷键 / 全屏 / 草稿） ──
+function mdEl(id) { return document.getElementById(id); }
+function mdTextarea() { return mdEl('pe-content'); }
+/** 与后端一致的别名规则：保留字母（含中文）、数字与连字符 */
+function mdClientSlug(title) {
+  return String(title || '').trim().toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^\p{L}\p{N}-]+/gu, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+function mdSync() {
+  const ta = mdTextarea(); if (!ta) return;
+  const pv = mdEl('pe-preview');
+  if (pv) pv.innerHTML = mdToHtml(ta.value);
+  const count = mdEl('pe-count');
+  if (count) count.textContent = ta.value.length + ' 字';
+  if (typeof window.__lillDraftSave === 'function') window.__lillDraftSave();
+}
+window.mdWrap = (before, after, placeholder) => {
+  const ta = mdTextarea(); if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const selected = ta.value.slice(start, end) || placeholder || '';
+  ta.value = ta.value.slice(0, start) + before + selected + after + ta.value.slice(end);
+  ta.focus();
+  ta.selectionStart = start + before.length;
+  ta.selectionEnd = start + before.length + selected.length;
+  mdSync();
+};
+window.mdPrefix = (prefix) => {
+  const ta = mdTextarea(); if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const lineStart = ta.value.lastIndexOf('\n', start - 1) + 1;
+  let lineEnd = ta.value.indexOf('\n', end); if (lineEnd === -1) lineEnd = ta.value.length;
+  const lines = ta.value.slice(lineStart, lineEnd).split('\n').map(line => line.startsWith(prefix) ? line.slice(prefix.length) : prefix + line);
+  ta.value = ta.value.slice(0, lineStart) + lines.join('\n') + ta.value.slice(lineEnd);
+  ta.focus();
+  mdSync();
+};
+window.mdInsertText = (text) => {
+  const ta = mdTextarea(); if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = start + text.length;
+  mdSync();
+};
+window.mdInsertInlineCode = () => { window.mdWrap('`', '`', '代码'); };
+window.mdInsertCode = () => { window.mdInsertText('\n```\n在此输入代码\n```\n'); };
+window.mdInsertHr = () => { window.mdInsertText('\n\n---\n\n'); };
+window.mdLink = () => {
+  const ta = mdTextarea(); if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const selected = ta.value.slice(start, end) || '链接文字';
+  const url = prompt('链接地址（URL）', 'https://');
+  if (!url) return;
+  ta.value = ta.value.slice(0, start) + '[' + selected + '](' + url + ')' + ta.value.slice(end);
+  ta.focus();
+  ta.selectionStart = start + 1;
+  ta.selectionEnd = start + 1 + selected.length;
+  mdSync();
+};
+window.mdImage = () => {
+  const ta = mdTextarea(); if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const alt = ta.value.slice(start, end) || '图片描述';
+  const url = prompt('图片地址（URL）。可先在「附件」页上传后复制地址。', 'https://');
+  if (!url) return;
+  ta.value = ta.value.slice(0, start) + '![' + alt + '](' + url + ')' + ta.value.slice(end);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = start + alt.length + url.length + 4;
+  mdSync();
+};
+window.mdPickMedia = async () => {
+  const ta = mdTextarea(); if (!ta) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'media-modal';
+  overlay.innerHTML = '<div class="media-modal-box"><div class="media-modal-head"><strong>从附件库选择图片</strong><span class="mm-actions"><label class="btn btn-sm btn-outline">上传图片<input type="file" id="mm-upload" accept="image/*" style="display:none"></label><button type="button" class="tb" id="mm-close">✕</button></span></div><div class="media-modal-body" id="mm-body"><div class="loading"><div class="spinner"></div></div></div></div>';
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+  overlay.querySelector('#mm-close').onclick = close;
+  const body = overlay.querySelector('#mm-body');
+  const insert = (url) => { close(); ta.focus(); window.mdWrap('![', '](' + url + ')', '图片描述'); };
+  const load = async () => {
+    try {
+      const r = await api('/admin/media?pageSize=48');
+      const images = (r.items || []).filter(m => String(m.mime_type || '').startsWith('image/'));
+      body.innerHTML = images.length
+        ? '<div class="media-modal-grid">' + images.map(m => '<button type="button" class="mm-item" data-url="' + escape(m.url) + '" title="' + escape(m.name) + '"><img src="' + escape(m.url) + '" alt="' + escape(m.alt || m.name) + '" loading="lazy"><span>' + escape(m.name) + '</span></button>').join('') + '</div>'
+        : '<div class="empty">附件库里还没有图片，可点右上角「上传图片」</div>';
+      body.querySelectorAll('.mm-item').forEach(btn => { btn.onclick = () => insert(btn.dataset.url); });
+    } catch (e) { body.innerHTML = '<div class="empty">加载失败：' + escape(e.message) + '</div>'; }
+  };
+  overlay.querySelector('#mm-upload').onchange = async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) return toast('文件不能超过 10MB', 'error');
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      await api('/admin/media/upload', { method: 'POST', body: { name: file.name, data: base64, mime: file.type || 'application/octet-stream' }, timeout: 120000 });
+      toast('上传成功');
+      load();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  load();
+};
+window.mdToggleMode = () => {
+  const wrap = mdEl('pe-wrap'); if (!wrap) return;
+  const modes = ['split', 'editor', 'preview'];
+  const next = modes[(modes.indexOf(wrap.dataset.mode || 'split') + 1) % modes.length];
+  wrap.dataset.mode = next;
+  const btn = mdEl('pe-mode-btn');
+  if (btn) btn.textContent = next === 'split' ? '分屏' : (next === 'editor' ? '写作' : '预览');
+};
+window.mdToggleFullscreen = () => {
+  const card = mdEl('pe-editor-card'); if (!card) return;
+  card.classList.toggle('editor-fs');
+};
 window.openPostEditor = async (type, id) => {
   type = type || 'post';
+  const isPage = type === 'page';
   let post = null;
   if (id) { try { post = await api('/admin/posts/' + id); } catch (e) { return toast(e.message, 'error'); } }
   let cats = [];
   try { cats = await api('/admin/categories'); } catch (e) { cats = []; }
   // 独立页面模板（对标 Typecho 页面编辑里的「自定义模板」下拉）
   let pageTpls = [];
-  if (type === 'page') {
+  if (isPage) {
     try { const r = await api('/admin/page-templates'); pageTpls = (r && r.templates) || []; } catch (e) { pageTpls = []; }
   }
+  // 永久链接模板：用于「别名」下方的地址预览（设置接口只取一次并缓存）
+  let permalinkTpl = '/archives/{cid}/';
+  try {
+    if (!window.__lillOptions) window.__lillOptions = await api('/admin/options');
+    const found = (window.__lillOptions || []).find(o => o.key === 'permalink');
+    if (found && found.value) permalinkTpl = found.value;
+  } catch (e) { /* 设置读取失败不影响写作 */ }
   const curTpl = post ? (post.template || '') : '';
   const tplOpts = ['<option value=""' + (curTpl ? '' : ' selected') + '>默认模板（page.html）</option>']
     .concat(pageTpls.map(t => '<option value="' + escape(t.key) + '"' + (curTpl === t.key ? ' selected' : '') + '>' + escape(t.name) + '（' + escape(t.file) + '）</option>'))
     .join('');
   // 与 Typecho 一致：主题里没有 page-*.html 时不显示「页面模板」下拉
-  const tplGroup = (type === 'page' && pageTpls.length)
+  const tplGroup = (isPage && pageTpls.length)
     ? '<div class="form-group"><label>页面模板</label><select id="pe-template">' + tplOpts + '</select></div>'
     : '';
   const catOpts = ['<option value="">无分类</option>'].concat((cats || []).map(c => '<option value="' + c.id + '"' + (post && post.category_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
   const st = post ? post.status : 'published';
   const statusOpts = [['draft', '草稿'], ['published', '发布'], ['pending', '待审核']].map(x => '<option value="' + x[0] + '"' + (st === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
   const tagStr = post && post.tags ? post.tags.map(t => t.name).join(',') : '';
-  setTopbar('<button class="btn btn-outline" onclick="page=\'' + (type === 'page' ? 'pages' : 'posts') + '\';render()">← 返回列表</button>');
-  document.getElementById('page-title').textContent = (id ? '编辑' : '新建') + (type === 'page' ? '页面' : '文章');
-  document.getElementById('content').innerHTML = '<div class="card">' +
-    '<div class="form-group"><label>标题</label><input id="pe-title" placeholder="请输入标题" value="' + escape(post ? post.title : '') + '"></div>' +
-    '<div class="editor-wrap"><div class="editor-pane"><textarea id="pe-content" placeholder="Markdown 内容...">' + escape(post ? post.content : '') + '</textarea></div><div class="preview-pane" id="pe-preview"></div></div>' +
-    '<div class="form-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px">' +
-    '<div class="form-group"><label>状态</label><select id="pe-status">' + statusOpts + '</select></div>' +
-    '<div class="form-group"><label>分类</label><select id="pe-cat">' + catOpts + '</select></div>' +
-    '<div class="form-group"><label>标签（逗号分隔）</label><input id="pe-tags" value="' + escape(tagStr) + '" placeholder="tag1,tag2"></div>' +
-    tplGroup +
-    '</div>' +
-    '<div class="form-group"><label>摘要（可选）</label><textarea id="pe-excerpt" rows="2" placeholder="留空自动截取">' + escape(post ? post.excerpt : '') + '</textarea></div>' +
-    '<button class="btn btn-primary" onclick="savePost(\'' + type + '\',' + (id ? '\'' + id + '\'' : 'null') + ')">' + (id ? '更新' : '保存') + '</button></div>';
+  const saveBtn = '<button class="btn btn-primary btn-block" onclick="savePost(\'' + type + '\',' + (id ? '\'' + id + '\'' : 'null') + ')">' + (id ? '更新' : '保存') + '</button>';
+  setTopbar('<button class="btn btn-outline" onclick="page=\'' + (isPage ? 'pages' : 'posts') + '\';render()">← 返回列表</button>');
+  document.getElementById('page-title').textContent = (id ? '编辑' : '新建') + (isPage ? '页面' : '文章');
+  const tagBox = isPage ? '' : (`
+        <div class="side-box">
+          <div class="side-box-title">分类与标签</div>
+          <div class="form-group"><label>分类</label><select id="pe-cat">${catOpts}</select></div>
+          <div class="form-group"><label>标签（逗号分隔）</label><input id="pe-tags" value="${escape(tagStr)}" placeholder="tag1,tag2"></div>
+        </div>`);
+  document.getElementById('content').innerHTML = `
+  <div class="card editor-card" id="pe-editor-card">
+    <div class="editor-layout">
+      <div class="editor-main">
+        <div class="form-group"><input id="pe-title" class="editor-title" placeholder="请输入标题" value="${escape(post ? post.title : '')}"></div>
+        <div class="editor-toolbar">
+          <div class="tb-group">
+            <button type="button" class="tb" title="二级标题" onclick="mdPrefix('## ')">H2</button>
+            <button type="button" class="tb" title="三级标题" onclick="mdPrefix('### ')">H3</button>
+          </div>
+          <div class="tb-group">
+            <button type="button" class="tb" title="粗体 (Ctrl+B)" onclick="mdWrap('**','**','粗体')"><b>B</b></button>
+            <button type="button" class="tb" title="斜体 (Ctrl+I)" onclick="mdWrap('*','*','斜体')"><i>I</i></button>
+            <button type="button" class="tb" title="删除线" onclick="mdWrap('~~','~~','删除线')"><s>S</s></button>
+            <button type="button" class="tb" title="行内代码" onclick="mdInsertInlineCode()">&lt;/&gt;</button>
+          </div>
+          <div class="tb-group">
+            <button type="button" class="tb" title="链接 (Ctrl+K)" onclick="mdLink()">🔗 链接</button>
+            <button type="button" class="tb" title="从附件库插入图片" onclick="mdPickMedia()">🖼 图片</button>
+            <button type="button" class="tb" title="通过图片地址插入" onclick="mdImage()">🌐 图片地址</button>
+            <button type="button" class="tb" title="引用" onclick="mdPrefix('&gt; ')">❝ 引用</button>
+            <button type="button" class="tb" title="代码块" onclick="mdInsertCode()">{ }</button>
+          </div>
+          <div class="tb-group">
+            <button type="button" class="tb" title="无序列表" onclick="mdPrefix('- ')">• 列表</button>
+            <button type="button" class="tb" title="有序列表" onclick="mdPrefix('1. ')">1. 列表</button>
+            <button type="button" class="tb" title="分隔线" onclick="mdInsertHr()">— 分隔</button>
+          </div>
+          <div class="tb-right">
+            <span id="pe-count" class="tb-count">0 字</span>
+            <button type="button" class="tb" id="pe-mode-btn" title="写作 / 分屏 / 预览" onclick="mdToggleMode()">分屏</button>
+            <button type="button" class="tb" title="全屏编辑（Esc 退出）" onclick="mdToggleFullscreen()">⛶</button>
+          </div>
+        </div>
+        <div class="editor-wrap" id="pe-wrap" data-mode="split">
+          <div class="editor-pane"><textarea id="pe-content" placeholder="开始写作…支持 Markdown，Ctrl/Cmd+S 保存">${escape(post ? post.content : '')}</textarea></div>
+          <div class="preview-pane" id="pe-preview"></div>
+        </div>
+        <div class="form-group" style="margin-top:16px"><label>摘要（可选）</label><textarea id="pe-excerpt" rows="2" placeholder="留空自动截取">${escape(post ? post.excerpt : '')}</textarea></div>
+      </div>
+      <aside class="editor-side">
+        <div class="side-box">
+          <div class="side-box-title">发布</div>
+          <div class="form-group"><label>状态</label><select id="pe-status">${statusOpts}</select></div>
+          ${isPage ? '' : '<label class="check-line"><input type="checkbox" id="pe-sticky"' + (post && post.sticky ? ' checked' : '') + '> 置顶到首页</label>'}
+          <div class="side-actions">${saveBtn}</div>
+        </div>
+        <div class="side-box">
+          <div class="side-box-title">别名（URL）</div>
+          <div class="form-group"><input id="pe-slug" value="${escape(post ? post.slug : '')}" placeholder="留空自动生成"><div class="hint" id="pe-slug-hint"></div></div>
+        </div>
+        ${tagBox}
+        <div class="side-box">
+          <div class="side-box-title">更多</div>
+          <div class="form-group"><label>封面图（URL，可选）</label><input id="pe-cover" value="${escape(post ? (post.cover_image || '') : '')}" placeholder="https://…"></div>
+          ${tplGroup}
+        </div>
+      </aside>
+    </div>
+  </div>`;
   const ta = document.getElementById('pe-content');
-  const pv = document.getElementById('pe-preview');
-  pv.innerHTML = mdToHtml(ta.value);
-  ta.oninput = () => { pv.innerHTML = mdToHtml(ta.value); };
+  const titleInput = document.getElementById('pe-title');
+  const slugInput = document.getElementById('pe-slug');
+  const slugHint = document.getElementById('pe-slug-hint');
+  const excerptInput = document.getElementById('pe-excerpt');
+  // 别名联动：新建时跟随标题自动生成；手动改过或编辑旧文后不再自动覆盖
+  let slugTouched = !!post;
+  const renderSlugHint = () => {
+    if (!slugHint) return;
+    const current = slugInput.value.trim() || mdClientSlug(titleInput.value) || '自动生成';
+    const path = permalinkTpl
+      .replace('{slug}', encodeURIComponent(current))
+      .replace('{cid}', id || 'ID')
+      .replace('{category}', '…').replace('{year}', '…').replace('{month}', '…');
+    slugHint.textContent = '预计地址：' + path + (permalinkTpl.includes('{slug}') ? '' : '（当前永久链接未使用别名，可在 设置 → 永久链接 中切换）');
+  };
+  titleInput.addEventListener('input', () => {
+    if (!slugTouched) slugInput.value = mdClientSlug(titleInput.value);
+    renderSlugHint();
+  });
+  slugInput.addEventListener('input', () => { slugTouched = true; renderSlugHint(); });
+  ta.addEventListener('input', mdSync);
+  ta.addEventListener('keydown', (ev) => {
+    const mod = ev.metaKey || ev.ctrlKey;
+    const key = (ev.key || '').toLowerCase();
+    if (mod && key === 'b') { ev.preventDefault(); window.mdWrap('**', '**', '粗体'); return; }
+    if (mod && key === 'i') { ev.preventDefault(); window.mdWrap('*', '*', '斜体'); return; }
+    if (mod && key === 'k') { ev.preventDefault(); window.mdLink(); return; }
+    if (mod && key === 's') { ev.preventDefault(); window.savePost(type, id || null); return; }
+    if (ev.key === 'Tab') { ev.preventDefault(); window.mdInsertText('  '); return; }
+    if (ev.key === 'Escape') { const card = document.getElementById('pe-editor-card'); if (card && card.classList.contains('editor-fs')) window.mdToggleFullscreen(); }
+  });
+  // 本地草稿：停止输入 800ms 后写入 localStorage，保存成功后清除
+  const draftKey = 'lill:draft:' + type + ':' + (id || 'new');
+  let draftTimer = null;
+  window.__lillDraftSave = () => {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => {
+      try { localStorage.setItem(draftKey, JSON.stringify({ title: titleInput.value, content: ta.value, excerpt: excerptInput.value, at: Date.now() })); } catch (e) {}
+    }, 800);
+  };
+  try {
+    const raw = localStorage.getItem(draftKey);
+    if (raw) {
+      const draft = JSON.parse(raw);
+      const serverContent = post ? (post.content || '') : '';
+      const serverTitle = post ? (post.title || '') : '';
+      const changed = draft && ((draft.content || '') !== serverContent || (draft.title || '') !== serverTitle);
+      if (changed && (draft.content || draft.title) && confirm('检测到未保存的草稿（' + new Date(draft.at).toLocaleString() + '），是否恢复？')) {
+        titleInput.value = draft.title || titleInput.value;
+        ta.value = draft.content;
+        excerptInput.value = draft.excerpt || '';
+        if (!slugTouched && !slugInput.value) slugInput.value = mdClientSlug(titleInput.value);
+      }
+    }
+  } catch (e) {}
+  mdSync();
+  renderSlugHint();
 };
 
 window.savePost = async (type, id) => {
-  const title = document.getElementById('pe-title').value.trim();
-  const content = document.getElementById('pe-content').value;
+  const titleEl = document.getElementById('pe-title');
+  if (!titleEl) return;
+  const title = titleEl.value.trim();
   if (!title) return toast('请填写标题', 'error');
-  const tagNames = document.getElementById('pe-tags').value.split(',').map(s => s.trim()).filter(Boolean);
-  const body = { title, content, status: document.getElementById('pe-status').value, type, categoryId: document.getElementById('pe-cat').value || null, excerpt: document.getElementById('pe-excerpt').value || null, tagNames };
+  const content = document.getElementById('pe-content').value;
+  const body = {
+    title, content, type,
+    slug: document.getElementById('pe-slug').value.trim(),
+    status: document.getElementById('pe-status').value,
+    excerpt: document.getElementById('pe-excerpt').value || null,
+  };
+  const catEl = document.getElementById('pe-cat');
+  if (catEl) body.categoryId = catEl.value || null;
+  const tagEl = document.getElementById('pe-tags');
+  if (tagEl) body.tagNames = tagEl.value.split(',').map(s => s.trim()).filter(Boolean);
+  const coverEl = document.getElementById('pe-cover');
+  if (coverEl) body.coverImage = coverEl.value.trim() || null;
+  const stickyEl = document.getElementById('pe-sticky');
+  if (stickyEl) body.sticky = stickyEl.checked;
   // 仅当页面模板下拉存在时才提交 template，避免误清空已有设置
   if (type === 'page') { const tsel = document.getElementById('pe-template'); if (tsel) body.template = tsel.value; }
   try {
     if (id) await api('/admin/posts/' + id, { method: 'PUT', body });
     else await api('/admin/posts', { method: 'POST', body });
+    try { localStorage.removeItem('lill:draft:' + type + ':' + (id || 'new')); } catch (e) {}
     toast(id ? '已更新' : '已保存');
     page = type === 'page' ? 'pages' : 'posts'; pageNum = 1; render();
   } catch (e) { toast(e.message, 'error'); }
@@ -704,13 +961,42 @@ window.saveSettings = async () => {
   try { await api('/admin/options', { method: 'PUT', body: items }); toast('已保存'); } catch (e) { toast(e.message, 'error'); }
 };
 
+/** 后台预览用的轻量 Markdown 渲染：与后端 renderMD 的常用语法保持一致 */
 function mdToHtml(md) {
-  if (!md) return '';
-  return '<p>' + md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>').replace(/^## (.+)$/gm, '<h2>$1</h2>').replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code>$1</code>')
-    .replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
+  if (!md) return '<p class="preview-empty">预览会显示在这里</p>';
+  let html = String(md).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const codeBlocks = [];
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+    codeBlocks.push('<pre><code class="language-' + (lang || 'text') + '">' + code.replace(/\n$/, '') + '</code></pre>');
+    return '\u0000CODE' + (codeBlocks.length - 1) + '\u0000';
+  });
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  html = html.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1">');
+  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  html = html.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+  const out = [];
+  let listType = null;
+  const closeList = () => { if (listType) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); listType = null; } };
+  for (const line of html.split('\n')) {
+    const trimmed = line.trim();
+    if (/^\u0000CODE\d+\u0000$/.test(trimmed)) { closeList(); out.push(trimmed); continue; }
+    if (!trimmed) { closeList(); continue; }
+    const h = /^(#{1,4})\s+(.*)$/.exec(trimmed);
+    if (h) { closeList(); const lvl = h[1].length; out.push('<h' + lvl + '>' + h[2] + '</h' + lvl + '>'); continue; }
+    if (/^(---|\*\*\*)$/.test(trimmed)) { closeList(); out.push('<hr>'); continue; }
+    const ul = /^[-*]\s+(.*)$/.exec(trimmed);
+    if (ul) { if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; } out.push('<li>' + ul[1] + '</li>'); continue; }
+    const ol = /^\d+\.\s+(.*)$/.exec(trimmed);
+    if (ol) { if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; } out.push('<li>' + ol[1] + '</li>'); continue; }
+    const bq = /^&gt;\s?(.*)$/.exec(trimmed);
+    if (bq) { closeList(); out.push('<blockquote>' + bq[1] + '</blockquote>'); continue; }
+    closeList();
+    out.push('<p>' + trimmed + '</p>');
+  }
+  closeList();
+  return out.join('\n').replace(/\u0000CODE(\d+)\u0000/g, (m, i) => codeBlocks[Number(i)]);
 }
 
 // ═══ 导航（事件委托，兼容插件动态注入的菜单项）═══

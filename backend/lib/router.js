@@ -29,7 +29,11 @@ export function createRouter() {
       const match = path.match(re);
       if (match) {
         const params = {};
-        names.forEach((n, i) => params[n] = match[i + 1]);
+        names.forEach((n, i) => {
+          const raw = match[i + 1];
+          // URL 参数可能是百分号编码（如中文别名），解码后再交给业务层（失败则保留原值）
+          try { params[n] = decodeURIComponent(raw); } catch { params[n] = raw; }
+        });
         return { ...definition, params };
       }
     }

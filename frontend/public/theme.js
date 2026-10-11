@@ -314,7 +314,10 @@
   }
   var pageType = app.getAttribute('data-page') || 'index';
   var segs = location.pathname.split('/').filter(Boolean);
-  var slug = (pageType === 'post' || pageType === 'page' || pageType === 'category' || pageType === 'tag') ? (segs[1] || '') : '';
+  var slugRaw = (pageType === 'post' || pageType === 'page' || pageType === 'category' || pageType === 'tag') ? (segs[1] || '') : '';
+  // 中文等非 ASCII 别名在 pathname 中是百分号编码，先解码再交给 API（API 层会重新编码）
+  var slug = slugRaw;
+  if (slug) { try { slug = decodeURIComponent(slug); } catch (e) { slug = slugRaw; } }
   var qs = new URLSearchParams(location.search);
   var pageNum = parseInt(qs.get('page')) || 1;
   var keyword = qs.get('q') || '';
