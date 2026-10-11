@@ -5,8 +5,11 @@
 export function createRouter() {
   const routes = new Map();
 
-  function route(method, path, fn, auth = false) {
-    routes.set(method + ':' + path, { fn, auth });
+  function route(method, path, fn, policy = false) {
+    const management = path === '/api/v1/admin' || path.startsWith('/api/v1/admin/');
+    const declared = typeof policy === 'object' && policy !== null ? policy : { auth: !!policy };
+    const roles = declared.roles || (management ? ['admin'] : null);
+    routes.set(method + ':' + path, { fn, auth: management || !!declared.auth || !!roles, roles, pattern: path });
   }
 
   function removeRoute(method, path) {
@@ -16,7 +19,7 @@ export function createRouter() {
   function matchRoute(method, path) {
     const exact = method + ':' + path;
     if (routes.has(exact)) return { ...routes.get(exact), params: {} };
-    for (const [key, { fn, auth }] of routes) {
+    for (const [key, definition] of routes) {
       const ci = key.indexOf(':');
       const m = key.slice(0, ci);
       const p = key.slice(ci + 1);
@@ -27,7 +30,7 @@ export function createRouter() {
       if (match) {
         const params = {};
         names.forEach((n, i) => params[n] = match[i + 1]);
-        return { fn, auth, params };
+        return { ...definition, params };
       }
     }
     return null;

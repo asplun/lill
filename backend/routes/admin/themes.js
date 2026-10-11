@@ -1,0 +1,196 @@
+/** Theme management, settings, installer, and editor routes. */
+import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
+
+const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
+
+export function register(router, ctx, helpers) {
+  const { db, json, error, parseBody, uid, authenticate, readThemeManifest, THEMES_DIR, triggerHook } = ctx;
+  const { route, logAction } = helpers;
+
+  route('GET', '/api/v1/admin/themes', async (req, res) => {
+    await authenticate(req);
+    const themes = db.prepare('SELECT * FROM themes ORDER BY name').all();
+    const result = themes.map(theme => {
+      const manifest = readThemeManifest(theme.theme_id);
+      if (manifest) {
+        const name = manifest.name || theme.name;
+        const version = manifest.version || theme.version;
+        if (name !== theme.name || version !== theme.version) {
+          db.prepare('UPDATE themes SET name = ?, version = ? WHERE theme_id = ?').run(name, version, theme.theme_id);
+        }
+      }
+      return {
+        ...theme,
+        name: manifest?.name || theme.name,
+        version: manifest?.version || theme.version,
+        description: manifest?.description || theme.description || '',
+        author: manifest?.author || theme.author || '',
+        hasSettings: !!(manifest && manifest.settings && manifest.settings.length),
+      };
+    });
+    json(res, result);
+  });
+
+  route('POST', '/api/v1/admin/themes/:themeId/activate', async (req, res, params) => {
+    await authenticate(req);
+    if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(params.themeId)) {
+      db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), params.themeId, params.themeId, '1.0.0');
+    }
+    db.prepare('UPDATE themes SET active = 0').run();
+    db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(params.themeId);
+    db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), params.themeId);
+    try { triggerHook('theme.activated', { themeId: params.themeId }); } catch {}
+    json(res, { themeId: params.themeId, active: true });
+  });
+
+  route('GET', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {
+    await authenticate(req);
+    const theme = db.prepare('SELECT * FROM themes WHERE theme_id = ?').get(params.themeId);
+    if (!theme) return error(res, '主题不存在', 404);
+    const manifest = readThemeManifest(params.themeId);
+    let config = {};
+    try { config = JSON.parse(theme.config || '{}'); } catch {}
+    json(res, { theme, schema: manifest?.settings || [], values: config });
+  });
+
+  route('PUT', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {
+    await authenticate(req);
+    const body = await parseBody(req);
+    const theme = db.prepare('SELECT * FROM themes WHERE theme_id = ?').get(params.themeId);
+    if (!theme) return error(res, '主题不存在', 404);
+    let config = {};
+    try { config = JSON.parse(theme.config || '{}'); } catch {}
+    const merged = { ...config, ...body };
+    db.prepare('UPDATE themes SET config = ? WHERE theme_id = ?').run(JSON.stringify(merged), params.themeId);
+    json(res, merged);
+  });
+
+  route('POST', '/api/v1/admin/themes/install', async (req, res) => {
+    const auth = await authenticate(req);
+    const body = await parseBody(req);
+    if (!body || !body.data) return error(res, '缺少主题包数据', 400);
+
+    let buf;
+    try { buf = Buffer.from(String(body.data).replace(/^data:[^,]*,/, ''), 'base64'); }
+    catch { return error(res, '主题包数据无效', 400); }
+    if (buf.length < 22) return error(res, '主题包为空或已损坏', 400);
+    if (buf.length > 30 * 1024 * 1024) return error(res, '主题包过大（上限 30MB）', 400);
+
+    let entries;
+    try { entries = listZipEntries(buf); }
+    catch (e) { return error(res, e.message, 400); }
+    if (!entries.length) return error(res, '主题包为空', 400);
+
+    let manifestEntry = null;
+    let prefix = '';
+    for (const entry of entries) {
+      const path = safeEntryPath(entry.name);
+      if (path && path.endsWith('theme.json') && path.split('/').length <= 2) {
+        manifestEntry = entry;
+        prefix = path.slice(0, -'theme.json'.length);
+        break;
+      }
+    }
+    if (!manifestEntry) return error(res, '主题包内未找到 theme.json（必须位于根目录或一级子目录）', 400);
+
+    let manifest;
+    try { manifest = JSON.parse(readZipEntry(buf, manifestEntry).toString('utf8')); }
+    catch (e) { return error(res, 'theme.json 解析失败：' + e.message, 400); }
+
+    const themeId = String(manifest.id || '').trim();
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(themeId)) return error(res, 'theme.json 的 id 非法（仅允许字母、数字、- 和 _，且以字母或数字开头）', 400);
+    if (!manifest.name) return error(res, 'theme.json 缺少 name 字段', 400);
+
+    const destDir = join(THEMES_DIR, themeId);
+    const staging = destDir + '.staging-' + Date.now().toString(36);
+    mkdirSync(staging, { recursive: true });
+
+    let written = 0;
+    let skipped = 0;
+    try {
+      for (const entry of entries) {
+        const path = safeEntryPath(entry.name);
+        if (!path || path.endsWith('/')) continue;
+        if (prefix && !path.startsWith(prefix)) continue;
+        const rel = prefix ? path.slice(prefix.length) : path;
+        if (!rel || rel.startsWith('__MACOSX/') || rel.split('/').some(part => part === '__MACOSX' || part.startsWith('._'))) { skipped++; continue; }
+        const dot = rel.lastIndexOf('.');
+        const ext = dot >= 0 ? rel.slice(dot).toLowerCase() : '';
+        if (!THEME_ALLOWED_EXT.has(ext)) { skipped++; continue; }
+        const target = join(staging, rel);
+        if (!target.startsWith(staging + '/')) { skipped++; continue; }
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, readZipEntry(buf, entry));
+        written++;
+      }
+    } catch (e) {
+      return error(res, '解压失败：' + e.message, 400);
+    }
+    if (!written) return error(res, '主题包内没有可用的静态文件', 400);
+    if (!existsSync(join(staging, 'theme.json'))) return error(res, '主题包缺少 theme.json', 400);
+
+    if (existsSync(destDir)) {
+      try { renameSync(destDir, destDir + '.bak-' + Date.now().toString(36)); }
+      catch (e) { return error(res, '旧主题目录无法替换：' + e.message, 500); }
+    }
+    try { renameSync(staging, destDir); }
+    catch (e) { return error(res, '安装失败：' + e.message, 500); }
+
+    if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId)) {
+      db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), themeId, manifest.name, manifest.version || '1.0.0');
+    } else {
+      db.prepare('UPDATE themes SET name = ?, version = ? WHERE theme_id = ?').run(manifest.name, manifest.version || '1.0.0', themeId);
+    }
+    logAction(auth.id, 'theme.install', themeId + ' (' + written + ' files, ' + skipped + ' skipped)', req);
+    json(res, { themeId, name: manifest.name, version: manifest.version || '1.0.0', files: written, skipped }, 201);
+  });
+
+  route('GET', '/api/v1/admin/themes/files', async (req, res) => {
+    await authenticate(req);
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const themeId = url.searchParams.get('theme') || 'default';
+    const themeDir = join(THEMES_DIR, themeId);
+    if (!existsSync(themeDir)) return error(res, '主题不存在', 404);
+    if (!themeDir.startsWith(THEMES_DIR + '/')) return error(res, '无效主题', 400);
+    const files = [];
+    const scan = (dir, prefix = '') => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || entry.name.startsWith('._')) continue;
+        const rel = prefix + entry.name;
+        if (entry.isDirectory()) scan(join(dir, entry.name), rel + '/');
+        else if (/\.(html|css|js|json|md)$/i.test(entry.name)) files.push({ path: rel, size: statSync(join(dir, entry.name)).size });
+      }
+    };
+    scan(themeDir);
+    json(res, files);
+  });
+
+  route('GET', '/api/v1/admin/themes/file', async (req, res) => {
+    await authenticate(req);
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const themeId = url.searchParams.get('theme') || 'default';
+    const filePath = url.searchParams.get('path') || '';
+    if (!filePath || filePath.includes('..')) return error(res, '无效路径', 400);
+    const fullPath = join(THEMES_DIR, themeId, filePath);
+    if (!fullPath.startsWith(THEMES_DIR + '/')) return error(res, '无效路径', 400);
+    if (!existsSync(fullPath)) return error(res, '文件不存在', 404);
+    json(res, { content: readFileSync(fullPath, 'utf8') });
+  });
+
+  route('PUT', '/api/v1/admin/themes/file', async (req, res) => {
+    const auth = await authenticate(req);
+    const body = await parseBody(req);
+    const themeId = body.theme || 'default';
+    const filePath = body.path || '';
+    if (!filePath || filePath.includes('..')) return error(res, '无效路径', 400);
+    const fullPath = join(THEMES_DIR, themeId, filePath);
+    if (!fullPath.startsWith(THEMES_DIR + '/')) return error(res, '无效路径', 400);
+    if (!existsSync(fullPath)) return error(res, '文件不存在', 404);
+    if (typeof body.content !== 'string') return error(res, '文件内容无效', 400);
+    writeFileSync(fullPath, body.content, 'utf8');
+    logAction(auth.id, 'theme.file.save', themeId + '/' + filePath, req);
+    json(res, { message: '保存成功' });
+  });
+}
