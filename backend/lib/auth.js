@@ -67,18 +67,66 @@ export function verifyCaptcha(sessionCode, inputCode) {
 }
 
 // 多因素认证 - TOTP 密钥生成
-export function generateTOTPSecret() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let secret = '';
-  for (let i = 0; i < 16; i++) {
-    secret += chars[Math.floor(Math.random() * chars.length)];
+// ── 多因素认证（TOTP，RFC 4226 / RFC 6238）─────────────────
+// 纯 node:crypto 实现，无第三方依赖；兼容 Google Authenticator / 1Password 等验证器
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Decode(input) {
+  const clean = String(input).toUpperCase().replace(/[\s-]/g, '').replace(/=+$/, '');
+  let bits = 0, value = 0;
+  const out = [];
+  for (const ch of clean) {
+    const index = BASE32_ALPHABET.indexOf(ch);
+    if (index === -1) throw new Error('无效的 Base32 密钥');
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
   }
+  return Buffer.from(out);
+}
+
+/** 生成 160 位随机密钥的 Base32 编码（RFC 4226 推荐长度，32 位无填充）。 */
+export function generateTOTPSecret() {
+  let bits = 0, value = 0, secret = '';
+  for (const byte of randomBytes(20)) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) { secret += BASE32_ALPHABET[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) secret += BASE32_ALPHABET[(value << (5 - bits)) & 31];
   return secret;
 }
 
-// 多因素认证 - 验证 TOTP（简化版，实际应使用 otplib 库）
-export function verifyTOTP(secret, token) {
-  // 简化实现：实际生产环境应使用标准 TOTP 算法
-  // 这里仅作为接口占位
-  return secret && token && token.length === 6;
+function hotp(secretBytes, counter, digits) {
+  const message = Buffer.alloc(8);
+  message.writeBigUInt64BE(BigInt(counter));
+  const mac = createHmac('sha1', secretBytes).update(message).digest();
+  const offset = mac[mac.length - 1] & 0x0f;
+  const binary = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) | ((mac[offset + 2] & 0xff) << 8) | (mac[offset + 3] & 0xff);
+  return String(binary % (10 ** digits)).padStart(digits, '0');
+}
+
+/**
+ * 校验 TOTP 验证码（RFC 6238）。
+ * @param {string} secret  用户的 Base32 密钥
+ * @param {string} token   验证器显示的验证码
+ * @param {{now?: number, stepSeconds?: number, window?: number, digits?: number}} [options]
+ * @returns {boolean}
+ */
+export function verifyTOTP(secret, token, { now = Date.now(), stepSeconds = 30, window = 1, digits = 6 } = {}) {
+  if (!secret || token === undefined || token === null) return false;
+  const candidate = String(token).trim();
+  if (candidate.length !== digits || !/^\d+$/.test(candidate)) return false;
+  let secretBytes;
+  try { secretBytes = base32Decode(secret); } catch { return false; }
+  if (!secretBytes.length) return false;
+  const counter = Math.floor(now / 1000 / stepSeconds);
+  const candidateBuffer = Buffer.from(candidate);
+  for (let drift = -window; drift <= window; drift++) {
+    const at = counter + drift;
+    if (at < 0) continue;
+    const expected = hotp(secretBytes, at, digits);
+    if (timingSafeEqual(Buffer.from(expected), candidateBuffer)) return true;
+  }
+  return false;
 }

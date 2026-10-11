@@ -13,10 +13,10 @@ module.exports = {
       NODE_ENV: 'production',
       PORT: 3000,
       HOST: '127.0.0.1',
-      // ⚠️ 生产环境务必设置固定 JWT_SECRET，否则每次重启后所有登录会失效
+      // ⚠️ 生产环境务必设置固定 JWT_SECRET，否则每次重启后所有登录会失效。
       // 生成随机密钥：openssl rand -hex 32
-      // 填好后取消下面这行注释：
-      JWT_SECRET: '0b806c7cc47bb61a634f096f9ae79d602fadd1eb2f544277881e68d3924ad0dd',
+      // 然后把生成的值填在下面（不要提交到 Git）：
+      // JWT_SECRET: '这里填你生成的密钥',
     }
   }]
 };

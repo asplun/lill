@@ -10,6 +10,14 @@ import { clientIp } from '../lib/http.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
+// 访客只能看到已发布、公开且未设置密码的内容。密码文章暂不提供访客验证流程。
+const PUBLIC_POST_WHERE = "p.status = 'published' AND p.visibility = 'public' AND (p.password IS NULL OR p.password = '')";
+const PUBLIC_POST_FIELDS = `
+  p.id, p.title, p.slug, p.content, p.html_content, p.excerpt, p.cover_image,
+  p.type, p.status, p.visibility, p.comment_allowed, p.view_count, p.comment_count,
+  p.sticky, p."order", p.likes, p.published_at, p.author_id, p.category_id,
+  p.template, p.fields, p.created_at, p.updated_at`;
+
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, authenticate, readThemeManifest, triggerHook } = ctx;
   const { security, mail } = ctx;
@@ -214,14 +222,14 @@ function listPosts(o) {
   const page = Math.max(1, parseInt(o.page) || 1);
   const pageSize = Math.max(1, parseInt(o.pageSize) || 10);
   const typeFilter = o.type || 'post';
-  let where = `WHERE p.status = 'published' AND p.type = ?`;
+  let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
   const params = [typeFilter];
   if (o.categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(o.categorySlug); }
   if (o.tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(o.tag); }
   if (o.keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${o.keyword}%`, `%${o.keyword}%`, `%${o.keyword}%`); }
   const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
   const items = db.prepare(`
-    SELECT p.id, p.title, p.slug, p.excerpt, p.cover_image, p.view_count, p.sticky, p.published_at, p.created_at, p.category_id, p.likes,
+    SELECT p.id, p.title, p.slug, p.excerpt, p.cover_image, p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
            u.nickname as author_nickname, c.name as category_name, c.slug as category_slug,
            (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id AND cm.status = 'approved') as comment_count${o.full ? ', p.html_content' : ''}
     FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id
@@ -232,19 +240,19 @@ function listPosts(o) {
 }
 
 function listCategories() {
-  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts WHERE category_id = c.id AND status = 'published') as post_count FROM categories c ORDER BY sort_order, name`).all();
+  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count FROM categories c ORDER BY sort_order, name`).all();
   cats.forEach(c => { const r = getPermalinkUrl('category', null, c); c.permalink = r.url; c.route = r.route; c.url = r.route; });
   return cats;
 }
 
 function listTags() {
-  const tags = db.prepare(`SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND p.status = 'published') as post_count FROM tags t ORDER BY t.name`).all();
+  const tags = db.prepare(`SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND ${PUBLIC_POST_WHERE}) as post_count FROM tags t ORDER BY t.name`).all();
   tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t); t.permalink = r.url; t.route = r.route; t.url = r.route; });
   return tags;
 }
 
 function listArchives() {
-  return db.prepare(`SELECT strftime('%Y-%m', published_at) as ym, COUNT(*) as count FROM posts WHERE type = 'post' AND status = 'published' AND published_at IS NOT NULL GROUP BY ym ORDER BY ym DESC`).all();
+  return db.prepare(`SELECT strftime('%Y-%m', p.published_at) as ym, COUNT(*) as count FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} AND p.published_at IS NOT NULL GROUP BY ym ORDER BY ym DESC`).all();
 }
 
 function listRecentComments(limit) {
@@ -252,7 +260,8 @@ function listRecentComments(limit) {
     SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
            p.title as post_title, p.slug as post_slug, u.nickname, u.avatar
     FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id
-    WHERE c.status = 'approved' ORDER BY c.created_at DESC LIMIT ?
+    WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}
+    ORDER BY c.created_at DESC LIMIT ?
   `).all(limit || 5);
   items.forEach(c => { c.post_url = '/post/' + c.post_slug; c.post_route = '/post/' + c.post_slug; c.author = c.nickname || c.author_name || '匿名'; });
   return items;
@@ -536,7 +545,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const pageTemplatesList = scanPageTemplates(activeThemeId, __themeDir);
 
   const cats = listCategories();
-  const pagesList = db.prepare(`SELECT id, title, slug, template FROM posts WHERE type = 'page' AND status = 'published' ORDER BY "order" ASC, created_at ASC`).all();
+  const pagesList = db.prepare(`SELECT id, title, slug, template FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
   const nav = [
     { title: '首页', url: '/', type: 'index', slug: '', active: type === 'index' },
     ...cats.map(c => ({ title: c.name, url: c.route, type: 'category', slug: c.slug, active: type === 'category' && slug === c.slug })),
@@ -592,8 +601,8 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     return n;
   })();
   try {
-    data.commentTotal = db.prepare("SELECT COUNT(*) as c FROM comments WHERE status = 'approved'").get().c;
-    data.postTotal = db.prepare("SELECT COUNT(*) as c FROM posts WHERE type = 'post' AND status = 'published'").get().c;
+    data.commentTotal = db.prepare(`SELECT COUNT(*) as c FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}`).get().c;
+    data.postTotal = db.prepare(`SELECT COUNT(*) as c FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE}`).get().c;
   } catch (e) { data.commentTotal = 0; data.postTotal = 0; }
   data.momentPageUrl = (function () {
     const mp = pagesList.find(p => p.template === 'page-moment') || pagesList.find(p => p.slug === 'moment');
@@ -604,16 +613,23 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const pageView = {};
 
   if (type === 'post' || type === 'page') {
-    const post = db.prepare('SELECT p.*, u.nickname as author_nickname, u.avatar as author_avatar, c.name as category_name, c.slug as category_slug FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE p.slug = ? AND p.status = \'published\'').get(slug);
+    const post = db.prepare(`
+      SELECT ${PUBLIC_POST_FIELDS},
+             u.nickname as author_nickname, u.avatar as author_avatar,
+             c.name as category_name, c.slug as category_slug
+      FROM posts p
+      LEFT JOIN users u ON p.author_id = u.id
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.slug = ? AND p.type = ? AND ${PUBLIC_POST_WHERE}
+    `).get(slug, type);
     if (!post) return error(res, '内容不存在', 404);
     post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
-    post.prev = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at < ? ORDER BY published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
-    post.next = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at > ? ORDER BY published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
+    post.prev = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at < ? ORDER BY p.published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
+    post.next = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at > ? ORDER BY p.published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
     if (post.prev) post.prev.url = '/post/' + post.prev.slug;
     if (post.next) post.next.url = '/post/' + post.next.slug;
     decoratePost(post);
     post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
-    post.likes = post.likes || 0;
     /* 阅读时长：原版 post.php 的元信息行显示「N 分钟」而不是阅读量。
        按正文估算：中日韩字符按 1 字计，拉丁词按 1.5 计，300 字/分钟。 */
     post.readTime = (function () {
@@ -807,7 +823,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   }
 
   json(res, {
-    options,
+    options: { ...options, theme_config: publicThemeConfig(cfg, activeThemeId) },
     site: { name: options.site_name || 'lill 博客', description: options.site_description || '', url: (options.site_url || '').replace(/\/$/, ''), year: new Date().getFullYear() },
     theme: { ...publicThemeConfig(cfg, activeThemeId), ...pageView },
     themeId: options.active_theme || 'default',
@@ -827,7 +843,7 @@ route('GET', '/api/v1/posts', async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const page = parseInt(url.searchParams.get('page')) || 1;
   const pageSize = parseInt(url.searchParams.get('pageSize')) || 10;
-  const status = url.searchParams.get('status') || 'published';
+  // 安全隔离:公共接口强制只返回已发布且公开的内容
   const typeFilter = url.searchParams.get('type') || 'post';
   const categoryId = url.searchParams.get('categoryId');
   const categorySlug = url.searchParams.get('categorySlug');
@@ -835,8 +851,9 @@ route('GET', '/api/v1/posts', async (req, res) => {
   const keyword = url.searchParams.get('keyword');
   const full = url.searchParams.get('full') === '1';
 
-  let where = `WHERE p.status = ? AND p.type = ?`;
-  const params = [status, typeFilter];
+  let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
+
+  const params = [typeFilter];
   if (categoryId) { where += ' AND p.category_id = ?'; params.push(categoryId); }
   if (categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(categorySlug); }
   if (tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(tag); }
@@ -859,13 +876,13 @@ route('GET', '/api/v1/posts', async (req, res) => {
 
 // 独立页面列表（导航菜单用）
 route('GET', '/api/v1/pages', async (req, res) => {
-  const pages = db.prepare(`SELECT id, title, slug, excerpt, created_at FROM posts WHERE type = 'page' AND status = 'published' ORDER BY "order" ASC, created_at ASC`).all();
+  const pages = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.created_at FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
   json(res, pages);
 });
 
 // 归档（按年月分组，侧边栏 Widget）
 route('GET', '/api/v1/archives', async (req, res) => {
-  const rows = db.prepare(`SELECT strftime('%Y-%m', published_at) as ym, COUNT(*) as count FROM posts WHERE type = 'post' AND status = 'published' AND published_at IS NOT NULL GROUP BY ym ORDER BY ym DESC`).all();
+  const rows = db.prepare(`SELECT strftime('%Y-%m', p.published_at) as ym, COUNT(*) as count FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} AND p.published_at IS NOT NULL GROUP BY ym ORDER BY ym DESC`).all();
   json(res, rows);
 });
 
@@ -877,7 +894,8 @@ route('GET', '/api/v1/comments/recent', async (req, res) => {
     SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
            p.title as post_title, p.slug as post_slug, u.nickname, u.avatar
     FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id
-    WHERE c.status = 'approved' ORDER BY c.created_at DESC LIMIT ?
+    WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}
+    ORDER BY c.created_at DESC LIMIT ?
   `).all(limit);
   // 为每条评论生成 post_url 和 post_route
   items.forEach(c => {
@@ -889,11 +907,20 @@ route('GET', '/api/v1/comments/recent', async (req, res) => {
 
 // 文章详情（含标签、上下篇导航）
 route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
-  const post = db.prepare('SELECT p.*, u.nickname as author_nickname, u.avatar as author_avatar, c.name as category_name, c.slug as category_slug FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE p.slug = ?').get(params.slug);
+  // 安全隔离:只返回已发布、公开且未设置密码的文章
+  const post = db.prepare(`
+    SELECT ${PUBLIC_POST_FIELDS},
+           u.nickname as author_nickname, u.avatar as author_avatar,
+           c.name as category_name, c.slug as category_slug
+    FROM posts p
+    LEFT JOIN users u ON p.author_id = u.id
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.slug = ? AND p.type = 'post' AND ${PUBLIC_POST_WHERE}
+  `).get(params.slug);
   if (!post) return error(res, '文章不存在', 404);
   post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
-  post.prev = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at < ? ORDER BY published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
-  post.next = db.prepare(`SELECT title, slug FROM posts WHERE type = ? AND status = 'published' AND published_at > ? ORDER BY published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
+  post.prev = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at < ? ORDER BY p.published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
+  post.next = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at > ? ORDER BY p.published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
   db.prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?').run(post.id);
   const postUrlResult = getPermalinkUrl('post', post, post.category_id ? { slug: post.category_slug } : null); post.url = postUrlResult.url; post.route = postUrlResult.route;
   /* 正文经主题短代码转换后与访客身份相关（如 {hide} 回复可见），不能沿用 60 秒公开缓存 */
@@ -912,7 +939,7 @@ route('GET', '/api/v1/feed', async (req, res) => {
   const siteName = getOpt('site_name', 'lill 博客');
   const siteDesc = getOpt('site_description', '');
   const siteUrl = getOpt('site_url', 'https://test.abohe.cn').replace(/\/$/, '');
-  const posts = db.prepare(`SELECT title, slug, excerpt, published_at FROM posts WHERE type = 'post' AND status = 'published' ORDER BY published_at DESC LIMIT 20`).all();
+  const posts = db.prepare(`SELECT p.title, p.slug, p.excerpt, p.published_at FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} ORDER BY p.published_at DESC LIMIT 20`).all();
   const x = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel>\n';
   xml += '<title>' + x(siteName) + '</title>\n<link>' + x(siteUrl) + '</link>\n<description>' + x(siteDesc) + '</description>\n';
@@ -930,13 +957,13 @@ route('GET', '/api/v1/feed', async (req, res) => {
 });
 
 route('GET', '/api/v1/categories', async (req, res) => {
-  const cats = db.prepare('SELECT c.*, (SELECT COUNT(*) FROM posts WHERE category_id = c.id AND status = \'published\') as post_count FROM categories c ORDER BY sort_order').all();
+  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count FROM categories c ORDER BY sort_order`).all();
   cats.forEach(c => { const r = getPermalinkUrl('category', null, c); c.url = r.url; c.route = r.route; });
   json(res, cats);
 });
 
 route('GET', '/api/v1/tags', async (req, res) => {
-  const tags = db.prepare('SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND p.status = \'published\') as post_count FROM tags t ORDER BY t.name').all();
+  const tags = db.prepare(`SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND ${PUBLIC_POST_WHERE}) as post_count FROM tags t ORDER BY t.name`).all();
   tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t); t.url = r.url; t.route = r.route; });
   json(res, tags);
 });
@@ -996,7 +1023,7 @@ route('GET', '/api/v1/comments', async (req, res) => {
   // hot（按点赞）是 lill 原有扩展，保留以兼容旧调用
   const sortRaw = url.searchParams.get('sort') || '';
   const sort = (sortRaw === 'hot' || sortRaw === 'asc' || sortRaw === 'desc') ? sortRaw : 'desc';
-  const post = db.prepare('SELECT id, author_id FROM posts WHERE id = ?').get(postId);
+  const post = db.prepare(`SELECT p.id, p.author_id FROM posts p WHERE p.id = ? AND ${PUBLIC_POST_WHERE}`).get(postId);
   if (!post) return error(res, '文章不存在', 404);
   const ownerId = post.author_id;
 
@@ -1034,7 +1061,7 @@ route('POST', '/api/v1/comments', async (req, res) => {
   validators.required(body.postId, '文章ID');
   validators.required(body.content, '评论内容');
   validators.string(body.content, '评论内容', 2000);
-  const post = db.prepare('SELECT id, author_id, comment_allowed FROM posts WHERE id = ?').get(body.postId);
+  const post = db.prepare(`SELECT p.id, p.author_id, p.comment_allowed FROM posts p WHERE p.id = ? AND ${PUBLIC_POST_WHERE}`).get(body.postId);
   if (!post) return error(res, '文章不存在', 404);
   if (post.comment_allowed === 0) return error(res, '该文章已关闭评论');
 
@@ -1155,7 +1182,7 @@ route('POST', '/api/v1/comments', async (req, res) => {
 route('POST', '/api/v1/comments/:id/like', async (req, res, params) => {
   const body = await parseBody(req);
   const action = body.action === 'unlike' ? 'unlike' : 'like';
-  const row = db.prepare('SELECT id, likes FROM comments WHERE id = ?').get(params.id);
+  const row = db.prepare(`SELECT c.id, c.likes FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = ? AND c.status = 'approved' AND ${PUBLIC_POST_WHERE}`).get(params.id);
   if (!row) return error(res, '评论不存在', 404);
   const next = Math.max(0, (row.likes || 0) + (action === 'unlike' ? -1 : 1));
   db.prepare('UPDATE comments SET likes = ? WHERE id = ?').run(next, params.id);
@@ -1166,7 +1193,7 @@ route('POST', '/api/v1/comments/:id/like', async (req, res, params) => {
 route('POST', '/api/v1/posts/:id/like', async (req, res, params) => {
   const body = await parseBody(req);
   const action = body.action === 'unlike' ? 'unlike' : 'like';
-  const row = db.prepare('SELECT id, likes FROM posts WHERE id = ?').get(params.id);
+  const row = db.prepare(`SELECT p.id, p.likes FROM posts p WHERE p.id = ? AND ${PUBLIC_POST_WHERE}`).get(params.id);
   if (!row) return error(res, '文章不存在', 404);
   const next = Math.max(0, (row.likes || 0) + (action === 'unlike' ? -1 : 1));
   db.prepare('UPDATE posts SET likes = ? WHERE id = ?').run(next, params.id);

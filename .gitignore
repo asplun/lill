@@ -6,6 +6,7 @@ dist/
 .astro/
 
 # Database & uploads (sensitive)
+/data/
 backend/data/*.db
 backend/data/*.db-*
 backend/uploads/*

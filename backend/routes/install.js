@@ -10,7 +10,7 @@ import { accessSync, constants, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function register(router, ctx) {
-  const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, signJWT, checkRateLimit } = ctx;
+  const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, signJWT, generateCSRFToken, checkRateLimit, PLUGINS_DIR, ensureBuiltinPlugin } = ctx;
   const route = router.route;
 
   // 已安装判定：options.installed 为 true，或已存在任意用户（兼容历史站点）
@@ -56,31 +56,6 @@ export function register(router, ctx) {
   });
 
   // ── 执行安装 ──
-  route('POST', '/api/v1/install/reset', async (req, res) => {
-  // 限流：同一 IP 每分钟最多 3 次重置尝试
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimit('install-reset:' + ip, 3, 60 * 1000)) {
-    return error(res, '请求过于频繁，请稍后再试', 429);
-  }
-  const body = await parseBody(req);
-  if (body.confirm !== 'RESET') return error(res, '请确认重置操作（confirm: RESET）', 400);
-  try {
-    // 删除所有数据表
-    const tables = ['users', 'posts', 'categories', 'tags', 'post_tags', 'comments', 'media', 'options', 'logs', 'themes'];
-    db.exec('BEGIN');
-    for (const t of tables) {
-      db.exec('DROP TABLE IF EXISTS ' + t);
-    }
-    db.exec('COMMIT');
-    console.log('✓ 数据库已清空，请重新安装');
-    json(res, { reset: true, message: '数据库已清空，请重新安装' });
-  } catch (e) {
-    try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
-    console.error('✗ 重置失败:', e.message);
-    return error(res, '重置失败：' + e.message, 500);
-  }
-});
-
 route('POST', '/api/v1/install', async (req, res) => {
     // 限流：同一 IP 每分钟最多 10 次安装尝试
     const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
@@ -187,12 +162,18 @@ route('POST', '/api/v1/install', async (req, res) => {
 
       db.exec('COMMIT');
 
+      // 安装请求发生在服务已经启动之后，补登记并立即热激活内置插件，
+      // 不要求用户再手动重启 Node 服务才能看到默认功能。
+      if (typeof ensureBuiltinPlugin === 'function') ensureBuiltinPlugin(db, PLUGINS_DIR, 'hello-world');
+      if (typeof ctx.activatePlugin === 'function') await ctx.activatePlugin('hello-world');
+
       // 安装成功即签发登录 token，前端可直接进入后台
       const token = signJWT({ id: adminId, username: adminUser, role: 'admin' });
       console.log('✓ 安装完成 | 管理员:', adminUser, '| 站点:', siteName);
       json(res, {
         installed: true,
         token,
+        csrfToken: generateCSRFToken(),
         user: { id: adminId, username: adminUser, nickname: adminUser, email: adminEmail, role: 'admin' },
       });
     } catch (e) {

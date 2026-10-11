@@ -18,9 +18,9 @@ import { createRouter } from './lib/router.js';
 import { register as registerInstall } from './routes/install.js';
 import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
-import { register as registerAdmin } from './routes/admin.js';
+import { register as registerAdmin } from './routes/admin/index.js';
 import { loadThemeExtensions, registerThemeExtensions, resolveActiveThemeId } from './lib/theme-ext.js';
-import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook } from './lib/plugin-ext.js';
+import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook, ensureBuiltinPlugin } from './lib/plugin-ext.js';
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
 import { createSecurity } from './lib/security.js';
@@ -69,6 +69,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at);
   CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
   CREATE INDEX IF NOT EXISTS idx_posts_type_status ON posts(type, status);
+  CREATE INDEX IF NOT EXISTS idx_posts_author_status ON posts(author_id, status);
+
+  CREATE TABLE IF NOT EXISTS post_versions (
+    id TEXT PRIMARY KEY, post_id TEXT NOT NULL, title TEXT, content TEXT,
+    html_content TEXT, excerpt TEXT, status TEXT, author_id TEXT,
+    created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+    FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+    FOREIGN KEY (author_id) REFERENCES users(id)
+  );
 
   CREATE TABLE IF NOT EXISTS categories (
     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
@@ -91,6 +100,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
   CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
   CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_comments_post_status ON comments(post_id, status);
   CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, url TEXT NOT NULL,
     mime_type TEXT NOT NULL, size INTEGER DEFAULT 0, width INTEGER, height INTEGER,
@@ -106,6 +116,8 @@ db.exec(`
     id TEXT PRIMARY KEY, action TEXT NOT NULL, detail TEXT,
     user_id TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at);
+  CREATE INDEX IF NOT EXISTS idx_logs_user ON logs(user_id);
   CREATE TABLE IF NOT EXISTS themes (
     id TEXT PRIMARY KEY, theme_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
     version TEXT DEFAULT '1.0.0', active INTEGER DEFAULT 0, config TEXT DEFAULT '{}',
@@ -134,6 +146,11 @@ function ensureColumn(table, column, ddl) {
 ensureColumn('posts', 'template', "template TEXT DEFAULT ''");
 ensureColumn('posts', 'cover_image', 'cover_image TEXT');
 ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
+// 公开互动接口使用的列必须由核心提供，不能依赖第三方主题迁移。
+ensureColumn('posts', 'likes', 'likes INTEGER DEFAULT 0');
+ensureColumn('comments', 'likes', 'likes INTEGER DEFAULT 0');
+ensureColumn('comments', 'author_qq', 'author_qq TEXT');
+ensureColumn('media', 'thumbnail_url', 'thumbnail_url TEXT');
 
 // ════════════════════════════════════════════════════════════
 // 一次性修复：旧版 Markdown 渲染器「先渲染后转义」，把已生成的 <h2>/<ul>/<strong>
@@ -261,6 +278,11 @@ function readThemeManifest(themeId) {
   }
   if (seeded) console.log(`✓ 已补齐 ${seeded} 项默认配置`);
 }
+
+// 内置插件首次启动即启用；管理员之后手动停用时，后续重启不覆盖该状态。
+if (ensureBuiltinPlugin(db, PLUGINS_DIR, 'hello-world')) {
+  console.log('✓ 内置插件已启用：Hello World 公告栏');
+}
 // 数据修复：已发布但缺少发布时间的历史文章，补上发布时间
 try {
   db.prepare("UPDATE posts SET published_at = COALESCE(created_at, datetime('now')) WHERE status = 'published' AND (published_at IS NULL OR published_at = '')").run();
@@ -326,7 +348,23 @@ function getClientIP(req) {
 // ════════════════════════════════════════
 // 认证
 // ════════════════════════════════════════
-const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate, generateCSRFToken, verifyCSRFToken } = createAuth(JWT_SECRET);
+const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate: authenticateToken, generateCSRFToken, verifyCSRFToken } = createAuth(JWT_SECRET);
+// 一个请求只解析一次身份；权限始终来自当前数据库记录。
+const requestPrincipals = new WeakMap();
+async function authenticate(req) {
+  if (requestPrincipals.has(req)) return requestPrincipals.get(req);
+  let claims;
+  try {
+    claims = await authenticateToken(req);
+    if (!claims || typeof claims.id !== 'string' || !Number.isFinite(claims.exp) || claims.exp <= Date.now()) throw new Error('Invalid');
+  } catch {
+    throw new Error('未登录');
+  }
+  const user = db.prepare("SELECT id, username, nickname, email, avatar, bio, role, status FROM users WHERE id = ? AND status = 'active'").get(claims.id);
+  if (!user) throw new Error('未登录');
+  requestPrincipals.set(req, user);
+  return user;
+}
 
 // ════════════════════════════════════════
 // 路由装配（顺序：公开 → 认证 → 后台）
@@ -338,7 +376,7 @@ const security = createSecurity({ db, settings });
 const imageHost = createImageHost({ settings, uploadDir: UPLOAD_DIR, siteUrl: settings.siteUrl() });
 setJsonTransform((data) => imageHost.signDeep(data));
 const feed = createFeed({ db, settings });
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
 /* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
    主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
    扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */
@@ -428,7 +466,8 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (matched.auth) {
-      await authenticate(req);
+      const principal = await authenticate(req);
+      if (matched.roles && !matched.roles.includes(principal.role)) return error(res, '权限不足', 403);
       // CSRF 验证：写操作必须携带 CSRF token
       if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
         const csrfToken = req.headers['x-csrf-token'];
