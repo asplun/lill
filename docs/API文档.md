@@ -328,6 +328,40 @@ GET /api/v1/feed
 
 返回 `application/rss+xml`，非 JSON 包装。默认输出最新 20 篇已发布文章。
 
+### 2.12 站点渲染引导
+
+```
+GET /api/v1/site/bootstrap?type=index&slug=&page=1&q=&month=
+```
+
+主题前端页面的主数据源：一次请求返回站点信息、主题设置、导航、当前页内容与分页元数据。
+
+| 参数 | 说明 |
+|---|---|
+| `type` | `index` / `post` / `page` / `category` / `tag` / `archive` / `search`，默认 `index` |
+| `slug` | `post` / `page` / `category` / `tag` 类页面使用 |
+| `page` | 页码，默认 `1` |
+| `q` | 搜索关键词（`type=search`） |
+| `month` | 归档月份 `YYYY-MM`（`type=archive`） |
+
+> 仅返回 `status = 'published'` 且 `visibility = 'public'` 且未设密码的内容。
+> 主题设置中标为「后端私用」的密钥（支付/存储/SMTP 凭据等）会在此接口中剔除，不再下发。
+
+### 2.13 点赞 / 取消点赞
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/posts/:id/like` | 文章点赞，`{ "action": "unlike" }` 取消 |
+| POST | `/comments/:id/like` | 评论点赞，规则同上 |
+
+```json
+{ "id": "p1", "likes": 3, "action": "like" }
+
+```
+
+> 匿名可调。服务端只维护计数，不记录「谁赞过」（由浏览器本地记忆）。
+> 草稿/私密/密码文章与非公开评论下的点赞返回 `404`，不能用于探测未公开内容。
+
 ---
 
 ## 3. 认证 API
@@ -447,6 +481,15 @@ Content-Type: application/json
 - 返回的 `csrfToken` 要与 `token` 一起保存；后台所有写操作都要通过 `X-CSRF-Token` 请求头带回
 - 已安装时返回 `403`；同一 IP 每分钟最多 10 次尝试（超出返回 `429`）
 
+### 4.3 安装日志
+
+```
+GET /api/v1/install/log
+```
+
+返回最近 100 行安装日志（`{ "logs": ["..."] }`），供安装向导排查失败原因。
+日志文件缺失时返回空数组。
+
 ---
 
 ## 5. 管理 API（需登录）
@@ -459,6 +502,7 @@ Content-Type: application/json
 |---|---|---|
 | GET | `/admin/posts` | 文章列表（分页） |
 | GET | `/admin/pages` | 独立页面列表 |
+| GET | `/admin/page-templates` | 当前激活主题提供的页面模板列表 |
 | POST | `/admin/posts` | 新建文章/页面 |
 | GET | `/admin/posts/:id` | 文章详情（含标签） |
 | PUT | `/admin/posts/:id` | 更新文章 |
@@ -492,6 +536,16 @@ POST /admin/posts/batch
 
 `action` 取值：`publish` / `draft` / `delete`。
 
+**页面模板响应：**
+
+```json
+GET /admin/page-templates
+{ "theme": "default", "templates": [{ "key": "page-links", "name": "友情链接" }] }
+```
+
+> 模板来自当前激活主题目录下的 `page-*.html`，对标 Typecho 的「自定义模板」下拉框。
+> 写入文章的 `template` 字段时会在服务端重新校验，主题切换后失效的模板会自动置空。
+
 ### 5.2 分类
 
 | 方法 | 路径 | 说明 |
@@ -522,6 +576,7 @@ POST /admin/posts/batch
 | DELETE | `/admin/comments/:id` | 删除评论 |
 | POST | `/admin/comments/:id/reply` | 管理员回复（自动 approved） |
 | PATCH | `/admin/comments/batch-status` | 批量改状态 |
+| GET | `/admin/comments/export` | 导出全部评论为 CSV（`text/csv`，仅 admin/editor） |
 
 **状态值：** `approved`（已通过）/ `pending`（待审核）/ `spam`（垃圾）/ `trash`（回收站）
 
@@ -588,6 +643,10 @@ PUT /admin/options
 | POST | `/admin/themes/:themeId/activate` | 启用主题 |
 | GET | `/admin/themes/:themeId/settings` | 获取主题设置结构 + 当前值 |
 | PUT | `/admin/themes/:themeId/settings` | 保存主题设置 |
+| POST | `/admin/themes/install` | 安装主题包（Base64 ZIP，单包上限 30MB） |
+| GET | `/admin/themes/files` | 递归列出主题目录文件（`?theme=<id>`） |
+| GET | `/admin/themes/file` | 读取单个主题文件（`?theme=<id>&path=<相对路径>`） |
+| PUT | `/admin/themes/file` | 写回主题文件（`{theme, path, content}`，内容必须是字符串） |
 
 **获取主题设置响应：**
 
@@ -611,6 +670,18 @@ PUT /admin/themes/default/settings
 { "accent_color": "#ae1986", "show_sidebar": true }
 ```
 
+**安装主题包：**
+
+```json
+POST /admin/themes/install
+{ "data": "UEsDBBQAAAAIA..." }
+```
+
+> 主题包必须是 ZIP，且包含 `theme.json`；文件写入 `frontend/themes/<themeId>/`。
+> 目录名取自 `theme.json` 的 `id`，包含 `..` 等非法路径会直接拒绝；同 ID 主题会被覆盖。
+>
+> `themes/file` 的读写同样限定在 `frontend/themes/` 之内，用于后台的在线文件编辑器。
+
 ### 5.9 统计 / 日志 / 备份
 
 | 方法 | 路径 | 说明 |
@@ -620,7 +691,16 @@ PUT /admin/themes/default/settings
 | GET | `/admin/posts/recent` | 最近文章 |
 | GET | `/admin/comments/recent` | 最近评论 |
 | GET | `/admin/logs` | 操作日志（分页） |
+| GET | `/admin/logs/stats` | 日志聚合统计（`total` / `actions` / `users`） |
+| DELETE | `/admin/logs` | 清理 N 天前日志（`{ "days": 30 }`，默认 30） |
 | POST | `/admin/backup` | 备份数据库（复制 `data/lill.db`） |
+| GET | `/admin/backup/list` | 已有备份列表（按时间倒序，含 `size`） |
+| GET | `/admin/backup/:name/download` | 下载备份文件（仅 `.db` / `.zip`） |
+| GET | `/admin/backup/progress` | 备份进度（同步备份，恒为 `idle`） |
+| GET | `/admin/system/version` | 版本信息（`version` / `node` / `platform`） |
+| GET | `/admin/system/health` | 健康检查（数据库、磁盘余量、运行时间） |
+| GET | `/admin/system/monitor` | 实时监控（内存 `used` / `total` / `rss`、CPU、连接数） |
+| GET | `/admin/sites` | 站点列表（单站点部署，固定返回 `default`） |
 
 **控制台概览响应：**
 
@@ -642,6 +722,10 @@ PUT /admin/themes/default/settings
   "categoryCount": 1, "tagCount": 0, "mediaCount": 0, "userCount": 2
 }
 ```
+
+> 本版为单站点部署：`/admin/sites` 仅用于兼容旧版前端，不提供站点切换接口（`POST /admin/sites/switch` 已移除，返回 `404`）。
+>
+> `backup/:name/download` 与主题文件编辑器一样做了路径穿越校验，只允许 `data/backups/` 下的 `.db` 与 `.zip`。
 
 ### 5.10 插件
 
@@ -740,6 +824,33 @@ PUT /admin/plugins/hello-world/config
 ```
 
 > 插件运行时能力（`ctx.route` / `ctx.on` / `ctx.addAdminMenu` / `ctx.getConfig`）、可用钩子清单与完整示例，见 **[插件开发指南](./插件开发指南.md)**。
+
+### 5.11 小工具（侧边栏）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/admin/widgets` | 小工具列表（按 `sort_order` 升序） |
+| POST | `/admin/widgets` | 新建小工具 |
+| PUT | `/admin/widgets/:id` | 更新小工具 |
+| DELETE | `/admin/widgets/:id` | 删除小工具 |
+
+**字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | string | 必填，小工具标题 |
+| `type` | string | 必填，类型（如 `html`） |
+| `content` | string | 内容，`html` 类型为原始 HTML |
+| `position` | string | 位置，默认 `sidebar` |
+| `sort_order` | int | 排序，默认 `0` |
+| `enabled` | bool | 是否启用 |
+
+```json
+POST /admin/widgets
+{ "name": "公告", "type": "html", "content": "<p>你好</p>", "position": "sidebar", "enabled": true }
+```
+
+> `PUT` 为全量更新，`name` 与 `type` 缺失会返回 `400`。
 
 ---
 

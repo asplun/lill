@@ -1,10 +1,17 @@
 # lill 博客系统 — Nginx 站点配置模板
+#
 # 使用前替换：
-#   blog.example.com          → 你的域名
-#   /www/wwwroot/lill         → 你的实际部署路径（1Panel 常见为 /opt/1panel/www/sites/lill）
+#   blog.example.com     → 你的域名
+#   /www/wwwroot/lill    → 你的实际部署路径（1Panel 常见为 /opt/1panel/www/sites/lill）
 #
 # 宝塔：网站 → 站点 → 配置文件 → 整体替换
 # 1Panel：网站 → 站点 → 配置文件 → 在 server{} 内加入 location 段（或整体替换）
+#
+# ⚠️ root 指向 frontend/，不是 frontend/dist/
+#   后端按 THEMES_DIR = <项目根>/frontend/themes 读取主题模板，前端也通过
+#   /themes/<id>/... 请求主题资源。二者必须指向同一棵树，否则会出现
+#   “后台切了主题、前台还是旧样式”。
+#   构建产物由 deploy.sh 同步进 frontend/（或你手动 cp -r frontend/dist/* frontend/）。
 
 server {
     listen 80;
@@ -21,8 +28,7 @@ server {
     ssl_certificate     /www/server/panel/vhost/cert/blog.example.com/fullchain.pem;
     ssl_certificate_key /www/server/panel/vhost/cert/blog.example.com/privkey.pem;
 
-    # 前端静态站点根目录（指向构建产物 dist）
-    root /www/wwwroot/lill/frontend/dist;
+    root /www/wwwroot/lill/frontend;
     index index.html;
 
     # ── 后端 API 反向代理 ──
@@ -44,12 +50,13 @@ server {
         access_log off;
     }
 
-    # ── 静态资源目录：缺失即 404，禁止回退到 index.html ──
-    # （主题模板/样式缺失时必须报 404，否则会把首页 HTML 当成模板/CSS 返回）
+    # ── 主题与构建产物：缺失即 404，禁止回退到 index.html ──
+    # 这条很容易被忽略：一旦回退成首页，主题样式/脚本 404 时会返回一段 HTML，
+    # 浏览器报 "Unexpected token '<'"、CSS 静默失效，排查起来非常费劲。
     location /themes/ {
+        # 主题会被手工修改，强制带 ETag 回源校验，否则改了看不到效果
+        add_header Cache-Control "no-cache";
         try_files $uri =404;
-        expires 1h;
-        add_header Cache-Control "public";
     }
     location /_astro/ {
         try_files $uri =404;
@@ -57,11 +64,13 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-    # ── 动态路由回退到各自的静态壳（Astro 静态站 + 前端渲染） ──
+    # ── 动态路由回退到各自的静态壳 ──
     location /post/     { try_files $uri $uri/ /post/index.html; }
     location /category/ { try_files $uri $uri/ /category/index.html; }
     location /tag/      { try_files $uri $uri/ /tag/index.html; }
     location /page/     { try_files $uri $uri/ /page/index.html; }
+    location /search/   { try_files $uri $uri/ /search/index.html; }
+    location /admin/    { try_files $uri $uri/ /admin/index.html; }
 
     # ── RSS Feed ──
     location = /feed.xml {
@@ -69,8 +78,38 @@ server {
         proxy_set_header Host $host;
     }
 
+    location = /favicon.ico {
+        try_files /favicon.svg =404;
+    }
+
+    # 应用内 404 外壳：仅内部跳转使用
+    location = /404.html {
+        internal;
+        try_files $uri =404;
+    }
+
+    # 主题自定义页面的干净 URL（按需保留，不需要可整段删除）
+    rewrite ^/moment/?$   /page/moment/   last;
+    rewrite ^/albums/?$   /page/albums/   last;
+    rewrite ^/links/?$    /page/links/    last;
+    rewrite ^/articles/?$ /page/articles/ last;
+
     # ── 前端静态文件 ──
     location / {
-        try_files $uri $uri/ /index.html;
+        # 路由壳与 api.js / theme.js 会被持续修改，统一回源校验
+        add_header Cache-Control "no-cache";
+        # 真实文件/目录优先；都不存在时落到 404 外壳，而不是首页
+        try_files $uri $uri/ =404;
+        error_page 404 /404.html;
     }
 }
+
+# ⚠️ 关于 /theme.js
+#
+# 不要在 Nginx 里把 /theme.js 用 alias 写死到某个具体主题，例如：
+#
+#     location = /theme.js { alias /www/wwwroot/lill/frontend/themes/trim3/theme.js; }   # 不要这样做
+#
+# 这样一旦在后台切换主题，/theme.js 仍然返回旧主题的脚本，表现为“切了主题没生效”。
+# 让 /theme.js 落到 <root>/theme.js（构建产物中的主题引擎）即可；
+# 主题自身的模板与资源由 /themes/<激活主题>/ 提供。

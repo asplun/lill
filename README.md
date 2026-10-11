@@ -154,6 +154,11 @@ lill/
 │   ├── server.js      # 主服务
 │   ├── ecosystem.config.cjs  # PM2 配置
 │   └── data/          # SQLite 数据库
+│   ├── routes/        # 路由：public / auth / install，后台拆分在 routes/admin/
+│   ├── lib/           # 核心库：认证、路由、主题、插件、安全…
+│   ├── plugins/       # 插件目录（plugin.json + index.js）
+│   ├── test/          # node:test 用例（架构/权限/安全/回归）
+│   └── data/          # SQLite 数据库（不提交）
 ├── frontend/          # Astro 前端
 │   ├── src/           # 源码
 │   ├── public/        # 静态资源
