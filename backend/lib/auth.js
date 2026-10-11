@@ -12,8 +12,13 @@ export function createAuth(JWT_SECRET) {
   };
 
   const verifyPwd = (p, stored) => {
+    // 调用方未必做过类型校验，这里做最后一道防线，避免抛错而不是返回 false
+    if (typeof p !== 'string' || typeof stored !== 'string') return false;
     const [salt, hash] = stored.split(':');
-    return timingSafeEqual(Buffer.from(hash, 'hex'), scryptSync(p, salt, 64));
+    if (!salt || !hash || !/^[0-9a-f]+$/i.test(hash)) return false;
+    const expected = Buffer.from(hash, 'hex');
+    const actual = scryptSync(p, salt, 64);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
   };
 
   const signJWT = (payload) => {

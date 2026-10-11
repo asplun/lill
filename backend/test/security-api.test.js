@@ -225,3 +225,31 @@ test('bootstrap does not leak private theme configuration through options', asyn
   assert.equal(response.status, 200);
   assert.doesNotMatch(JSON.stringify(response.payload), /theme-secret-123/);
 });
+
+test('login rejects non-string credentials instead of crashing', async t => {
+  const api = await startApiServer();
+  t.after(api.stop);
+  await installTestSite(api);
+
+  // 非字符串会直接抛进 scryptSync / SQLite 绑定，曾导致 500 并在日志里留下堆栈
+  const payloads = [
+    { username: 'security-admin', password: [] },
+    { username: 'security-admin', password: { a: 1 } },
+    { username: 'security-admin', password: 123456 },
+    { username: { a: 1 }, password: 'test-password-123' },
+    { username: ['security-admin'], password: 'test-password-123' },
+    { username: 'security-admin' },
+    { password: 'test-password-123' },
+  ];
+  for (const body of payloads) {
+    const response = await api.request('POST', '/api/v1/auth/login', { body });
+    assert.equal(response.status, 400, `expected 400 for ${JSON.stringify(body)}`);
+    assert.doesNotMatch(JSON.stringify(response.payload), /scryptSync|node:internal|at Object\.fn/);
+  }
+
+  // 合法凭据依然可用
+  const ok = await api.request('POST', '/api/v1/auth/login', {
+    body: { username: 'security-admin', password: 'test-password-123' },
+  });
+  assert.equal(ok.status, 200);
+});

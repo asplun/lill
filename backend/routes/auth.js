@@ -16,15 +16,22 @@ route('POST', '/api/v1/auth/login', async (req, res) => {
     return error(res, '尝试次数过多，请 15 分钟后再试', 429);
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE (username = ? OR email = ?) AND status = ?').get(body.username, body.username, 'active');
-  if (!user || !verifyPwd(body.password, user.password)) {
+  // 凭据必须是字符串：非字符串会直接抛进 scryptSync 与 SQLite 绑定层，
+  // 在日志里留下 500 与堆栈，同时白白消耗一次 scrypt。
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  const password = typeof body?.password === 'string' ? body.password : '';
+  if (!username || !password) return error(res, '用户名和密码不能为空', 400);
+  if (username.length > 100 || password.length > 200) return error(res, '用户名或密码格式不正确', 400);
+
+  const user = db.prepare('SELECT * FROM users WHERE (username = ? OR email = ?) AND status = ?').get(username, username, 'active');
+  if (!user || !verifyPwd(password, user.password)) {
     loginLimiter.fail(key);
     const left = loginLimiter.remaining(key);
     return error(res, left > 0 ? `用户名或密码错误（还可尝试 ${left} 次）` : '尝试次数过多，请 15 分钟后再试', 401);
   }
 
   loginLimiter.reset(key);
-  const rememberMe = body.rememberMe || false;
+  const rememberMe = body?.rememberMe === true;
     const token = signJWT({ id: user.id, username: user.username, role: user.role }, rememberMe ? '30d' : '2h');
   const csrfToken = generateCSRFToken();
   try { if (typeof triggerHook === 'function') triggerHook('user.login', { id: user.id, username: user.username, role: user.role, ip }); } catch {}
