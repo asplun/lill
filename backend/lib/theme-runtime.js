@@ -50,7 +50,15 @@ function createRuntime(manifests, extensions) {
 export function registerThemeExtensions(router, ctx, extensions, resolveActiveId, notFound) {
   for (const [id, extension] of extensions) {
     if (!extension || typeof extension.register !== 'function') continue;
-    const scoped = { route(method, path, handler, auth) { router.route(method, path, async (req, res, params) => resolveActiveId() !== id ? notFound(res) : handler(req, res, params), auth); } };
+    const scoped = {
+      core: ctx.core,
+      json: ctx.json,
+      error: ctx.error,
+      settings: ctx.settings,
+      route(method, path, handler, auth) {
+        router.route(method, path, async (req, res, params) => resolveActiveId() !== id ? notFound(res) : handler(req, res, params), auth);
+      },
+    };
     try { extension.register(scoped, ctx); } catch (error) { console.error(`  ✗ 主题扩展注册失败：${id} — ${error.message}`); }
   }
 }

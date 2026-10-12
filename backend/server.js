@@ -13,7 +13,7 @@ import { scryptSync, randomBytes } from 'node:crypto';
 
 import { uid, slugify, renderMD, plainText } from './lib/utils.js';
 import { createAuth } from './lib/auth.js';
-import { json, error, parseBody, validators, logRequest, setJsonTransform } from './lib/http.js';
+import { json, error, parseBody, validators, logRequest } from './lib/http.js';
 import { createRouter } from './lib/router.js';
 import { register as registerInstall } from './routes/install.js';
 import { register as registerPublic } from './routes/public.js';
@@ -24,8 +24,7 @@ import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin,
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
 import { createSecurity } from './lib/security.js';
-import { createImageHost } from './lib/image-hosting.js';
-import { createFeed } from './lib/feed.js';
+import { createCoreProviders } from './lib/providers.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = parseInt(process.env.PORT) || 3000;
@@ -373,11 +372,9 @@ const router = createRouter();
 const settings = createSettings(db, { themesDir: THEMES_DIR });
 const mail = createMail({ settings });
 const security = createSecurity({ db, settings });
-const imageHost = createImageHost({ settings, uploadDir: UPLOAD_DIR, siteUrl: settings.siteUrl() });
-setJsonTransform((data) => imageHost.signDeep(data));
-const feed = createFeed({ db, settings });
+const core = createCoreProviders({ mail, security, uploadDir: UPLOAD_DIR });
 const themeRuntime = await loadThemeRuntime(THEMES_DIR);
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed, themeRuntime, runActiveThemeHook, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, core, themeRuntime, runActiveThemeHook, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
 /* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
    主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
    扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */

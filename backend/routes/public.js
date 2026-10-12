@@ -554,22 +554,22 @@ route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
   json(res, post);
 });
 
-// RSS Feed（Nginx /feed.xml 反向代理到此）
+// RSS Feed is a core-only serialization of published posts; optional theme providers are not involved.
 route('GET', '/api/v1/feed', async (req, res) => {
   const getOpt = (k, d) => { const r = db.prepare('SELECT value FROM options WHERE key = ?').get(k); return (r && r.value) || d; };
   const siteName = getOpt('site_name', 'lill 博客');
   const siteDesc = getOpt('site_description', '');
-  const siteUrl = getOpt('site_url', 'https://test.abohe.cn').replace(/\/$/, '');
+  const siteUrl = getOpt('site_url', '').replace(/\/$/, '');
   const posts = db.prepare(`SELECT p.title, p.slug, p.excerpt, p.published_at FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} ORDER BY p.published_at DESC LIMIT 20`).all();
-  const x = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const x = value => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel>\n';
   xml += '<title>' + x(siteName) + '</title>\n<link>' + x(siteUrl) + '</link>\n<description>' + x(siteDesc) + '</description>\n';
   xml += '<language>zh-CN</language>\n<lastBuildDate>' + new Date().toUTCString() + '</lastBuildDate>\n';
-  for (const p of posts) {
-    const link = siteUrl + '/post/' + encodeURIComponent(p.slug);
-    xml += '<item>\n<title>' + x(p.title) + '</title>\n<link>' + x(link) + '</link>\n<guid isPermaLink="true">' + x(link) + '</guid>\n';
-    xml += '<description>' + x(p.excerpt || '') + '</description>\n';
-    if (p.published_at) xml += '<pubDate>' + new Date(String(p.published_at).replace(' ', 'T') + 'Z').toUTCString() + '</pubDate>\n';
+  for (const post of posts) {
+    const link = siteUrl + '/post/' + encodeURIComponent(post.slug);
+    xml += '<item>\n<title>' + x(post.title) + '</title>\n<link>' + x(link) + '</link>\n<guid isPermaLink="true">' + x(link) + '</guid>\n';
+    xml += '<description>' + x(post.excerpt || '') + '</description>\n';
+    if (post.published_at) xml += '<pubDate>' + new Date(String(post.published_at).replace(' ', 'T') + 'Z').toUTCString() + '</pubDate>\n';
     xml += '</item>\n';
   }
   xml += '</channel></rss>';

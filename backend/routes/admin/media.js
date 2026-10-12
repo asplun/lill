@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { createThumbnailOnUpload } from '../../lib/thumbnail.js';
 
 export function register(router, ctx, helpers) {
-  const { db, json, error, parseBody, uid, authenticate, triggerHook, UPLOAD_DIR } = ctx;
+  const { db, json, error, parseBody, uid, authenticate, triggerHook, core, UPLOAD_DIR } = ctx;
+  // Keep route registration compatible with lightweight integrations while the server uses core.media.
+  const mediaProvider = core?.media || { uploadDir: UPLOAD_DIR, publicUrl: fileName => '/uploads/' + fileName };
   const { route, managesAll } = helpers;
 
   route('POST', '/api/v1/admin/media/upload', async (req, res) => {
@@ -15,7 +17,7 @@ export function register(router, ctx, helpers) {
     const ext = (body.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0].toLowerCase();
     const safeExt = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf', '.txt', '.md', '.zip'].includes(ext) ? ext : '';
     const filename = Date.now().toString(36) + '-' + randomBytes(4).toString('hex') + safeExt;
-    const fp = join(UPLOAD_DIR, filename);
+    const fp = join(mediaProvider.uploadDir, filename);
     const fileBuf = Buffer.from(body.data, 'base64');
     const mimeMap = [
       { ext: '.jpg', magic: [0xFF, 0xD8, 0xFF] }, { ext: '.jpeg', magic: [0xFF, 0xD8, 0xFF] },
@@ -27,7 +29,7 @@ export function register(router, ctx, helpers) {
     if (mimeCheck && !mimeCheck.magic.every((byte, index) => fileBuf[index] === byte)) return error(res, '文件类型与扩展名不符', 400);
     writeFileSync(fp, fileBuf);
     const id = uid();
-    const url = '/uploads/' + filename;
+    const url = mediaProvider.publicUrl(filename);
     let width = null;
     let height = null;
     if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(safeExt)) {
