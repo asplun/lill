@@ -147,3 +147,9 @@ test('widgets module owns sidebar widget management routes', () => {
     'PUT:/api/v1/admin/widgets/:id',
   ].sort());
 });
+import { readFileSync } from 'node:fs';
+test('server provides the generic theme runtime through route context', () => {
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.match(source, /themeRuntime/);
+  assert.match(source, /loadThemeRuntime\(THEMES_DIR\)/);
+});

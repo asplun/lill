@@ -19,7 +19,7 @@ import { register as registerInstall } from './routes/install.js';
 import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin/index.js';
-import { loadThemeExtensions, registerThemeExtensions, resolveActiveThemeId } from './lib/theme-ext.js';
+import { loadThemeRuntime, registerThemeExtensions, resolveActiveThemeId } from './lib/theme-runtime.js';
 import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook, ensureBuiltinPlugin } from './lib/plugin-ext.js';
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
@@ -249,7 +249,7 @@ function readThemeManifest(themeId) {
   } catch (e) { return null; }
 }
 {
-  const themesDir = join(__dirname, '..', 'frontend', 'themes');
+  const themesDir = THEMES_DIR;
   try {
     const themeDirs = readdirSync(themesDir, { withFileTypes: true }).filter(d => d.isDirectory());
     for (const d of themeDirs) {
@@ -376,11 +376,12 @@ const security = createSecurity({ db, settings });
 const imageHost = createImageHost({ settings, uploadDir: UPLOAD_DIR, siteUrl: settings.siteUrl() });
 setJsonTransform((data) => imageHost.signDeep(data));
 const feed = createFeed({ db, settings });
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
+const themeRuntime = await loadThemeRuntime(THEMES_DIR);
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, imageHost, feed, themeRuntime, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
 /* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
    主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
    扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */
-const themeExts = await loadThemeExtensions(THEMES_DIR);
+const themeExts = themeRuntime.extensions;
 const resolveActiveTheme = () => resolveActiveThemeId(db);
 ctx.themeExt = {
   ids: () => [...themeExts.keys()],
