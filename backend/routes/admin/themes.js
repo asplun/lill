@@ -2,11 +2,12 @@
 import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
+import { runThemeMigrations } from '../../lib/theme-runtime.js';
 
 const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
 
 export function register(router, ctx, helpers) {
-  const { db, json, error, parseBody, uid, authenticate, readThemeManifest, THEMES_DIR, triggerHook } = ctx;
+  const { db, json, error, parseBody, uid, authenticate, readThemeManifest, THEMES_DIR, triggerHook, themeRuntime } = ctx;
   const { route, logAction } = helpers;
 
   route('GET', '/api/v1/admin/themes', async (req, res) => {
@@ -35,14 +36,26 @@ export function register(router, ctx, helpers) {
 
   route('POST', '/api/v1/admin/themes/:themeId/activate', async (req, res, params) => {
     await authenticate(req);
-    if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(params.themeId)) {
-      db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), params.themeId, params.themeId, '1.0.0');
+    const themeId = String(params.themeId || '').trim();
+    const previous = db.prepare('SELECT theme_id FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get()?.theme_id || 'default';
+    try {
+      db.exec('BEGIN');
+      if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId)) {
+        const manifest = readThemeManifest(themeId);
+        db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), themeId, manifest?.name || themeId, manifest?.version || '1.0.0');
+      }
+      await runThemeMigrations(themeRuntime, themeId, { ...ctx, themeId });
+      db.prepare('UPDATE themes SET active = 0').run();
+      db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(themeId);
+      db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), themeId);
+      db.exec('COMMIT');
+    } catch (migrationError) {
+      try { db.exec('ROLLBACK'); } catch {}
+      console.error(`✗ 主题激活失败：${themeId}`, migrationError);
+      return error(res, migrationError.message || `主题迁移失败：${themeId}`, 500);
     }
-    db.prepare('UPDATE themes SET active = 0').run();
-    db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(params.themeId);
-    db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), params.themeId);
-    try { triggerHook('theme.activated', { themeId: params.themeId }); } catch {}
-    json(res, { themeId: params.themeId, active: true });
+    try { triggerHook('theme.activated', { themeId, previousThemeId: previous }); } catch {}
+    json(res, { themeId, active: true });
   });
 
   route('GET', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {

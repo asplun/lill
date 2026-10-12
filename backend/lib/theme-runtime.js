@@ -64,8 +64,11 @@ export function registerThemeExtensions(router, ctx, extensions, resolveActiveId
 }
 export async function runThemeMigrations(runtime, themeId, ctx) {
   const extension = runtime.extensions.get(themeId);
-  if (!extension || typeof extension.runThemeMigrations !== 'function') return { themeId, migrated: false, result: undefined };
-  try { return { themeId, migrated: true, result: await extension.runThemeMigrations(ctx) }; }
+  if (!extension) return { themeId, migrated: false, result: undefined };
+  // `migrate` is the current protocol; keep the old explicit hook during migration.
+  const migrate = typeof extension.migrate === 'function' ? extension.migrate : extension.runThemeMigrations;
+  if (typeof migrate !== 'function') return { themeId, migrated: false, result: undefined };
+  try { return { themeId, migrated: true, result: await migrate(ctx) }; }
   catch (error) { throw new Error(`主题迁移失败：${themeId}: ${error.message}`, { cause: error }); }
 }
 export function resolveActiveThemeId(db) {
