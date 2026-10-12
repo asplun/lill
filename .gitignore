@@ -45,3 +45,6 @@ frontend/themes/trim3/
 
 # Staging dirs
 *.staging-*
+
+# Managed worktree scratch
+.worktrees/
