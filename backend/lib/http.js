@@ -3,8 +3,7 @@
  */
 
 /**
- * 响应数据变换钩子：由 server.js 注入「输出层 CDN 签名」（对照原版 TriM3 在每次输出
- * 时调用 tri3_qiniu_sign_url 的做法）。未注入或抛错时原样输出，绝不影响接口可用性。
+ * 响应数据变换钩子：由 server.js 按需注入输出层转换器。未注入或抛错时原样输出，绝不影响接口可用性。
  */
 let jsonTransform = null;
 export function setJsonTransform(fn) { jsonTransform = (typeof fn === 'function') ? fn : null; }

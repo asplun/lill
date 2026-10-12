@@ -64,3 +64,15 @@ export function resolveActiveThemeId(db) {
   try { const row = db.prepare('SELECT theme_id FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get() || db.prepare('SELECT theme_id FROM themes ORDER BY created_at ASC LIMIT 1').get(); if (row?.theme_id) return String(row.theme_id); } catch { /* core can start before metadata exists */ }
   return 'default';
 }
+
+/** Run one hook for the active extension without allowing it to break core APIs. */
+export async function runActiveThemeHook(extensions, activeId, hookName, args = [], fallback) {
+  const extension = extensions && typeof extensions.get === 'function' ? extensions.get(activeId) : null;
+  if (!extension || typeof extension[hookName] !== 'function') return fallback;
+  try {
+    return await extension[hookName](...args);
+  } catch (error) {
+    console.warn(`主题钩子 ${hookName} 执行失败：${error?.message || error}`);
+    return fallback;
+  }
+}

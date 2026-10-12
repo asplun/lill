@@ -1,7 +1,7 @@
 /**
  * 评论公共工具（文章评论 / 说说评论共用）
  * ────────────────────────────────────────────────────────────
- * 头像策略与 TriM3 原版一致（lib/helpers.php: tri3_comment_avatar / tri3_gravatar_url）：
+ * 头像策略由核心统一提供：
  *   1. 已登录用户 → users.avatar
  *   2. 有 QQ 号（显式填写，或邮箱是数字@qq.com）→ q1.qlogo.cn QQ 头像
  *   3. 有邮箱 → Cravatar 邮箱头像（md5），主源 cn.cravatar.com，前端 onerror 依次降级
@@ -10,7 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 
-/** 评论可用邮箱头像源（顺序即优先级，与原版 tri3_gravatar_hosts 一致） */
+/** 评论可用邮箱头像源（顺序即优先级）。 */
 export const GRAVATAR_HOSTS = ['cn.cravatar.com/avatar/', 'weavatar.com/avatar/', 'cravatar.cn/avatar/'];
 
 /** 从邮箱里猜 QQ 号：123456@qq.com → 123456 */
@@ -102,7 +102,7 @@ export function orderBy(sort, alias) {
   const c = (alias ? alias + '.' : '') + 'created_at';
   const l = (alias ? alias + '.' : '') + 'likes';
   if (sort === 'hot') return l + ' DESC, ' + c + ' DESC';
-  /* 原版 helpers.php tri3_comment_sort()：默认倒序（最新在上），?commentSort=asc 时正序 */
+  /* 默认倒序（最新在上），?commentSort=asc 时正序。 */
   if (sort === 'asc') return c + ' ASC';
   return c + ' DESC';
 }
