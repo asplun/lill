@@ -88,11 +88,7 @@ server {
         try_files $uri =404;
     }
 
-    # 主题自定义页面的干净 URL（按需保留，不需要可整段删除）
-    rewrite ^/moment/?$   /page/moment/   last;
-    rewrite ^/albums/?$   /page/albums/   last;
-    rewrite ^/links/?$    /page/links/    last;
-    rewrite ^/articles/?$ /page/articles/ last;
+    # 主题自定义页面请由主题自己的前端路由或 manifest 处理；核心不写死主题路径。
 
     # ── 前端静态文件 ──
     location / {
@@ -104,12 +100,5 @@ server {
     }
 }
 
-# ⚠️ 关于 /theme.js
-#
-# 不要在 Nginx 里把 /theme.js 用 alias 写死到某个具体主题，例如：
-#
-#     location = /theme.js { alias /www/wwwroot/lill/frontend/themes/trim3/theme.js; }   # 不要这样做
-#
-# 这样一旦在后台切换主题，/theme.js 仍然返回旧主题的脚本，表现为“切了主题没生效”。
-# 让 /theme.js 落到 <root>/theme.js（构建产物中的主题引擎）即可；
-# 主题自身的模板与资源由 /themes/<激活主题>/ 提供。
+# 主题资源由通用 /themes/<id>/ 路径提供，核心不把资源 alias 到某个主题。
+# 主题切换后由前端根据 bootstrap.active_theme 选择对应模板和资源。

@@ -1,10 +1,10 @@
 /**
- * 评论反垃圾 / 安全引擎（逐条对照原版 TriM3 lib/helpers.php）
+ * 评论反垃圾 / 安全引擎（通用核心服务）
  *
- *   tri3_spam_settings()     → spamSettings()
- *   tri3_spam_check()        → spamCheck()
- *   tri3_spam_ai_check()     → spamAiCheck()
- *   tri3_comment_rate_limit()→ rateLimit()
+ *   spamSettings()     → spamSettings()
+ *   spamCheck()        → spamCheck()
+ *   spamAiCheck()     → spamAiCheck()
+ *   rateLimit()→ rateLimit()
  *
  * 设计原则（原版原话）：宁可放过，不可误杀 —— 命中默认「待审核」而非直接拒绝，
  * 高置信命中（蜜罐 / IP / 邮箱黑名单）才直接丢弃。
@@ -34,7 +34,7 @@ const mbLower = (s) => String(s || '').toLowerCase();
 const splitList = (s) => String(s || '').split(/[\r\n,]+/).map(x => x.trim()).filter(Boolean);
 
 export function createSecurity({ db, settings }) {
-  /** 对照 tri3_spam_settings()：统一默认值，旧配置自动兼容 */
+  /** 对照 spamSettings()：统一默认值，旧配置自动兼容 */
   function spamSettings() {
     let m = settings.opt('spamMode', 'normal');
     if (!['loose', 'normal', 'strict'].includes(m)) m = 'normal';
@@ -76,7 +76,7 @@ export function createSecurity({ db, settings }) {
   const hit = (reason, { pending = true, silent = false } = {}) => ({ ok: false, pending, reason, silent });
 
   /**
-   * 规则引擎（对照 tri3_spam_check）
+   * 通用规则引擎
    * @param {object} d { text, author, mail, ip, agent, hp }
    * @param {string} table 重复评论检测所用表（comments / moment_comments）
    */
@@ -190,7 +190,7 @@ export function createSecurity({ db, settings }) {
   }
 
   /**
-   * 评论全局限速（对照 tri3_comment_rate_limit）
+   * 评论全局限速
    * 60 秒内最多 rateMin 条；600 秒内最多 rateTen 条。
    * 本机调试 IP 不限制。
    */
@@ -218,7 +218,7 @@ export function createSecurity({ db, settings }) {
   }
 
   /**
-   * 豆包 AI 语义过滤（对照 tri3_spam_ai_check）
+   * 可选 AI 语义过滤
    * 未启用 / 未填 Key / 非垃圾 / 边缘分数 → null（放行）
    * AI 只「加刑」不「减刑」；配置类错误放行，网络超时转待审核。
    */

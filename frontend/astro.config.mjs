@@ -1,6 +1,6 @@
 import { defineConfig } from 'astro/config';
 import { cpSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { join, extname, basename } from 'node:path';
+import { join, extname } from 'node:path';
 
 /**
  * lill 主题发布器
@@ -8,9 +8,9 @@ import { join, extname, basename } from 'node:path';
  * 让主题真正实现「拷文件夹即用」。
  *
  * 拷贝白名单：theme.json / *.html / *.css / *.js / assets/**
- * 永不拷贝：*.php（安全）、cache/（缓存）、admin/、api/（源码目录）、._*（macOS 垃圾）
+ * 永不拷贝：backend/（服务端源码）、*.php（安全）、cache/（运行时缓存）、admin/、api/（源码目录）、._*（macOS 垃圾）
  */
-const NEVER_COPY_DIRS = new Set(['cache', 'admin', 'api', 'node_modules', 'src']);
+const NEVER_COPY_DIRS = new Set(['backend', 'cache', 'admin', 'api', 'node_modules', 'src']);
 const NEVER_COPY_EXT = new Set(['.php', '.phtml', '.env', '.db', '.sqlite', '.sql']);
 
 function copyThemeDir(from, to) {

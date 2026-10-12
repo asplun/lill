@@ -24,20 +24,37 @@ REFERENCED=$(grep -rho '_astro/[A-Za-z0-9._-]*\.css' . | sort -u | sed 's|_astro
 echo "   引用文件: ${REFERENCED:-（无）}"
 
 echo "▶ 3. 同步构建产物到服务器"
-# 排除服务器上独有的目录：主题（第三方主题在服务器手工维护）、源码、缓存的 dist
+# 排除单独发布的主题目录、源码和缓存目录；主题由 THEME_IDS 清单单独同步
 rsync -az --no-perms --no-owner --no-group \
-  --exclude='/themes/' --exclude='/src/' --exclude='/public/' --exclude='/dist/' --exclude='/node_modules/' \
+  --exclude='/themes/' --exclude='/backend/' --exclude='/cache/' --exclude='/src/' --exclude='/public/' --exclude='/dist/' --exclude='/node_modules/' \
   ./ "$SERVER:$REMOTE/frontend/"
 
-# 主题模板单独同步：只覆盖官方 default 主题。
-# trim3 是第三方主题且在服务器上手工维护（含本地没有的 api/ 与 meting 依赖），绝不能覆盖。
-if [ -d "./themes/default" ]; then
-  rsync -az --no-perms --no-owner --no-group ./themes/default/ "$SERVER:$REMOTE/frontend/themes/default/"
-fi
+# 主题模板按显式清单同步，默认只发布官方 default。
+# 第三方主题由其自己的发布包加入 THEME_IDS，不通过主题名称特判或覆盖。
+THEME_IDS="${THEME_IDS:-default}"
+for theme_id in $THEME_IDS; do
+  if [[ ! "$theme_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$ ]]; then
+    echo "❌ 非法主题 ID: $theme_id"
+    exit 1
+  fi
+  if [ ! -d "./themes/$theme_id" ]; then
+    echo "❌ 主题目录不存在: ./themes/$theme_id"
+    exit 1
+  fi
+  THEME_SOURCE="$LOCAL/frontend/themes/$theme_id"
+  if [ ! -d "$THEME_SOURCE" ]; then
+    echo "❌ 主题目录不存在: $THEME_SOURCE"
+    exit 1
+  fi
+  echo "   同步主题包: $theme_id"
+  # 从源主题目录同步，保留 backend/ 扩展；cache/ 是运行时数据，不由发布覆盖。
+  rsync -az --no-perms --no-owner --no-group --delete --exclude='cache/' \
+    "$THEME_SOURCE/" "$SERVER:$REMOTE/frontend/themes/$theme_id/"
+done
 
 echo "▶ 4. 校验页面是否全部落地（MD5 对比）"
-# 只校验自己会同步的文件；themes/trim3 由服务器维护，不参与对比
-PAGES=$(find . \( -name 'index.html' -o -name '404.html' \) -not -path './themes/trim3/*' | sed 's|^\./||' | sort)
+# 只校验自己会同步的页面；主题目录由 THEME_IDS 单独同步
+PAGES=$(find . \( -name 'index.html' -o -name '404.html' \) -not -path './themes/*' | sed 's|^\./||' | sort)
 # md5sum 的输出格式与 printf 一致（两空格分隔），缺文件时直接少行，由下面 diff 捕获
 LOCAL_SUM=$(for f in $PAGES; do printf '%s  %s\n' "$(md5 -q "$f")" "$f"; done)
 PAGES_ARG=$(echo "$PAGES" | tr '\n' ' ')

@@ -1,10 +1,10 @@
 /**
- * 邮件通知（对照原版 TriM3 lib/helpers.php 的邮件子系统，用 nodemailer 重写）
+ * 通用邮件通知服务（使用 nodemailer）
  *
- *   tri3_smtp_send()      → 本节 createTransport()
- *   tri3_send_mail()      → send()
- *   tri3_mail_tpl()       → mailTpl()   （HTML 模板逐行照搬原版，含变量名）
- *   tri3_notify_comment() → notifyComment()
+ *   smtpTransport()      → 本节 createTransport()
+ *   send()      → send()
+ *   mailTpl()       → mailTpl()   （HTML 模板逐行照搬原版，含变量名）
+ *   notifyComment() → notifyComment()
  *
  * 主题设置键（与 theme.json「通知」组一致）：
  *   mailEnable mailMode smtpHost smtpPort smtpSecure smtpUser smtpPass
@@ -41,7 +41,7 @@ export function createMail({ settings }) {
   let cached = null;      // { key, transport }
   let lastError = '';
 
-  /** 解析 SMTP 配置（对照 tri3_smtp_send 的取值与回退顺序） */
+  /** 解析 SMTP 配置（读取 SMTP 配置 的取值与回退顺序） */
   function config() {
     const host = settings.opt('smtpHost', '').trim();
     let port = parseInt(settings.opt('smtpPort', '465'), 10);
@@ -84,7 +84,7 @@ export function createMail({ settings }) {
     return t;
   }
 
-  /** 对照 tri3_send_mail：收件人非法直接 false；再从统一入口发信 */
+  /** 统一发信入口：收件人非法直接 false；再从统一入口发信 */
   async function send(to, subject, html) {
     const rcpt = String(to || '').trim();
     if (rcpt === '' || !isEmail(rcpt)) return false;
@@ -97,7 +97,7 @@ export function createMail({ settings }) {
         to: rcpt,
         subject,
         html,
-        headers: c.mode === 'mail' ? { 'X-Mailer': 'lill-trim3' } : undefined,
+        headers: c.mode === 'mail' ? { 'X-Mailer': 'lill' } : undefined,
       });
       lastError = '';
       return true;
@@ -108,7 +108,7 @@ export function createMail({ settings }) {
     }
   }
 
-  /** 邮件 HTML 模板：逐行对照 tri3_mail_tpl（MD3 风格卡片） */
+  /** 邮件 HTML 模板（MD3 风格卡片） */
   function mailTpl(kind, d = {}) {
     let pri = settings.opt('primaryColor', '#6750a4').trim();
     if (pri === '' || pri[0] !== '#') pri = '#6750a4';
@@ -192,7 +192,7 @@ export function createMail({ settings }) {
   }
 
   /**
-   * 评论通知（对照 tri3_notify_comment）
+   * 评论通知
    * c = { author, text, created(时间戳或字符串), pageurl, status, parent, isOwner, parentMail, parentQq }
    * 访客评论 → 通知站长；站长回复（parent>0 且已通过） → 通知被回复访客
    */

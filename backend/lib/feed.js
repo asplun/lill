@@ -1,5 +1,5 @@
 /**
- * 小组件数据源：天气 / 一言 / 今日诗词（对照原版 TriM3）
+ * 小组件数据源：天气 / 一言 / 今日诗词（通用外部数据 provider）
  *
  *   天气：lib/widgets.php  tri_widgets_weather_get() + tri_widgets_weather_refresh()
  *         + tri_widgets_amap_city() / tri_widgets_amap_refresh()
@@ -17,7 +17,7 @@ const TTL_POEM = 600;
 const TTL_HITOKOTO = 300;
 const TTL_AMAP = 2700;
 
-const UA = 'TriM3/1.0';
+const UA = 'lill/1.0';
 
 export function createFeed({ db, settings }) {
   /* ── 通用缓存（sqlite + 内存两级） ── */

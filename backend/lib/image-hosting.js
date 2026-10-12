@@ -1,5 +1,5 @@
 /**
- * 图床上传（逐行对照原版 TriM3 lib/album.php）
+ * 可选远程媒体 provider（核心默认不初始化）
  *
  *   tri_album_upload()        → upload()
  *   tri_album_upload_local()  → uploadLocal()
@@ -18,9 +18,9 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 const IMG_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp'];
 const IMG_MIME = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/bmp', 'image/x-ms-bmp'];
-const MAX_SIZE = 20 * 1024 * 1024;   // 原版：20MB
+const MAX_SIZE = 20 * 1024 * 1024;   // 历史实现：20MB
 
-/** 嗅探真实图片类型（对照原版 finfo / getimagesize 的“内容校验”） */
+/** 嗅探真实图片类型（对照历史实现 finfo / getimagesize 的“内容校验”） */
 export function sniffImage(buf) {
   if (!buf || buf.length < 4) return '';
   const b = buf;
@@ -62,12 +62,12 @@ export function createImageHost({ settings, uploadDir, siteUrl = '' }) {
     const fname = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}_${randomBytes(4).toString('hex')}.${ext}`;
     const fp = join(dir, fname);
     writeFileSync(fp, buffer);
-    /* 原版返回 siteUrl + '/usr/uploads/albums/...'；lill 的上传目录为 /uploads（nginx alias + 后端静态路由），
+    /* 历史实现返回 siteUrl + '/usr/uploads/albums/...'；lill 的上传目录为 /uploads（nginx alias + 后端静态路由），
        这里按 lill 惯例返回站内相对地址，避免 site_url 配成 http 时前台 https 页面出现混合内容。 */
     return { ok: true, url: `/uploads/albums/${ym}/${fname}`, msg: '', host: 'local', file: fp };
   }
 
-  /** 又拍云 _upt Token 防盗链签名（对照原版 upyunTokenSecret 分支） */
+  /** 又拍云 _upt Token 防盗链签名（对照历史实现 upyunTokenSecret 分支） */
   function upyunSign(url) {
     const secret = opt('upyunTokenSecret', '').trim();
     if (secret === '') return url;
@@ -278,15 +278,15 @@ export function createImageHost({ settings, uploadDir, siteUrl = '' }) {
   }
 
   /* ══════════════════════════════════════════════════════════════════
-     输出层 CDN 防盗链动态签名（逐行对照原版 lib/helpers.php tri3_qiniu_sign_url）
-     两个分支（原版即为二选一）：
+     输出层 CDN 防盗链动态签名（逐行对照历史实现 lib/helpers.php lill_qiniu_sign_url）
+     两个分支（历史实现即为二选一）：
        A. 多吉云 Type A 签名：配置 dogyunKey 且 URL 主机命中
           qiniuDomain / albumApiDomain / img.<站点域> / test.<站点域> 时启用；
           同时按后台设置追加七牛图片处理参数 imageView2/0/w/<宽>/q/<质>[/format/webp]。
        B. 七牛时间戳防盗链：配置 qiniuTokenSecret + qiniuDomain 时启用，输出
           <域名><urlencode(path)>?sign=<md5(密钥+path+hex到期)> & t=<hex到期>。
      未配置密钥时原样返回（线上当前配置即如此，行为与不签名完全一致）。
-     另含 tri3_sign_content_imgs() → signContentImgs()：对 HTML 里的 <img src>/<a href> 签名。
+     另含 lill_sign_content_imgs() → signContentImgs()：对 HTML 里的 <img src>/<a href> 签名。
      ══════════════════════════════════════════════════════════════════ */
   function imgProxyOn() { return opt('imgProxyEnable', '1').trim() === '1'; }
   function imgWebpOn() { return opt('imgWebpEnable', '1').trim() === '1'; }
@@ -298,7 +298,7 @@ export function createImageHost({ settings, uploadDir, siteUrl = '' }) {
     const n = parseInt(opt('imgDefaultQ', '80'), 10);
     return Math.max(30, Math.min(n > 0 ? n : 80, 95));
   }
-  /** 原版 tri3_img_view2_params()：宽/质/WebP 一律取后台设置 */
+  /** 历史实现 lill_img_view2_params()：宽/质/WebP 一律取后台设置 */
   function view2Params(w, crop) {
     const width = w > 0 ? Math.max(32, Math.min(w, 2000)) : imgDefaultW();
     return 'imageView2/' + (crop ? 1 : 0) + '/w/' + width + '/q/' + imgDefaultQ() + (imgWebpOn() ? '/format/webp' : '');
@@ -392,7 +392,7 @@ export function createImageHost({ settings, uploadDir, siteUrl = '' }) {
     return out;
   }
 
-  /** 对 HTML 里的 <img src> / <a href> 做动态签名（对照 tri3_sign_content_imgs） */
+  /** 对 HTML 里的 <img src> / <a href> 做动态签名（对照 lill_sign_content_imgs） */
   function signContentImgs(html) {
     let s = String(html == null ? '' : html);
     if (s === '' || (s.indexOf('<img') === -1 && s.indexOf('<a') === -1)) return s;
@@ -401,7 +401,7 @@ export function createImageHost({ settings, uploadDir, siteUrl = '' }) {
     return s;
   }
 
-  /** 递归对所有输出串签名（原版在各输出点逐个调用；此处统一在响应层做，等价且不漏） */
+  /** 递归对所有输出串签名（历史实现在各输出点逐个调用；此处统一在响应层做，等价且不漏） */
   function signDeep(value, depth) {
     const d = depth || 0;
     if (value == null || d > 10) return value;

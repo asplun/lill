@@ -2,14 +2,7 @@
  * lill HTTP 层：统一响应格式、请求体解析、输入验证、请求日志
  */
 
-/**
- * 响应数据变换钩子：由 server.js 按需注入输出层转换器。未注入或抛错时原样输出，绝不影响接口可用性。
- */
-let jsonTransform = null;
-export function setJsonTransform(fn) { jsonTransform = (typeof fn === 'function') ? fn : null; }
-
 export const json = (res, data, status = 200) => {
-  if (jsonTransform) { try { data = jsonTransform(data); } catch (e) { /* 签名失败不影响响应 */ } }
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify({ code: 0, message: 'ok', data }));
 };

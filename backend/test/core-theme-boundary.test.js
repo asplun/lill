@@ -59,3 +59,32 @@ test('boundary scanner includes nested production modules but excludes test fixt
   assert.ok(productionFiles.some(file => file.endsWith('/routes/admin/themes.js')));
   assert.equal(productionFiles.some(file => file.includes('/test/')), false);
 });
+
+test('core production and deployment files do not contain third-party theme implementation names', () => {
+  const files = [...productionFiles, join(PROJECT_ROOT, 'deploy.sh'), join(PROJECT_ROOT, 'deploy/nginx.conf.example')];
+  const forbidden = /trim3|TriM3|music_playlists|\bmoments\b|tri3_/i;
+  for (const file of files) assert.doesNotMatch(productionSource(file), forbidden, `${file} contains third-party theme coupling`);
+});
+
+test('core HTTP responses do not depend on a removed optional output transformer', () => {
+  const httpSource = productionSource(join(BACKEND_ROOT, 'lib/http.js'));
+  assert.doesNotMatch(httpSource, /setJsonTransform|jsonTransform/);
+});
+
+test('deployment and extension docs describe explicit theme package boundaries', () => {
+  const deploy = readFileSync(join(PROJECT_ROOT, 'deploy.sh'), 'utf8');
+  const themeGuide = readFileSync(join(PROJECT_ROOT, 'docs/主题后端扩展开发指南.md'), 'utf8');
+  assert.match(deploy, /THEME_IDS/);
+  assert.doesNotMatch(deploy, /exclude[^\n]*trim3/i);
+  assert.match(themeGuide, /migrate\(context\)/);
+  assert.match(themeGuide, /ctx\.core\.media/);
+  assert.match(themeGuide, /主题包独立安装[、/]升级/);
+});
+
+test('theme build and deploy preserve private runtime and cache boundaries', () => {
+  const astro = readFileSync(join(PROJECT_ROOT, 'frontend/astro.config.mjs'), 'utf8');
+  const deploy = readFileSync(join(PROJECT_ROOT, 'deploy.sh'), 'utf8');
+  assert.match(astro, /NEVER_COPY_DIRS[^\n]*backend/);
+  assert.match(deploy, /--exclude=['"]\/backend\//);
+  assert.match(deploy, /--exclude=['"]\/cache\//);
+});
