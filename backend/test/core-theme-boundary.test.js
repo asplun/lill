@@ -12,7 +12,8 @@ function walk(relative) {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const path = join(relative, entry.name);
     if (entry.isDirectory()) return walk(path);
-    return entry.isFile() ? [join(BACKEND_ROOT, path)] : [];
+    if (!entry.isFile() || /(?:\.bak\d*|\.backup|\.old|\.orig|~)$/i.test(entry.name)) return [];
+    return [join(BACKEND_ROOT, path)];
   });
 }
 
