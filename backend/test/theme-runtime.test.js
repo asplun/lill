@@ -144,3 +144,34 @@ test('failed extension registration restores the previous routes and runtime mod
   assert.equal(runtime.extensions.get('fixture-a'), previous);
   assert.equal(await routeResponse(router, 'GET', '/api/v1/fixture-a'), 'fixture-a');
 });
+
+test('theme runtime loads the backend entry declared by the manifest', async t => {
+  const themesDir = await mkdtemp(join(tmpdir(), 'lill-theme-entry-'));
+  await mkdir(join(themesDir, 'declared-entry', 'server'), { recursive: true });
+  await writeFile(join(themesDir, 'declared-entry', 'theme.json'), JSON.stringify({
+    id: 'declared-entry', name: 'Declared Entry',
+    backend: { entry: 'server/extension.mjs', protocol: 1 }, settings: [],
+  }));
+  await writeFile(join(themesDir, 'declared-entry', 'server', 'extension.mjs'), `
+    export function register(router) {
+      router.route('GET', '/api/v1/declared-entry', (_req, res) => res.end('declared'));
+    }
+  `);
+  t.after(() => rm(themesDir, { recursive: true, force: true }));
+
+  const runtime = await loadThemeRuntime(themesDir);
+  assert.equal(typeof runtime.extensions.get('declared-entry')?.register, 'function');
+});
+
+test('theme runtime rejects a backend entry that escapes the theme directory', async t => {
+  const themesDir = await mkdtemp(join(tmpdir(), 'lill-theme-entry-invalid-'));
+  await mkdir(join(themesDir, 'invalid-entry'), { recursive: true });
+  await writeFile(join(themesDir, 'invalid-entry', 'theme.json'), JSON.stringify({
+    id: 'invalid-entry', name: 'Invalid Entry',
+    backend: { entry: '../outside.js', protocol: 1 }, settings: [],
+  }));
+  t.after(() => rm(themesDir, { recursive: true, force: true }));
+
+  const runtime = await loadThemeRuntime(themesDir);
+  assert.equal(runtime.extensions.has('invalid-entry'), false);
+});

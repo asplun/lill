@@ -1,6 +1,6 @@
 /** Generic theme runtime: manifest policy, extension loading, and route isolation. */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 function fieldsOf(manifest) {
@@ -72,7 +72,20 @@ async function loadThemeDirectory(themesDir, id, manifests, extensions) {
   }
   const previousManifest = manifests.get(id);
 
-  const entry = join(themeDir, 'backend', 'index.js');
+  const declaredEntry = manifest.backend && typeof manifest.backend === 'object'
+    ? manifest.backend.entry
+    : undefined;
+  const entryName = typeof declaredEntry === 'string' && declaredEntry.trim()
+    ? declaredEntry.trim()
+    : 'backend/index.js';
+  const entry = resolve(themeDir, entryName);
+  const entryRelative = relative(themeDir, entry);
+  if (isAbsolute(entryName) || entryRelative === '' || entryRelative === '..' || entryRelative.startsWith(`..${sep}`)) {
+    console.error(`  ✗ 主题后端入口越界：${id} — ${entryName}`);
+    manifests.set(id, manifest);
+    extensions.delete(id);
+    return { manifest, extension: null, loadError: new Error('主题后端入口必须位于主题目录内') };
+  }
   if (!existsSync(entry)) {
     manifests.set(id, manifest);
     extensions.delete(id);
