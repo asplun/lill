@@ -80,6 +80,7 @@ async function launchOnce({ prepareThemes } = {}) {
   }
 
   return {
+    themesDir,
     baseUrl,
     dbPath: join(tempDir, 'lill.db'),
     request,

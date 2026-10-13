@@ -13,54 +13,179 @@ function normalizeValue(field, value) {
   if (field.type === 'number') { const n = Number(value); return Number.isFinite(n) ? n : 0; }
   return value;
 }
-export function mergeThemeConfig(manifest, saved = {}) {
-  const declared = new Map(fieldsOf(manifest).filter(f => f?.key).map(f => [f.key, f])); const config = {};
-  for (const field of declared.values()) if (field.default !== undefined && field.default !== null) config[field.key] = normalizeValue(field, field.default);
-  if (saved && typeof saved === 'object' && !Array.isArray(saved)) for (const [key, value] of Object.entries(saved)) if (declared.has(key)) config[key] = normalizeValue(declared.get(key), value);
+function declaredConfig(manifest, saved = {}) {
+  const declared = new Map(fieldsOf(manifest).filter(field => field?.key).map(field => [field.key, field]));
+  const config = {};
+  for (const [key, field] of declared) {
+    if (saved && typeof saved === 'object' && !Array.isArray(saved) && Object.hasOwn(saved, key)) config[key] = normalizeValue(field, saved[key]);
+    else if (field.default !== undefined && field.default !== null) config[key] = normalizeValue(field, field.default);
+  }
   return config;
 }
+export function mergeThemeConfig(manifest, saved = {}) {
+  return declaredConfig(manifest, saved);
+}
+
+/** Apply a settings form without deleting legacy keys kept by older theme versions. */
+export function updateThemeConfig(manifest, current = {}, patch = {}) {
+  const declared = new Map(fieldsOf(manifest).filter(field => field?.key).map(field => [field.key, field]));
+  const result = current && typeof current === 'object' && !Array.isArray(current) ? { ...current } : {};
+  for (const [key, field] of declared) {
+    if (!Object.hasOwn(result, key) && field.default !== undefined && field.default !== null) {
+      result[key] = normalizeValue(field, field.default);
+    }
+  }
+  if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
+    for (const [key, value] of Object.entries(patch)) {
+      if (declared.has(key)) result[key] = normalizeValue(declared.get(key), value);
+    }
+  }
+  return result;
+}
+
 export function publicThemeConfig(manifest, config = {}) {
   const declared = new Map(fieldsOf(manifest).filter(f => f?.key && f.private !== true).map(f => [f.key, f])); const output = {};
   for (const [key, value] of Object.entries(config || {})) if (declared.has(key)) output[key] = normalizeValue(declared.get(key), value);
   return output;
 }
+async function loadThemeDirectory(themesDir, id, manifests, extensions) {
+  if (!id || id.startsWith('.') || id.startsWith('._')) return null;
+  const themeDir = join(themesDir, id);
+  try {
+    if (!statSync(themeDir).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  const manifestPath = join(themeDir, 'theme.json');
+  if (!existsSync(manifestPath)) return null;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    console.error(`  ✗ 主题 manifest 解析失败：${id} — ${error.message}`);
+    return null;
+  }
+  if (!manifest || typeof manifest !== 'object' || manifest.id !== id) {
+    console.error(`  ✗ 主题目录与 manifest.id 不一致：${id} ≠ ${manifest?.id || 'missing'}`);
+    return null;
+  }
+  const previousManifest = manifests.get(id);
+
+  const entry = join(themeDir, 'backend', 'index.js');
+  if (!existsSync(entry)) {
+    manifests.set(id, manifest);
+    extensions.delete(id);
+    return { manifest, extension: null };
+  }
+  const previousExtension = extensions.get(id);
+  try {
+    const stat = statSync(entry);
+    const version = `${stat.mtimeMs}-${stat.ctimeMs}-${stat.size}`;
+    const extension = await import(`${pathToFileURL(entry).href}?v=${version}`);
+    manifests.set(id, manifest);
+    extensions.set(id, extension);
+    console.log(`  ✓ 主题扩展已加载：${id}`);
+    return { manifest, extension };
+  } catch (error) {
+    if (previousManifest) manifests.set(id, previousManifest);
+    else manifests.delete(id);
+    if (previousExtension) extensions.set(id, previousExtension);
+    else extensions.delete(id);
+    console.error(`  ✗ 主题扩展加载失败：${id} — ${error.message}`);
+    return { manifest, extension: previousExtension || null, loadError: error };
+  }
+}
+
 export async function loadThemeRuntime(themesDir) {
-  const manifests = new Map(); const extensions = new Map(); let dirs;
-  try { dirs = readdirSync(themesDir); } catch { return createRuntime(manifests, extensions); }
-  for (const id of dirs.sort()) {
-    if (id.startsWith('.') || id.startsWith('._')) continue;
-    const themeDir = join(themesDir, id);
-    try { if (!statSync(themeDir).isDirectory()) continue; } catch { continue; }
-    let valid = true; const manifestPath = join(themeDir, 'theme.json');
-    if (existsSync(manifestPath)) try {
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      if (manifest && typeof manifest === 'object' && manifest.id === id) manifests.set(id, manifest);
-      else if (manifest?.id !== undefined) { valid = false; console.error(`  ✗ 主题目录与 manifest.id 不一致：${id} ≠ ${manifest.id}`); }
-    } catch (error) { valid = false; console.error(`  ✗ 主题 manifest 解析失败：${id} — ${error.message}`); }
-    if (!valid) continue;
-    const entry = join(themeDir, 'backend', 'index.js'); if (!existsSync(entry)) continue;
-    try { extensions.set(id, await import(pathToFileURL(entry).href)); console.log(`  ✓ 主题扩展已加载：${id}`); }
-    catch (error) { console.error(`  ✗ 主题扩展加载失败：${id} — ${error.message}`); }
+  const manifests = new Map();
+  const extensions = new Map();
+  let dirs;
+  try {
+    dirs = readdirSync(themesDir);
+  } catch {
+    return createRuntime(themesDir, manifests, extensions);
   }
-  return createRuntime(manifests, extensions);
+  for (const id of dirs.sort()) await loadThemeDirectory(themesDir, id, manifests, extensions);
+  return createRuntime(themesDir, manifests, extensions);
 }
-function createRuntime(manifests, extensions) {
-  return { manifests, extensions, manifest: id => manifests.get(id) || null, config: (id, saved) => mergeThemeConfig(manifests.get(id), saved), publicConfig: (id, saved) => publicThemeConfig(manifests.get(id), mergeThemeConfig(manifests.get(id), saved)) };
+
+function createRuntime(themesDir, manifests, extensions) {
+  return {
+    themesDir,
+    manifests,
+    extensions,
+    manifest: id => manifests.get(id) || null,
+    config: (id, saved) => mergeThemeConfig(manifests.get(id), saved),
+    publicConfig: (id, saved) => publicThemeConfig(manifests.get(id), mergeThemeConfig(manifests.get(id), saved)),
+    normalizeConfig: (id, saved) => mergeThemeConfig(manifests.get(id), saved),
+    updateConfig: (id, current, patch) => updateThemeConfig(manifests.get(id), current, patch),
+    loadTheme: id => loadThemeDirectory(themesDir, String(id || '').trim(), manifests, extensions),
+  };
 }
+
+const registeredByRouter = new WeakMap();
+
+function removeRegisteredRoutes(router, registered, keep = new Set()) {
+  for (const key of registered?.routes || []) {
+    if (keep.has(key)) continue;
+    const separator = key.indexOf(':');
+    router.removeRoute?.(key.slice(0, separator), key.slice(separator + 1));
+  }
+}
+
+export function registerThemeExtension(router, ctx, extensions, id, resolveActiveId, notFound) {
+  const extension = extensions.get(id) || null;
+  let registered = registeredByRouter.get(router);
+  if (!registered) {
+    registered = new Map();
+    registeredByRouter.set(router, registered);
+  }
+  const previous = registered.get(id);
+  if (previous?.extension === extension && extension) return true;
+
+  // Stage the extension first, so a broken upgrade cannot remove the currently working routes.
+  const staged = new Map();
+  const scoped = {
+    core: ctx.core,
+    json: ctx.json,
+    error: ctx.error,
+    settings: ctx.settings,
+    route(method, path, handler, auth) {
+      staged.set(`${method}:${path}`, { method, path, handler, auth });
+    },
+  };
+  try {
+    // Hooks such as extendBootstrap or migrate do not need routes.
+    if (typeof extension?.register === 'function') extension.register(scoped, ctx);
+    const previousRoutes = previous?.routes || new Set();
+    for (const key of staged.keys()) {
+      if (router.routes?.has(key) && !previousRoutes.has(key)) throw new Error(`主题扩展路由冲突：${key}`);
+    }
+
+    const routes = new Set(staged.keys());
+    removeRegisteredRoutes(router, previous, routes);
+    for (const [key, { method, path, handler, auth }] of staged) {
+      const routeHandler = async (req, res, params) => {
+        if (resolveActiveId() !== id) return notFound(res);
+        const current = registeredByRouter.get(router)?.get(id);
+        const currentHandler = current?.handlers.get(key);
+        return currentHandler ? currentHandler(req, res, params) : notFound(res);
+      };
+      router.route(method, path, routeHandler, auth);
+    }
+    registered.set(id, { extension, routes, handlers: new Map([...staged].map(([key, value]) => [key, value.handler])) });
+    return true;
+  } catch (error) {
+    if (previous?.extension) extensions.set(id, previous.extension);
+    else extensions.delete(id);
+    console.error(`  ✗ 主题扩展注册失败：${id} — ${error.message}`);
+    return false;
+  }
+}
+
 export function registerThemeExtensions(router, ctx, extensions, resolveActiveId, notFound) {
-  for (const [id, extension] of extensions) {
-    if (!extension || typeof extension.register !== 'function') continue;
-    const scoped = {
-      core: ctx.core,
-      json: ctx.json,
-      error: ctx.error,
-      settings: ctx.settings,
-      route(method, path, handler, auth) {
-        router.route(method, path, async (req, res, params) => resolveActiveId() !== id ? notFound(res) : handler(req, res, params), auth);
-      },
-    };
-    try { extension.register(scoped, ctx); } catch (error) { console.error(`  ✗ 主题扩展注册失败：${id} — ${error.message}`); }
-  }
+  for (const id of extensions.keys()) registerThemeExtension(router, ctx, extensions, id, resolveActiveId, notFound);
 }
 export async function runThemeMigrations(runtime, themeId, ctx) {
   const extension = runtime.extensions.get(themeId);

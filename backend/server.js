@@ -19,7 +19,7 @@ import { register as registerInstall } from './routes/install.js';
 import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin/index.js';
-import { loadThemeRuntime, registerThemeExtensions, resolveActiveThemeId, runActiveThemeHook } from './lib/theme-runtime.js';
+import { loadThemeRuntime, registerThemeExtension, registerThemeExtensions, resolveActiveThemeId, runActiveThemeHook } from './lib/theme-runtime.js';
 import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook, ensureBuiltinPlugin } from './lib/plugin-ext.js';
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
@@ -127,6 +127,12 @@ db.exec(`
     version TEXT DEFAULT '1.0.0', description TEXT, active INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS widgets (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, content TEXT DEFAULT '',
+    position TEXT DEFAULT 'sidebar', sort_order INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_widgets_position_order ON widgets(position, sort_order);
 `);
 
 // ════════════════════════════════════════════════════════════
@@ -150,6 +156,7 @@ ensureColumn('posts', 'likes', 'likes INTEGER DEFAULT 0');
 ensureColumn('comments', 'likes', 'likes INTEGER DEFAULT 0');
 ensureColumn('comments', 'author_qq', 'author_qq TEXT');
 ensureColumn('media', 'thumbnail_url', 'thumbnail_url TEXT');
+ensureColumn('widgets', 'updated_at', "updated_at TEXT DEFAULT (datetime('now'))");
 
 // ════════════════════════════════════════════════════════════
 // 一次性修复：旧版 Markdown 渲染器「先渲染后转义」，把已生成的 <h2>/<ul>/<strong>
@@ -386,6 +393,14 @@ ctx.themeExt = {
   activeId: resolveActiveTheme,
   active: () => themeExts.get(resolveActiveTheme()) || null,
 };
+ctx.registerThemeExtension = (themeId) => registerThemeExtension(
+  router,
+  ctx,
+  themeExts,
+  themeId,
+  resolveActiveTheme,
+  (res) => error(res, 'API 不存在', 404),
+);
 registerInstall(router, ctx);
 registerPublic(router, ctx);
 /* 插件运行时接口：必须在 registerAdmin 之前挂到 ctx，

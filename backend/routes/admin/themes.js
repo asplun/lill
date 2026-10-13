@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
 import { runThemeMigrations } from '../../lib/theme-runtime.js';
 
+const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
 
 export function register(router, ctx, helpers) {
@@ -37,20 +38,44 @@ export function register(router, ctx, helpers) {
   route('POST', '/api/v1/admin/themes/:themeId/activate', async (req, res, params) => {
     await authenticate(req);
     const themeId = String(params.themeId || '').trim();
+    if (!THEME_ID_PATTERN.test(themeId)) return error(res, '主题 ID 无效', 400);
+    const manifest = readThemeManifest(themeId);
+    const registeredTheme = db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId);
+    if ((!manifest || manifest.id !== themeId) && !(themeId === 'default' && registeredTheme)) {
+      return error(res, '主题不存在或 manifest 无效', 404);
+    }
     const previous = db.prepare('SELECT theme_id FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get()?.theme_id || 'default';
+    const previousManifest = themeRuntime?.manifests?.get(themeId);
+    const previousExtension = themeRuntime?.extensions?.get(themeId);
     try {
       db.exec('BEGIN');
       if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId)) {
-        const manifest = readThemeManifest(themeId);
         db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), themeId, manifest?.name || themeId, manifest?.version || '1.0.0');
       }
+      const loadedTheme = themeRuntime?.loadTheme ? await themeRuntime.loadTheme(themeId) : null;
+      if (loadedTheme?.loadError) throw new Error('主题后端扩展加载失败');
       await runThemeMigrations(themeRuntime, themeId, { ...ctx, themeId });
+      if (typeof ctx.registerThemeExtension === 'function' && themeRuntime?.extensions && !ctx.registerThemeExtension(themeId)) {
+        throw new Error(`主题扩展注册失败：${themeId}`);
+      }
       db.prepare('UPDATE themes SET active = 0').run();
       db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(themeId);
       db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), themeId);
       db.exec('COMMIT');
     } catch (migrationError) {
       try { db.exec('ROLLBACK'); } catch {}
+      if (themeRuntime?.manifests) {
+        if (previousManifest) themeRuntime.manifests.set(themeId, previousManifest);
+        else themeRuntime.manifests.delete(themeId);
+      }
+      if (themeRuntime?.extensions) {
+        if (previousExtension) themeRuntime.extensions.set(themeId, previousExtension);
+        else themeRuntime.extensions.delete(themeId);
+      }
+      // If registration succeeded but DB commit failed, restore the old route handlers too.
+      if (typeof ctx.registerThemeExtension === 'function' && themeRuntime?.extensions) {
+        ctx.registerThemeExtension(themeId);
+      }
       console.error(`✗ 主题激活失败：${themeId}`, migrationError);
       return error(res, migrationError.message || `主题迁移失败：${themeId}`, 500);
     }
@@ -60,22 +85,27 @@ export function register(router, ctx, helpers) {
 
   route('GET', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {
     await authenticate(req);
+    if (themeRuntime?.loadTheme) await themeRuntime.loadTheme(params.themeId);
     const theme = db.prepare('SELECT * FROM themes WHERE theme_id = ?').get(params.themeId);
     if (!theme) return error(res, '主题不存在', 404);
     const manifest = readThemeManifest(params.themeId);
+    if (!manifest || manifest.id !== params.themeId) return error(res, '主题不存在或 manifest 无效', 404);
     let config = {};
     try { config = JSON.parse(theme.config || '{}'); } catch {}
-    json(res, { theme, schema: manifest?.settings || [], values: config });
+    json(res, { theme, schema: manifest.settings || [], values: config });
   });
 
   route('PUT', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {
     await authenticate(req);
+    if (themeRuntime?.loadTheme) await themeRuntime.loadTheme(params.themeId);
     const body = await parseBody(req);
     const theme = db.prepare('SELECT * FROM themes WHERE theme_id = ?').get(params.themeId);
     if (!theme) return error(res, '主题不存在', 404);
     let config = {};
     try { config = JSON.parse(theme.config || '{}'); } catch {}
-    const merged = { ...config, ...body };
+    const merged = themeRuntime?.updateConfig
+      ? themeRuntime.updateConfig(params.themeId, config, body)
+      : { ...config, ...body };
     db.prepare('UPDATE themes SET config = ? WHERE theme_id = ?').run(JSON.stringify(merged), params.themeId);
     json(res, merged);
   });

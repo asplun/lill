@@ -209,7 +209,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const options = buildThemeOptions();
   const cfg = options.theme_config || {};
   // 每页文章数：主题「布局与导航」的 pageSize 优先，未设置时回落站点选项 posts_per_page
-  const themePerPage = parseInt(cfg.pageSize);
+  const themePerPage = parseInt(cfg.posts_per_page ?? cfg.pageSize);
   const perPage = (themePerPage > 0 ? themePerPage : parseInt(options.posts_per_page)) || 10;
   const activeThemeId = options.active_theme || 'default';
   const themesDir = ctx.THEMES_DIR || __themeDir;
@@ -236,6 +236,8 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     tags: listTags(),
     archives: listArchives(),
     recentComments: listRecentComments(5),
+    hotPosts: db.prepare(`SELECT p.id, p.title, p.slug, p.view_count, p.likes, p.published_at FROM posts p WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post' ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(decoratePost),
+    hotTags: listTags().slice().sort((a, b) => b.post_count - a.post_count).slice(0, 10),
     widgets: {
       left: decorateWidgets(cfg.leftWidgets),
       right: decorateWidgets(cfg.rightWidgets),

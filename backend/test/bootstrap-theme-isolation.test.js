@@ -54,6 +54,8 @@ test('default bootstrap is theme agnostic when theme-only tables do not exist', 
   assert.ok(response.payload.data.page);
   assert.ok(response.payload.data.data);
   assert.ok(response.payload.data.sidebar);
+  assert.ok(Array.isArray(response.payload.data.sidebar.hotPosts));
+  assert.ok(Array.isArray(response.payload.data.sidebar.hotTags));
   assert.equal(Object.hasOwn(response.payload.data, 'moments'), false);
   assert.equal(Object.hasOwn(response.payload.data.data, 'musicTabs'), false);
 });
