@@ -45,7 +45,11 @@ export function updateThemeConfig(manifest, current = {}, patch = {}) {
 
 export function publicThemeConfig(manifest, config = {}) {
   const declared = new Map(fieldsOf(manifest).filter(f => f?.key && f.private !== true).map(f => [f.key, f])); const output = {};
-  for (const [key, value] of Object.entries(config || {})) if (declared.has(key)) output[key] = normalizeValue(declared.get(key), value);
+  // Treat credential-shaped keys as server-only even when an older/third-party manifest forgot `private: true`.
+  const credentialKey = /(?:secret|token|password|passwd|pass|cookie|credential|api[_-]?key|access[_-]?key)/i;
+  for (const [key, value] of Object.entries(config || {})) {
+    if (declared.has(key) && !credentialKey.test(key)) output[key] = normalizeValue(declared.get(key), value);
+  }
   return output;
 }
 async function loadThemeDirectory(themesDir, id, manifests, extensions) {

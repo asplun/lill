@@ -175,3 +175,15 @@ test('theme runtime rejects a backend entry that escapes the theme directory', a
   const runtime = await loadThemeRuntime(themesDir);
   assert.equal(runtime.extensions.has('invalid-entry'), false);
 });
+
+test('public theme config excludes credential-like fields when private metadata is missing', () => {
+  const manifest = { settings: [
+    { key: 'siteName', type: 'text' },
+    { key: 'qiniuSecretKey', type: 'text' },
+    { key: 'metingCookieTencent', type: 'textarea' },
+    { key: 'albumApiToken', type: 'text' },
+    { key: 'smtpPass', type: 'text' },
+  ] };
+  const config = { siteName: 'visible', qiniuSecretKey: 'secret', metingCookieTencent: 'cookie', albumApiToken: 'token', smtpPass: 'password' };
+  assert.deepEqual(publicThemeConfig(manifest, config), { siteName: 'visible' });
+});
