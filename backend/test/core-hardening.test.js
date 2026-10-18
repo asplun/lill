@@ -82,6 +82,39 @@ test('theme activation allows a theme without a backend extension', async t => {
   assert.deepEqual(activation.payload.data, { themeId: 'default', active: true });
 });
 
+test('opening settings after an active theme upgrade refreshes its routes and bootstrap hook', async t => {
+  const api = await startApiServer({ prepareThemes: async themesDir => {
+    const dir = join(themesDir, 'upgrade-fixture');
+    await mkdir(join(dir, 'backend'), { recursive: true });
+    await writeFile(join(dir, 'theme.json'), JSON.stringify({ id: 'upgrade-fixture', name: 'Upgrade', settings: [] }));
+    await writeFile(join(dir, 'backend', 'index.js'), `
+      export function register(router, ctx) {
+        router.route('GET', '/api/v1/upgrade-version', (_req, res) => ctx.json(res, { version: '1.0.0' }));
+      }
+      export function extendBootstrap() { return { version: '1.0.0' }; }
+    `);
+  }});
+  t.after(api.stop);
+  await install(api);
+  const session = await login(api);
+  const headers = sessionHeaders(session);
+  const activation = await api.request('POST', '/api/v1/admin/themes/upgrade-fixture/activate', { headers, body: {} });
+  assert.equal(activation.status, 200, JSON.stringify(activation.payload));
+  await writeFile(join(api.themesDir, 'upgrade-fixture', 'backend', 'index.js'), `
+    export function register(router, ctx) {
+      router.route('GET', '/api/v1/upgrade-version', (_req, res) => ctx.json(res, { version: '2.0.0' }));
+    }
+    export function extendBootstrap() { return { version: '2.0.0' }; }
+  `);
+
+  const settings = await api.request('GET', '/api/v1/admin/themes/upgrade-fixture/settings', { headers });
+  assert.equal(settings.status, 200, JSON.stringify(settings.payload));
+  const route = await api.request('GET', '/api/v1/upgrade-version');
+  assert.equal(route.payload.data.version, '2.0.0');
+  const bootstrap = await api.request('GET', '/api/v1/site/bootstrap?type=index');
+  assert.equal(bootstrap.payload.data.theme.extension.version, '2.0.0');
+});
+
 test('theme activation rejects a manifest whose backend extension cannot load', async t => {
   const api = await startApiServer({ prepareThemes: async themesDir => {
     const dir = join(themesDir, 'broken-load');

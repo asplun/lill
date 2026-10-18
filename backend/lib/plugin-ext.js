@@ -22,7 +22,7 @@
  *   卸载 → 删除目录 + 数据库记录
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
@@ -81,12 +81,23 @@ const routeRegistrations = new WeakMap();
 export async function loadPlugin(dir, pluginsDir) {
   const entry = join(pluginsDir, dir, 'index.js');
   if (!existsSync(entry)) return null;
-  if (moduleCache.has(dir)) return moduleCache.get(dir);
+  const stat = statSync(entry);
+  let manifestVersion = '';
+  try { manifestVersion = String(JSON.parse(readFileSync(join(pluginsDir, dir, 'plugin.json'), 'utf8')).version || ''); } catch {}
+  const cacheKey = [dir, manifestVersion, stat.mtimeMs, stat.ctimeMs, stat.size].join(':');
+  if (moduleCache.has(cacheKey)) return moduleCache.get(cacheKey).mod;
+  let copyDir = null;
   try {
-    const mod = await import(pathToFileURL(entry).href);
-    moduleCache.set(dir, mod);
+    // Native ESM ignores query-only changes for already cached file URLs.
+    // A versioned copy gives an upgraded plugin a fresh module graph.
+    const stamp = crypto.randomBytes(8).toString('hex');
+    copyDir = join(pluginsDir, `.load-${dir}-${stamp}`);
+    cpSync(join(pluginsDir, dir), copyDir, { recursive: true });
+    const mod = await import(pathToFileURL(join(copyDir, 'index.js')).href + '?v=' + encodeURIComponent(cacheKey));
+    moduleCache.set(cacheKey, { mod, loadDir: copyDir });
     return mod;
   } catch (e) {
+    if (copyDir) { try { rmSync(copyDir, { recursive: true, force: true }); } catch {} }
     console.error(`  ✗ 插件加载失败：${dir} — ${e.message}`);
     return null;
   }
@@ -94,7 +105,11 @@ export async function loadPlugin(dir, pluginsDir) {
 
 /** 卸载插件模块（清缓存） */
 export function unloadPlugin(dir) {
-  moduleCache.delete(dir);
+  for (const [key, entry] of moduleCache) {
+    if (key !== dir && !key.startsWith(dir + ':')) continue;
+    moduleCache.delete(key);
+    try { rmSync(entry.loadDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 /**

@@ -36,6 +36,7 @@ async function createAdminApp(options = {}) {
       this._ownedIds = new Set();
       this._listeners = {};
       this.dataset = {};
+      this.style = {};
       this.classList = {
         _set: new Set(),
         add: (c) => this.classList._set.add(c),
@@ -99,6 +100,7 @@ async function createAdminApp(options = {}) {
     '/admin/categories': [],
     '/admin/page-templates': { templates: [{ key: 'page-links', name: '友情链接', file: 'page-links.html' }] },
     '/admin/options': [{ key: 'permalink', value: '/archives/{slug}/' }],
+    '/admin/users/user-late': { id: 'user-late', username: 'late', nickname: 'Late User', email: 'late@example.test', role: 'author', status: 'active' },
     ...(options.responses || {}),
   };
   const lillAPI = {
@@ -136,7 +138,7 @@ async function createAdminApp(options = {}) {
   const wrapped = [
     '(async () => {',
     appSource,
-    ';window.__editorInternals = { mdToHtml, mdClientSlug, mdSync, mdInsertText, mdToggleMode, mdEl };',
+    ';window.__editorInternals = { mdToHtml, mdClientSlug, mdSync, mdInsertText, mdToggleMode, mdEl, paginate, loadPluginMenus };',
     'render = async () => {};',
     '})();',
   ].join('\n');
@@ -305,4 +307,54 @@ test('标签编辑按钮保留名称中的引号和反斜杠，并保存修改',
   assert.equal(promptDefault, name);
   const update = apiCalls.find(call => call.path === '/admin/tags/tag-1' && call.opts.method === 'PUT');
   assert.equal(update?.opts.body.name, 'Renamed notes');
+});
+
+test('后台分页只渲染当前页附近的有限页码', async () => {
+  const { internals } = await createAdminApp();
+  const html = internals.paginate({ page: 5000, totalPages: 10000, hasPrev: true, hasNext: true });
+  const labels = [...html.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map(match => match[1]);
+  assert.deepEqual(labels, ['←', '1', '4998', '4999', '5000', '5001', '5002', '10000', '→']);
+  assert.ok(Buffer.byteLength(html) < 2000);
+});
+
+test('用户编辑器通过单条接口加载，不依赖前 100 条用户列表', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp();
+  await sandbox.openUserEditor('user-late');
+  assert.ok(apiCalls.some(call => call.path === '/admin/users/user-late'));
+  assert.ok(!apiCalls.some(call => call.path.startsWith('/admin/users?pageSize=')));
+  assert.equal(elements.get('ue-name').value, 'late');
+  assert.match(elements.get('content').innerHTML, /value="author" selected/);
+});
+
+test('新建用户默认订阅者角色，且无密码时不发送请求', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp();
+  await sandbox.openUserEditor();
+  assert.match(elements.get('content').innerHTML, /value="subscriber" selected/);
+  elements.get('ue-name').value = 'reader';
+  elements.get('ue-nick').value = 'Reader';
+  elements.get('ue-email').value = 'reader@example.test';
+  await sandbox.saveUser(null);
+  assert.equal(apiCalls.some(call => call.path === '/admin/users' && call.opts.method === 'POST'), false);
+});
+
+test('插件菜单刷新后可以删除已停用插件的入口', async () => {
+  const menus = [{ id: 'announcement', plugin: 'announcement', title: '公告栏', page: 'plugin-settings:announcement' }];
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: { '/admin/plugin-menus': menus },
+  });
+  const box = new (elements.get('content').constructor)('div');
+  box.id = 'plugin-menus';
+  const section = new (elements.get('content').constructor)('div');
+  section.id = 'plugin-menu-section';
+  elements.set('plugin-menus', box);
+  elements.set('plugin-menu-section', section);
+
+  await sandbox.__editorInternals.loadPluginMenus();
+  assert.match(box.innerHTML, /公告栏/);
+  assert.equal(section.style.display, '');
+  menus.length = 0;
+  await sandbox.__editorInternals.loadPluginMenus();
+  assert.equal(box.innerHTML, '');
+  assert.equal(section.style.display, 'none');
+  assert.ok(apiCalls.some(call => call.path === '/admin/plugin-menus'));
 });

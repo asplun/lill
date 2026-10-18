@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -94,4 +94,43 @@ test('a failed theme migration leaves the previous theme active', async t => {
   assert.match(response.payload.message, /主题迁移失败/);
   assert.equal(activeTheme(api.dbPath), 'default');
   assert.equal(hasTable(api.dbPath, 'broken_fixture_state'), false);
+});
+
+test('a failed asynchronous theme migration does not roll back unrelated requests', async t => {
+  const api = await startApiServer({
+    prepareThemes: themesDir => writeTheme(themesDir, 'concurrent-fixture', `
+      import { access, writeFile } from 'node:fs/promises';
+      import { dirname, join } from 'node:path';
+      import { fileURLToPath } from 'node:url';
+      const dir = dirname(fileURLToPath(import.meta.url));
+      export async function migrate() {
+        await writeFile(join(dir, 'entered'), '1');
+        while (true) {
+          try { await access(join(dir, 'release')); break; } catch {}
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        throw new Error('fixture migration failed after yield');
+      }
+    `),
+  });
+  t.after(api.stop);
+  const session = await installAndLogin(api);
+  const headers = { authorization: `Bearer ${session.token}`, 'x-csrf-token': session.csrfToken };
+  const themeBackend = join(api.themesDir, 'concurrent-fixture', 'backend');
+
+  const activation = api.request('POST', '/api/v1/admin/themes/concurrent-fixture/activate', { headers, body: {} });
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try { await access(join(themeBackend, 'entered')); break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const created = await api.request('POST', '/api/v1/admin/tags', { headers, body: { name: 'Concurrent tag' } });
+  assert.equal(created.status, 201, JSON.stringify(created.payload));
+  await writeFile(join(themeBackend, 'release'), '1');
+  const failed = await activation;
+  assert.equal(failed.status, 500, JSON.stringify(failed.payload));
+
+  const tags = await api.request('GET', '/api/v1/admin/tags', { headers });
+  assert.ok(tags.payload.data.items.some(tag => tag.name === 'Concurrent tag'));
+  assert.equal(activeTheme(api.dbPath), 'default');
 });

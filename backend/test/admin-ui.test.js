@@ -328,7 +328,7 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
   for (const [name, endpoint, open] of [
     ['plugin settings', 'plugins/missing/config', () => { window.openPluginSettings('missing'); }],
     ['category editor', 'categories', () => { window.openCatEditor(); }],
-    ['user editor', 'users*', () => { window.openUserEditor('missing'); }],
+    ['user editor', 'users/missing', () => { window.openUserEditor('missing'); }],
   ]) {
     await t.test('leaving ' + name + ' cancels without replacing the destination', async subtest => {
       const page = await openAdmin(subtest);
@@ -520,7 +520,8 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
       assert.deepEqual(errors, []);
       assert.notEqual(promptDefault, undefined, 'the current row must open the editor');
       if (action === 'editCmt') assert.match(promptDefault, /^Original comment /);
-      const result = await api.request('GET', '/api/v1/admin/comments?postId=' + post.id + '&pageSize=200', { headers });
+      const pageNumber = action === 'editCmt' ? 2 : 1;
+      const result = await api.request('GET', '/api/v1/admin/comments?postId=' + post.id + '&pageSize=100&page=' + pageNumber, { headers });
       assert.ok(result.payload.data.items.some(item => item.content === 'Updated old comment ' + action
         && (action === 'editCmt' ? item.id === id : item.parent_id === id)));
     });

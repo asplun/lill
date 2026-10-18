@@ -6,10 +6,10 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanThemeAssets, scanPageTemplates } from '../lib/themes.js';
 import { orderBy, normQQ, shapeComment } from '../lib/comment-util.js';
-import { clientIp } from '../lib/http.js';
+import { clientIp, boundedPagination } from '../lib/http.js';
 import { listNavigationItems } from '../lib/navigation.js';
 import { PUBLIC_POST_WHERE, publicOptions } from '../lib/public-content.js';
-import { readingPolicy, positiveInteger, postsOrderSql, excerptFor, commentPagination } from '../lib/reading-policy.js';
+import { readingPolicy, postsOrderSql, excerptFor, commentPagination } from '../lib/reading-policy.js';
 import { readPermalinkOptions, permalinkPath, resolvePermalink } from '../lib/permalinks.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
@@ -69,11 +69,15 @@ async function viewerContext(req, post) {
 // ════════════════════════════════════════
 // 永久链接处理
 // ════════════════════════════════════════
-function getPermalinkUrl(type, post, category, tag) {
-  const siteUrl = (db.prepare("SELECT value FROM options WHERE key = 'site_url'").get()?.value || '').replace(/\/$/, '');
+function siteBaseUrl() {
+  return (db.prepare("SELECT value FROM options WHERE key = 'site_url'").get()?.value || '').replace(/\/$/, '');
+}
+
+function getPermalinkUrl(type, post, category, tag, knownSiteUrl = null, knownOptions = null) {
+  const siteUrl = knownSiteUrl === null ? siteBaseUrl() : knownSiteUrl;
   const item = type === 'category' ? category : type === 'tag' ? tag : post;
   let path;
-  try { path = permalinkPath(type, item, category, readPermalinkOptions(db)); }
+  try { path = permalinkPath(type, item, category, knownOptions || readPermalinkOptions(db)); }
   catch { path = '/' + type + '/' + encodeURIComponent(item.slug); } // Legacy slug routes remain readable even with invalid saved rules.
   return { url: siteUrl + path, route: path };
 }
@@ -118,8 +122,8 @@ function buildThemeOptions() {
   return result;
 }
 
-function decoratePost(p) {
-  const r = getPermalinkUrl(p.type === 'page' ? 'page' : 'post', p, p.category_slug ? { slug: p.category_slug } : null);
+function decoratePost(p, knownSiteUrl = null, knownOptions = null) {
+  const r = getPermalinkUrl(p.type === 'page' ? 'page' : 'post', p, p.category_slug ? { slug: p.category_slug } : null, null, knownSiteUrl, knownOptions);
   p.permalink = r.url;
   p.route = r.route;
   p.url = r.route;              // 模板中 {$post.url} 直接用可访问地址
@@ -128,18 +132,23 @@ function decoratePost(p) {
 }
 
 function adjacentPosts(post) {
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
   for (const [key, comparison, direction] of [['prev', '<', 'DESC'], ['next', '>', 'ASC']]) {
     post[key] = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.published_at, p.created_at, c.slug AS category_slug
       FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = ? AND ${PUBLIC_POST_WHERE}
       AND p.published_at ${comparison} ? ORDER BY p.published_at ${direction} LIMIT 1`).get(post.type, post.published_at) || null;
-    if (post[key]) decoratePost(post[key]);
+    if (post[key]) decoratePost(post[key], baseUrl, permalinkOptions);
   }
 }
 
 function listPosts(o) {
   const policy = readingPolicy(db);
-  const page = positiveInteger(o.page, 1);
-  const pageSize = positiveInteger(o.pageSize, policy.postsPerPage);
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
+  const { page, pageSize, offset } = boundedPagination(new URLSearchParams({
+    page: o.page ?? '', pageSize: o.pageSize ?? '',
+  }), policy.postsPerPage, 100);
   const typeFilter = o.type || 'post';
   let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
   const params = [typeFilter];
@@ -147,6 +156,7 @@ function listPosts(o) {
   if (o.categoryId) { where += ' AND p.category_id = ?'; params.push(o.categoryId); }
   if (o.tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(o.tag); }
   if (o.keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${o.keyword}%`, `%${o.keyword}%`, `%${o.keyword}%`); }
+  if (o.month) { where += " AND strftime('%Y-%m', p.published_at) = ?"; params.push(o.month); }
   const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
   const items = db.prepare(`
     SELECT p.id, p.title, p.slug, p.type, p.content, p.excerpt_auto, p.excerpt, p.cover_image, p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
@@ -154,24 +164,58 @@ function listPosts(o) {
            (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id AND cm.status = 'approved') as comment_count${o.full ? ', p.html_content' : ''}
     FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id
     ${where} ORDER BY ${postsOrderSql(o.order || policy.postsOrder)} LIMIT ? OFFSET ?
-  `).all(...params, pageSize, (page - 1) * pageSize);
+  `).all(...params, pageSize, offset);
   items.forEach(post => {
     Object.assign(post, excerptFor(post, policy));
     delete post.content;
-    decoratePost(post);
+    decoratePost(post, baseUrl, permalinkOptions);
   });
   return { items, meta: { total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)), hasNext: page * pageSize < total, hasPrev: page > 1 } };
 }
 
+/** Archive pages intentionally show the complete timeline, so do not reuse the paginated reader. */
+function listArchivePosts(month) {
+  const policy = readingPolicy(db);
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
+  let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post'`;
+  const params = [];
+  if (month) { where += " AND strftime('%Y-%m', p.published_at) = ?"; params.push(month); }
+  const items = db.prepare(`
+    SELECT p.id, p.title, p.slug, p.type, p.content, p.html_content, p.excerpt_auto, p.excerpt, p.cover_image,
+           p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
+           u.nickname as author_nickname, c.name as category_name, c.slug as category_slug,
+           (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id AND cm.status = 'approved') as comment_count
+    FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON c.id = p.category_id
+    ${where} ORDER BY ${postsOrderSql(policy.postsOrder)}
+  `).all(...params);
+  let words = 0;
+  items.forEach(post => {
+    const text = String(post.html_content || post.content || '').replace(/<[^>]*>/g, '').trim();
+    words += Array.from(text).length;
+    Object.assign(post, excerptFor(post, policy));
+    delete post.content;
+    delete post.html_content;
+    decoratePost(post, baseUrl, permalinkOptions);
+  });
+  return { items, words };
+}
+
 function listCategories() {
-  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count FROM categories c ORDER BY sort_order, name`).all();
-  cats.forEach(c => { const r = getPermalinkUrl('category', null, c); c.permalink = r.url; c.route = r.route; c.url = r.route; });
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
+  const cats = db.prepare(`SELECT c.*,
+      (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count
+    FROM categories c ORDER BY c.sort_order, c.name`).all();
+  cats.forEach(c => { const r = getPermalinkUrl('category', null, c, null, baseUrl, permalinkOptions); c.permalink = r.url; c.route = r.route; c.url = r.route; });
   return cats;
 }
 
 function listTags() {
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
   const tags = db.prepare(`SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND ${PUBLIC_POST_WHERE}) as post_count FROM tags t ORDER BY t.name`).all();
-  tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t); t.permalink = r.url; t.route = r.route; t.url = r.route; });
+  tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t, baseUrl, permalinkOptions); t.permalink = r.url; t.route = r.route; t.url = r.route; });
   return tags;
 }
 
@@ -180,6 +224,8 @@ function listArchives() {
 }
 
 function listRecentComments(limit) {
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
   const items = db.prepare(`
     SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
            p.title as post_title, p.slug as post_slug, p.type as post_type,
@@ -191,7 +237,7 @@ function listRecentComments(limit) {
   `).all(limit || 5);
   items.forEach(c => {
     c.post_url = getPermalinkUrl(c.post_type === 'page' ? 'page' : 'post',
-      { id: c.post_id, slug: c.post_slug, published_at: c.published_at, created_at: c.post_created_at }, { slug: c.category_slug }).route;
+      { id: c.post_id, slug: c.post_slug, published_at: c.published_at, created_at: c.post_created_at }, { slug: c.category_slug }, null, baseUrl, permalinkOptions).route;
     c.post_route = c.post_url; c.author = c.nickname || c.author_name || '匿名';
   });
   return items;
@@ -231,6 +277,8 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
 
   const cats = listCategories();
   const nav = listNavigationItems(db, { categories: cats, type, slug });
+  const sidebarSiteUrl = siteBaseUrl();
+  const sidebarPermalinkOptions = readPermalinkOptions(db);
 
   // 左右边栏小组件配置（由「小组件」管理页面维护，存于 themes.config）
   // 归一化与 name/icon 装饰由主题扩展负责（各主题的小组件定义不同）
@@ -246,7 +294,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     recentComments: listRecentComments(5),
     hotPosts: db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.view_count, p.likes, p.published_at, p.created_at, c.slug AS category_slug
       FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post'
-      ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(decoratePost),
+      ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(post => decoratePost(post, sidebarSiteUrl, sidebarPermalinkOptions)),
     hotTags: listTags().slice().sort((a, b) => b.post_count - a.post_count).slice(0, 10),
     widgets: {
       left: decorateWidgets(cfg.leftWidgets),
@@ -276,7 +324,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     if (!post) return error(res, '内容不存在', 404);
     post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
     adjacentPosts(post);
-    decoratePost(post);
+    decoratePost(post, null, readPermalinkOptions(db));
     post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
     /* 阅读时长：原版 post.php 的元信息行显示「N 分钟」而不是阅读量。
        按正文估算：中日韩字符按 1 字计，拉丁词按 1.5 计，300 字/分钟。 */
@@ -325,8 +373,8 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
       data.commentAllowed = commentsAllowed(post);
     }
   } else if (type === 'archive') {
-    const all = listPosts({ pageSize: 500, type: 'post' }).items;
-    const posts = month ? all.filter(p => String(p.published_at || '').startsWith(month)) : all;
+    const archive = listArchivePosts(month);
+    const posts = archive.items;
     const map = {};
     posts.forEach(p => { const ym = String(p.published_at || '').substring(0, 7) || '未知'; (map[ym] = map[ym] || []).push(p); });
     data.groups = Object.keys(map).sort().reverse().map(ym => ({ ym, count: map[ym].length, posts: map[ym] }));
@@ -355,10 +403,10 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
       data.archTotal = posts.length;
       data.archMonthCount = data.groups.length;
       data.archYearCount = yBars.length;
-      const tagMax = Math.max(1, ...(listTags().map(t => t.post_count) || [1]));
+      const tagMax = Math.max(1, ...(sidebar.tags.map(t => t.post_count) || [1]));
       data.tagMax = tagMax;
-      data.archTags = listTags().slice().sort((a, b) => b.post_count - a.post_count).map(t => ({ name: t.name, slug: t.slug, url: t.url, count: t.post_count }));
-      data.archCats = listCategories().slice().sort((a, b) => b.post_count - a.post_count).map(c => ({ name: c.name, slug: c.slug, url: c.url, count: c.post_count }));
+      data.archTags = sidebar.tags.slice().sort((a, b) => b.post_count - a.post_count).map(t => ({ name: t.name, slug: t.slug, url: t.url, count: t.post_count }));
+      data.archCats = cats.slice().sort((a, b) => b.post_count - a.post_count).map(c => ({ name: c.name, slug: c.slug, url: c.url, count: c.post_count }));
       const yg = {};
       data.groups.forEach(g => {
         const y = String(g.ym || '').substring(0, 4) || '未知';
@@ -370,15 +418,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
       });
       data.archYearGroups = Object.keys(yg).sort().reverse().map(y => yg[y]);
       // 「约 N 字」：对齐原版 archive.php 的 $triArchWords（累加全部归档行正文 strip_tags 后的字符数）
-      let words = 0;
-      if (posts.length) {
-        const ph = posts.map(() => '?').join(',');
-        const rows = db.prepare(`SELECT html_content, content FROM posts WHERE id IN (${ph})`).all(...posts.map(pp => pp.id));
-        rows.forEach(r => {
-          const txt = String(r.html_content || r.content || '').replace(/<[^>]*>/g, '').trim();
-          words += Array.from(txt).length;
-        });
-      }
+      const words = archive.words;
       data.archWords = words;
       data.archWordsText = words >= 10000 ? (Math.round(words / 1000) / 10) + ' 万字' : words + ' 字';
     } catch (e) { console.warn('archive view model failed:', e.message); }
@@ -454,8 +494,10 @@ route('GET', '/api/v1/posts', async (req, res) => {
 
 // 独立页面列表（导航菜单用）
 route('GET', '/api/v1/pages', async (req, res) => {
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
   const pages = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.created_at FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
-  json(res, pages.map(page => decoratePost({ ...page, type: 'page' })));
+  json(res, pages.map(page => decoratePost({ ...page, type: 'page' }, baseUrl, permalinkOptions)));
 });
 
 // 归档（按年月分组，侧边栏 Widget）
@@ -506,12 +548,13 @@ route('GET', '/api/v1/feed', async (req, res) => {
   const siteUrl = getOpt('site_url', '').replace(/\/$/, '');
   const posts = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.published_at, c.slug AS category_slug
     FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} ORDER BY p.published_at DESC LIMIT 20`).all();
+  const permalinkOptions = readPermalinkOptions(db);
   const x = value => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel>\n';
   xml += '<title>' + x(siteName) + '</title>\n<link>' + x(siteUrl) + '</link>\n<description>' + x(siteDesc) + '</description>\n';
   xml += '<language>zh-CN</language>\n<lastBuildDate>' + new Date().toUTCString() + '</lastBuildDate>\n';
   for (const post of posts) {
-    const link = getPermalinkUrl('post', post, { slug: post.category_slug }).url;
+    const link = getPermalinkUrl('post', post, { slug: post.category_slug }, null, siteUrl, permalinkOptions).url;
     xml += '<item>\n<title>' + x(post.title) + '</title>\n<link>' + x(link) + '</link>\n<guid isPermaLink="true">' + x(link) + '</guid>\n';
     xml += '<description>' + x(post.excerpt || '') + '</description>\n';
     if (post.published_at) xml += '<pubDate>' + new Date(String(post.published_at).replace(' ', 'T') + 'Z').toUTCString() + '</pubDate>\n';
@@ -523,14 +566,16 @@ route('GET', '/api/v1/feed', async (req, res) => {
 });
 
 route('GET', '/api/v1/categories', async (req, res) => {
+  const baseUrl = siteBaseUrl();
   const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count FROM categories c ORDER BY sort_order`).all();
-  cats.forEach(c => { const r = getPermalinkUrl('category', null, c); c.url = r.url; c.route = r.route; });
+  cats.forEach(c => { const r = getPermalinkUrl('category', null, c, null, baseUrl); c.url = r.url; c.route = r.route; });
   json(res, cats);
 });
 
 route('GET', '/api/v1/tags', async (req, res) => {
+  const baseUrl = siteBaseUrl();
   const tags = db.prepare(`SELECT t.*, (SELECT COUNT(*) FROM post_tags pt JOIN posts p ON p.id = pt.post_id WHERE pt.tag_id = t.id AND ${PUBLIC_POST_WHERE}) as post_count FROM tags t ORDER BY t.name`).all();
-  tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t); t.url = r.url; t.route = r.route; });
+  tags.forEach(t => { const r = getPermalinkUrl('tag', null, null, t, baseUrl); t.url = r.url; t.route = r.route; });
   json(res, tags);
 });
 
@@ -584,8 +629,9 @@ function commentsAllowed(post) {
 
 async function readComments(req, post, options = {}) {
   const policy = readingPolicy(db);
-  const page = positiveInteger(options.page, 1);
-  const pageSize = positiveInteger(options.pageSize, policy.commentsPerPage);
+  const { page, pageSize, offset } = boundedPagination(new URLSearchParams({
+    page: options.page ?? '', pageSize: options.pageSize ?? '',
+  }), policy.commentsPerPage, 100);
   const cookie = String(req.headers.cookie || '').match(/(?:^|;\s*)lill_comment_sort=(asc|desc)/);
   const sort = ['asc', 'desc', 'hot'].includes(options.sort) ? options.sort : cookie?.[1] || 'desc';
   const direction = sort === 'asc' ? 'ASC' : 'DESC';
@@ -597,7 +643,7 @@ async function readComments(req, post, options = {}) {
   const select = `SELECT c.*, u.email AS user_email, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id`;
   const rows = db.prepare(`${select} WHERE c.post_id = ? AND c.status = 'approved'
     ${display === 'threaded' ? 'AND ' + roots : ''}
-    ORDER BY ${orderBy(sort, 'c')}, c.id ${direction} LIMIT ? OFFSET ?`).all(post.id, pageSize, (page - 1) * pageSize);
+    ORDER BY ${orderBy(sort, 'c')}, c.id ${direction} LIMIT ? OFFSET ?`).all(post.id, pageSize, offset);
   const children = db.prepare(`${select} WHERE c.post_id = ? AND c.parent_id = ? AND c.status = 'approved' ORDER BY c.created_at ASC, c.id ASC`);
   const parent = db.prepare(`${select} WHERE c.post_id = ? AND c.id = ? AND c.status = 'approved'`);
   const viewer = await optionalUser(req);

@@ -45,6 +45,7 @@ test('server schema declares the hot-path composite indexes', () => {
   for (const index of [
     'idx_posts_author_status',
     'idx_comments_post_status',
+    'idx_post_tags_tag',
     'idx_logs_created_at',
   ]) {
     assert.ok(source.includes(index), `missing index ${index}`);

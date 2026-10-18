@@ -1,5 +1,6 @@
 /** Shared policy and helpers for management route modules. */
 import { scanPageTemplates as scanThemePageTemplates } from '../../lib/themes.js';
+import { boundedPagination } from '../../lib/http.js';
 
 /**
  * 在单个事务中执行一组写操作：任一步骤抛错都会整体回滚，避免批量操作只改一半。
@@ -53,8 +54,7 @@ export function createAdminHelpers(ctx, router, options = {}) {
   const listPostsHandler = async (req, res, forcedType) => {
     const auth = await authenticate(req);
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const page = parseInt(url.searchParams.get('page')) || 1;
-    const pageSize = parseInt(url.searchParams.get('pageSize')) || 20;
+    const { page, pageSize, offset } = boundedPagination(url.searchParams, 20, 100);
     const status = url.searchParams.get('status');
     const type = forcedType || url.searchParams.get('type') || 'post';
     const keyword = url.searchParams.get('keyword');
@@ -66,7 +66,7 @@ export function createAdminHelpers(ctx, router, options = {}) {
     if (!managesAll(auth)) { where += ' AND p.author_id = ?'; params.push(auth.id); }
     if (auth.role === 'contributor') where += " AND p.status = 'draft'";
     const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
-    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.status, p.view_count, p.comment_count, p.sticky, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id ${where} ORDER BY p.sticky DESC, p.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize);
+    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.status, p.view_count, p.comment_count, p.sticky, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id ${where} ORDER BY p.sticky DESC, p.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
     json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
   };
   return { route, managesAll, canManagePost, validatePostWrite, logAction, activeThemeId, normalizePageTemplate, listPostsHandler, contentRoles, editorRoles };

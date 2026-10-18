@@ -5,6 +5,15 @@ export function positiveInteger(value, fallback) {
   return Number.isSafeInteger(number) ? number : fallback;
 }
 
+export function pageWindow(page, totalPages, radius = 2) {
+  const safePage = Math.min(Math.max(1, Number.isSafeInteger(page) ? page : 1), Math.max(1, totalPages));
+  const pages = new Set([1, safePage, Math.max(1, totalPages)]);
+  for (let number = safePage - radius; number <= safePage + radius; number++) {
+    if (number >= 1 && number <= totalPages) pages.add(number);
+  }
+  return [...pages].sort((a, b) => a - b);
+}
+
 export function readingPolicy(db) {
   const options = Object.fromEntries(db.prepare(`SELECT key, value FROM options WHERE key IN
     ('posts_per_page', 'excerpt_length', 'excerpt_type', 'posts_order', 'comments_per_page', 'comment_display')`).all().map(row => [row.key, row.value]));
@@ -99,8 +108,7 @@ export function excerptFor(post, policy) {
 export function commentPagination(total, replyTotal, topLevelTotal, display, page, pageSize) {
   const paginationTotal = display === 'flat' ? total : topLevelTotal;
   const totalPages = Math.max(1, Math.ceil(paginationTotal / pageSize));
-  const pages = [...new Set([1, ...Array.from({ length: 5 }, (_, index) => page + index - 2), totalPages])]
-    .filter(number => number >= 1 && number <= totalPages).sort((a, b) => a - b);
+  const pages = pageWindow(page, totalPages);
   return {
     total, replyTotal, topLevelTotal, paginationTotal, page, pageSize, totalPages,
     hasNext: page < totalPages, hasPrev: page > 1, pages,

@@ -133,6 +133,7 @@ td.actions .btn{margin:3px 0}
 .pagination button{min-width:34px;min-height:34px;padding:5px 11px;border:1px solid #ffffffb3;background:#fff9;border-radius:10px;font-size:12px}
 .pagination button:hover{background:#fff}
 .pagination button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+.pagination-gap{display:grid;place-items:center;min-width:22px;color:#94a3b8;font-size:12px}
 
 /* 控制台 */
 .dashboard-welcome{display:flex;justify-content:space-between;gap:20px;align-items:center;margin:10px 0 28px}
