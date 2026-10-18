@@ -50,8 +50,11 @@ window.lillAPI = (() => {
 
     // 去重键：仅 GET 参与去重（写操作必须真实发出）
     const dedupeKey = method + ' ' + path + ' ' + (options.body !== undefined ? JSON.stringify(options.body) : '');
-    if (method === 'GET' && pendingRequests.has(dedupeKey)) {
-      return pendingRequests.get(dedupeKey);
+    if (scope && scope.aborted) throw new Error('请求已取消');
+    const pending = pendingRequests.get(dedupeKey);
+    if (method === 'GET' && pending && pending.scope === scope &&
+        pending.token === token && pending.timeoutMs === timeoutMs) {
+      return pending.promise;
     }
 
     const run = (async () => {
@@ -66,42 +69,48 @@ window.lillAPI = (() => {
       const config = { method, headers, signal: controller.signal };
       if (options.body !== undefined) config.body = JSON.stringify(options.body);
 
-      let res;
       try {
-        res = await fetch(BASE + path, config);
-      } catch (e) {
+        let res, text;
+        try {
+          res = await fetch(BASE + path, config);
+          text = await res.text();
+        } catch (e) {
+          if (scope && scope.aborted) throw new Error('请求已取消');
+          if (controller.signal.aborted) throw new Error('请求超时，请重试');
+          throw new Error('网络错误，请检查连接');
+        }
         if (scope && scope.aborted) throw new Error('请求已取消');
-        if (e.name === 'AbortError') throw new Error('请求超时，请重试');
-        throw new Error('网络错误，请检查连接');
+
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          throw new Error('服务器返回异常 (HTTP ' + res.status + ')');
+        }
+
+        if (data.code !== 0) {
+          if (res.status === 401) {
+            setToken(null);
+            setCSRFToken(null);
+            if (!location.pathname.startsWith('/admin/login')) {
+              location.href = '/admin/login';
+            }
+          }
+          throw new Error(data.message || '请求失败');
+        }
+        return data.data;
       } finally {
         clearTimeout(timer);
         if (scope) scope.removeEventListener('abort', onScopeAbort);
       }
-
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        throw new Error('服务器返回异常 (HTTP ' + res.status + ')');
-      }
-
-      if (data.code !== 0) {
-        if (res.status === 401) {
-          setToken(null);
-          setCSRFToken(null);
-          if (!location.pathname.startsWith('/admin/login')) {
-            location.href = '/admin/login';
-          }
-        }
-        throw new Error(data.message || '请求失败');
-      }
-      return data.data;
     })();
 
     if (method === 'GET') {
-      pendingRequests.set(dedupeKey, run);
-      const cleanup = () => pendingRequests.delete(dedupeKey);
+      const entry = { promise: run, scope, token, timeoutMs };
+      pendingRequests.set(dedupeKey, entry);
+      const cleanup = () => {
+        if (pendingRequests.get(dedupeKey) === entry) pendingRequests.delete(dedupeKey);
+      };
       run.then(cleanup, cleanup);
     }
     return run;
