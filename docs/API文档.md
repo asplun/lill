@@ -1,6 +1,6 @@
 # lill API 文档
 
-> 版本：v1.3.0 ｜ 后端：Node.js 原生 HTTP + SQLite ｜ 前端：Astro 静态站点
+> 版本：v1.3.1 ｜ 后端：Node.js 原生 HTTP + SQLite ｜ 前端：Astro 静态站点
 >
 > 前后端分离：后端只暴露 `/api/*`，前端静态文件由 Nginx 直接服务。
 
@@ -669,7 +669,7 @@ PUT /admin/options
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/admin/themes` | 主题列表（含 `hasSettings`、清单同步后的名称/版本/作者） |
+| GET | `/admin/themes` | 主题列表（含 `hasSettings`、`settingsUrl`、清单同步后的名称/版本/作者） |
 | POST | `/admin/themes/:themeId/activate` | 启用主题 |
 | GET | `/admin/themes/:themeId/settings` | 获取主题设置结构 + 当前值 |
 | PUT | `/admin/themes/:themeId/settings` | 保存主题设置 |
@@ -694,9 +694,17 @@ PUT /admin/options
       ]
     }
   ],
-  "values": { "navigation": ["index", "page:abc", "archive"] }
+  "values": { "navigation": ["index", "page:abc", "archive"] },
+  "settingsUrl": ""
 }
 ```
+
+`settingsUrl` 自 v1.3.1 提供。主题在 `theme.json` 声明有效且实际存在的 `settingsPage` 时，
+此字段为 `/themes/<主题ID>/<相对HTML路径>`，外观卡片的设置按钮会跳转到该页。
+否则返回空字符串，后台继续渲染 `schema` 自动表单。主题列表也返回该字段，
+`hasSettings` 在存在有效自定义设置页或非空 `settings` 时为 `true`。
+该字段只控制入口；设置读写的认证、字段声明、私密字段过滤及按主题保存的行为保持一致。
+自定义页示例见 [主题开发指南](主题开发指南.md#22-主题自己的可视化设置页)。
 
 > `schema` 来自主题目录下的 `theme.json` 的 `settings` 字段，详见 [主题开发指南](./主题开发指南.md)。
 > `navigation` 类型的 `options` 由接口填入公开内容候选项，保存值为按显示顺序排列的引用数组。

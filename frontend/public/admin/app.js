@@ -986,6 +986,17 @@ window.openThemeSettings = themeId => showView('theme-settings:' + themeId, sign
 async function loadThemeSettings(themeId, signal) {
   currentThemeId = themeId;
   const r = await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings', { signal });
+  if (signal.aborted) return;
+  if (r.settingsUrl) {
+    const target = new URL(r.settingsUrl, location.origin);
+    const prefix = '/themes/' + encodeURIComponent(themeId) + '/';
+    if (target.origin !== location.origin || !target.pathname.startsWith(prefix) ||
+        !/\.html?$/i.test(target.pathname) || target.search || target.hash) {
+      throw new Error('主题设置页地址无效');
+    }
+    location.assign(target.href);
+    return;
+  }
   const theme = r.theme || {};
   const schema = r.schema || [];
   const values = r.values || {};

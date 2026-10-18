@@ -1,4 +1,4 @@
-# lill 博客系统 v1.3.0
+# lill 博客系统 v1.3.1
 
 轻量、可扩展、前后端分离的博客系统。后端使用 Node.js 原生 `node:http` + `node:sqlite` 提供 REST API，前端使用 Astro 4 构建静态外壳，后台由原生 JavaScript 驱动。
 
@@ -10,11 +10,11 @@
 - **角色权限**：管理员、编辑、作者、投稿者、订阅者五种角色；后台菜单与默认入口按角色显示，接口独立检查权限。作者管理自己的内容，投稿者仅管理自己的草稿，订阅者无内容管理权限。
 - **阅读与评论**：文章排序、分页、摘要、评论平铺/嵌套和分页设置接入公共读取；文章条数仅在主题显式保存覆盖值时优先使用主题配置。评论支持审核、回复、状态筛选和批量操作，按文章筛选已有 API，后台入口待补。
 - **永久链接**：文章、分类和标签的地址生成与访问解析共用规则，列表、上下篇和 RSS 使用一致地址；Nginx 需将自定义路径回退到前台外壳。
-- **主题与插件**：主题安装、切换、独立配置、声明式设置表单和主题后端扩展；插件 ZIP 安装、启停、设置表单、路由、钩子和后台菜单。启用失败会回滚运行时注册；内置 Hello World 公告栏插件。
+- **主题与插件**：主题安装、切换、独立配置、声明式设置表单、主题自定义设置页和主题后端扩展；插件 ZIP 安装、启停、设置表单、路由、钩子和后台菜单。启用失败会回滚运行时注册；内置 Hello World 公告栏插件。
 - **附件与备份**：附件上传、列表、删除；图片缩略图为引用原图的 SVG，并非压缩或裁剪图片。后台可创建、列出并分别下载 SQLite 一致性快照和附件 ZIP，支持 WAL 数据，尚无恢复流程。
 - **后台交互**：请求超时提示、失败重试、切页取消和浏览器本地草稿恢复；登录限流、接口角色校验，以及受保护写接口的 CSRF 请求头检查。
 
-v1.3.0 修复了 Typecho 1.3 对照清单中的 B01–B15，但不代表全面功能对齐。多分类、页面层级、完整私密/密码阅读、服务端修订草稿、附件编辑替换及备份恢复仍未闭环，详见[功能对照与实现边界](docs/Typecho1.3功能对照.md)。
+v1.3.1 修复了 Typecho 1.3 对照清单中的 B01–B15，但不代表全面功能对齐。多分类、页面层级、完整私密/密码阅读、服务端修订草稿、附件编辑替换及备份恢复仍未闭环，详见[功能对照与实现边界](docs/Typecho1.3功能对照.md)。
 
 当前未默认注册 Service Worker，不承诺离线使用；多语言、CDN 和主题在线编辑器也不作为已完成能力。主题文件读写 API 已存在，界面流程需另行验证。
 
@@ -83,11 +83,11 @@ v1.3.0 修复了 Typecho 1.3 对照清单中的 B01–B15，但不代表全面�
 
 ### 方式一：发布包部署
 
-从 [GitHub Releases](https://github.com/asplun/lill/releases) 下载 `lill-v1.3.0.zip` 或 `lill-v1.3.0.tar.gz`。两者顶层目录均为 `lill/`，包含仓库跟踪的源码和直接位于 `frontend/` 的预构建静态文件，包内没有 `frontend/dist/`。
+从 [GitHub Releases](https://github.com/asplun/lill/releases) 下载 `lill-v1.3.1.zip` 或 `lill-v1.3.1.tar.gz`。两者顶层目录均为 `lill/`，包含仓库跟踪的源码和直接位于 `frontend/` 的预构建静态文件，包内没有 `frontend/dist/`。
 
 ```bash
 # 在空目录解压，勿覆盖运行中的站点
-tar -xzf lill-v1.3.0.tar.gz
+tar -xzf lill-v1.3.1.tar.gz
 cd lill/backend
 npm install --omit=dev
 # 使用 pnpm 时改为：pnpm install --prod --frozen-lockfile
@@ -102,7 +102,7 @@ GitHub 自动生成的 `Source code` 归档是源码快照，需按下方源码�
 ```bash
 git clone https://github.com/asplun/lill.git
 cd lill
-git checkout v1.3.0
+git checkout v1.3.1
 cd backend
 npm install --omit=dev
 # 后端也可使用：pnpm install --prod --frozen-lockfile
@@ -121,7 +121,7 @@ rsync -a --exclude='/themes/' dist/ ./
 维护者可在源码根目录使用[发布打包脚本](scripts/package-release.py)：
 
 ```bash
-python3 scripts/package-release.py --ref v1.3.0 --output /tmp/lill-release
+python3 scripts/package-release.py --ref v1.3.1 --output /tmp/lill-release
 ```
 
 脚本从指定 Git 引用导出干净源码，仅构建默认主题，将静态产物合并到包内 `frontend/`，输出 ZIP、tar.gz 和 `SHA256SUMS`；运行脚本需要 Python 3、Node.js 和 pnpm，安装生成的发布包不需要构建。发布流程见[发布说明](docs/发布说明.md)。
@@ -156,7 +156,7 @@ lill/
 
 | 文档 | 内容 |
 |---|---|
-| [发布说明](docs/发布说明.md) | v1.3.0 变更、发布包与升级说明 |
+| [发布说明](docs/发布说明.md) | v1.3.1 变更、发布包与升级说明 |
 | [更新日志](CHANGELOG.md) | 版本变更记录 |
 | [部署指南](docs/部署指南.md) | 宝塔面板 / 1Panel 面板 / 裸机部署、升级维护、问题排查 |
 | [主题开发指南](docs/主题开发指南.md) | 主题目录结构、`theme.json` 规范、模板标签、设置控件 |

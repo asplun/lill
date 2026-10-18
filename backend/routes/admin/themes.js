@@ -1,12 +1,27 @@
 /** Theme management, settings, installer, and editor routes. */
-import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync, realpathSync } from 'node:fs';
+import { join, dirname, sep } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
 import { runThemeMigrations } from '../../lib/theme-runtime.js';
 import { listNavigationItems } from '../../lib/navigation.js';
 
 const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
+
+// Settings pages are static theme assets, subject to the theme publisher's directory exclusions.
+const PRIVATE_THEME_DIRS = new Set(['backend', 'cache', 'admin', 'api', 'node_modules', 'src']);
+function themeSettingsUrl(themeId, manifest, themesDir) {
+  const page = typeof manifest?.settingsPage === 'string' ? manifest.settingsPage.trim() : '';
+  const parts = page.split('/');
+  if (!THEME_ID_PATTERN.test(themeId) || !/\.html?$/i.test(page) ||
+      parts.some(part => !/^[a-z0-9_-][a-z0-9_.-]*$/i.test(part) || PRIVATE_THEME_DIRS.has(part.toLowerCase()))) return '';
+  try {
+    const dir = realpathSync(join(themesDir, themeId));
+    const file = realpathSync(join(dir, page));
+    if (!file.startsWith(dir + sep) || !statSync(file).isFile()) return '';
+  } catch { return ''; }
+  return '/themes/' + encodeURIComponent(themeId) + '/' + parts.map(encodeURIComponent).join('/');
+}
 
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, uid, authenticate, readThemeManifest, THEMES_DIR, triggerHook, themeRuntime } = ctx;
@@ -24,13 +39,15 @@ export function register(router, ctx, helpers) {
           db.prepare('UPDATE themes SET name = ?, version = ? WHERE theme_id = ?').run(name, version, theme.theme_id);
         }
       }
+      const settingsUrl = themeSettingsUrl(theme.theme_id, manifest, THEMES_DIR);
       return {
         ...theme,
         name: manifest?.name || theme.name,
         version: manifest?.version || theme.version,
         description: manifest?.description || theme.description || '',
         author: manifest?.author || theme.author || '',
-        hasSettings: !!(manifest && manifest.settings && manifest.settings.length),
+        settingsUrl,
+        hasSettings: !!(settingsUrl || (Array.isArray(manifest?.settings) && manifest.settings.length)),
       };
     });
     json(res, result);
@@ -96,7 +113,7 @@ export function register(router, ctx, helpers) {
     const schema = (manifest.settings || []).map(field => field.type === 'navigation'
       ? { ...field, options: listNavigationItems(db).map(item => ({ value: item.key, label: item.title, url: item.url })) }
       : field);
-    json(res, { theme, schema, values: config });
+    json(res, { theme, schema, values: config, settingsUrl: themeSettingsUrl(params.themeId, manifest, THEMES_DIR) });
   });
 
   route('PUT', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {

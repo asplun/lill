@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { cp, mkdir, readFile, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -15,9 +15,30 @@ const evidenceDir = process.env.LILL_UI_EVIDENCE_DIR;
 
 test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, async t => {
   const { chromium } = await import(process.env.LILL_UI_PLAYWRIGHT);
-  const api = await startApiServer({ prepareThemes: target => cp(
-    join(root, 'frontend/themes/default'), join(target, 'default'), { recursive: true },
-  ) });
+  const api = await startApiServer({ prepareThemes: async target => {
+    await cp(join(root, 'frontend/themes/default'), join(target, 'default'), { recursive: true });
+    const dir = join(target, 'settings-fixture');
+    await mkdir(join(dir, 'settings'), { recursive: true });
+    await writeFile(join(dir, 'theme.json'), JSON.stringify({
+      id: 'settings-fixture', name: 'Custom settings fixture', version: '1.0.0',
+      settingsPage: 'settings/editor.html',
+      settings: [{ key: 'label', type: 'text', default: 'Initial label' }],
+    }));
+    await writeFile(join(dir, 'settings/editor.html'), `<!doctype html><html lang="en">
+      <meta charset="utf-8"><title>Custom theme settings</title>
+      <label>Label <input id="label"></label><button id="save">Save theme</button><output id="result"></output>
+      <script src="/api.js"></script><script>
+        const endpoint = '/admin/themes/settings-fixture/settings';
+        lillAPI.get(endpoint).then(data => {
+          document.querySelector('#label').value = data.values.label || 'Initial label';
+          document.querySelector('#save').onclick = async () => {
+            await lillAPI.put(endpoint, { label: document.querySelector('#label').value });
+            document.querySelector('#result').textContent = 'Saved';
+          };
+          document.body.dataset.ready = 'true';
+        });
+      </script></html>`);
+  } });
   let server, browser;
   t.after(async () => {
     await browser?.close();
@@ -60,8 +81,10 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
     try {
       const liveAsset = (url.pathname.startsWith('/admin/') && /\.(js|css)$/.test(url.pathname)) || ['/theme.js', '/api.js'].includes(url.pathname);
       const upload = url.pathname === image.url;
-      const base = upload ? dirname(image.path) : join(root, 'frontend', liveAsset ? 'public' : 'dist');
-      let target = upload ? image.path : resolve(base, '.' + decodeURIComponent(url.pathname));
+      const fixture = url.pathname.startsWith('/themes/settings-fixture/');
+      const base = upload ? dirname(image.path) : fixture ? api.themesDir : join(root, 'frontend', liveAsset ? 'public' : 'dist');
+      const pathname = fixture ? url.pathname.slice('/themes'.length) : url.pathname;
+      let target = upload ? image.path : resolve(base, '.' + decodeURIComponent(pathname));
       if (target !== base && !target.startsWith(base + '/')) { res.writeHead(404); res.end(); return; }
       if ((await stat(target)).isDirectory()) target = join(target, 'index.html');
       const types = { js: 'text/javascript', html: 'text/html', css: 'text/css', svg: 'image/svg+xml', png: 'image/png' };
@@ -105,6 +128,59 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
     await page.getByRole('button', { name: '+ 写文章', exact: true }).click();
     await page.locator('#pe-content').waitFor();
   };
+
+  await t.test('appearance opens the theme-owned settings page and persists its configuration', async subtest => {
+    const page = await openAdmin(subtest);
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.evaluate(() => window.navigate('themes'));
+    const card = page.locator('.theme-card').filter({ has: page.getByRole('heading', { name: 'Custom settings fixture', exact: true }) });
+    await card.getByRole('button', { name: '启用', exact: true }).click();
+    await card.locator('.theme-badge').waitFor();
+    try {
+      await card.getByRole('button', { name: '设置', exact: true }).click();
+      await page.waitForURL('**/themes/settings-fixture/settings/editor.html');
+      await page.locator('body[data-ready="true"]').waitFor();
+      await page.locator('#label').fill('Saved from the custom page');
+      await page.getByRole('button', { name: 'Save theme', exact: true }).click();
+      await page.getByText('Saved', { exact: true }).waitFor();
+      await page.reload();
+      await page.locator('body[data-ready="true"]').waitFor();
+      assert.equal(await page.locator('#label').inputValue(), 'Saved from the custom page');
+      assert.deepEqual(errors, []);
+    } finally {
+      await write('/themes/default/activate', {});
+    }
+    await page.goto(origin + '/admin/');
+    await page.locator('.stats-grid').waitFor();
+    await page.evaluate(() => window.navigate('themes'));
+    await page.locator('.theme-card.active').getByRole('button', { name: '设置', exact: true }).click();
+    await page.locator('[data-ts-key]').first().waitFor();
+    assert.equal(new URL(page.url()).pathname, '/admin/');
+  });
+
+  await t.test('leaving appearance settings while loading cancels a delayed custom-page redirect', async subtest => {
+    const page = await openAdmin(subtest);
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    await page.route('**/api/v1/admin/themes/settings-fixture/settings', async route => {
+      arrived.resolve();
+      await release.promise;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await page.evaluate(() => window.navigate('themes'));
+      await page.locator('.theme-card').filter({ hasText: 'Custom settings fixture' }).getByRole('button', { name: '设置', exact: true }).click();
+      await arrived.promise;
+      await page.locator('[data-page="tags"]').click();
+      await page.locator('#content table').waitFor();
+      release.resolve();
+      await page.unrouteAll({ behavior: 'wait' });
+      assert.equal(new URL(page.url()).pathname, '/admin/');
+      assert.equal(await page.locator('#page-title').innerText(), '标签');
+      assert.equal(await page.locator('#content > .loading').count(), 0);
+    } finally { release.resolve(); }
+  });
 
   for (const endpoint of ['categories', 'options']) {
     await t.test('leaving an editor while ' + endpoint + ' loads preserves the destination', async subtest => {
