@@ -1,5 +1,14 @@
 {include header}
-<main class="main-content">
+<div class="feed-toolbar">
+  <h2 class="feed-title">最近发布</h2>
+  {if $theme.sidebar_categories && $sidebar.categories}
+  <nav class="category-nav" aria-label="文章分类">
+    <a class="active" href="/" aria-current="page">全部</a>
+    {loop $sidebar.categories as $cat}<a href="{$cat.url}">{$cat.name}</a>{/loop}
+  </nav>
+  {/if}
+</div>
+<main class="main-content home-feed" id="main-content" tabindex="-1">
   {if $posts}
     {loop $posts as $post}
       {include post-card}

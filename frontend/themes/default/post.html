@@ -1,20 +1,20 @@
 {include header}
-<main class="main-content">
+<main class="main-content" id="main-content" tabindex="-1">
   <!-- 面包屑导航 -->
-  <nav class="breadcrumb" aria-label="breadcrumb">
+  <nav class="breadcrumb" aria-label="当前位置">
     <a href="/">首页</a>
-    {if $post.category_name}<span class="sep">/</span><a href="/category/{$post.category_slug}">{$post.category_name}</a>{/if}
+    {if $theme.show_category && $post.category_name}<span class="sep">/</span><a href="/category/{$post.category_slug}">{$post.category_name}</a>{/if}
     <span class="sep">/</span><span class="current">{$post.title|truncate:30}</span>
   </nav>
 
   <article class="post-detail">
     <h1 class="post-title">{$post.title}</h1>
     <div class="post-meta">
-      <span>📅 {$post.published_at|date}</span>
-      {if $theme.show_author && $post.author_nickname}<span>✍️ {$post.author_nickname}</span>{/if}
-      {if $theme.show_category && $post.category_name}<span>📁 <a href="/category/{$post.category_slug}">{$post.category_name}</a></span>{/if}
-      {if $theme.show_views}<span>👁️ {$post.view_count}</span>{/if}
-      {if $post.reading_time}<span>⏱️ {$post.reading_time} 分钟阅读</span>{/if}
+      <span>{$post.published_at|date:'Y 年 m 月 d 日'}</span>
+      {if $theme.show_author && $post.author_nickname}<span>{$post.author_nickname}</span>{/if}
+      {if $theme.show_category && $post.category_name}<a href="/category/{$post.category_slug}">{$post.category_name}</a>{/if}
+      {if $theme.show_views}<span>{$post.view_count} 次阅读</span>{/if}
+      {if $post.reading_time}<span>{$post.reading_time} 分钟阅读</span>{/if}
     </div>
     <div class="post-content">{$post.html_content|raw}</div>
     {if $theme.show_tags && $post.tags}
@@ -29,7 +29,7 @@
       <a href="https://service.weibo.com/share/share.php?url={$post.url|urlencode}&title={$post.title|urlencode}" target="_blank" rel="noopener" class="share-btn share-weibo" title="分享到微博">微博</a>
       <a href="https://twitter.com/intent/tweet?url={$post.url|urlencode}&text={$post.title|urlencode}" target="_blank" rel="noopener" class="share-btn share-twitter" title="分享到 Twitter">Twitter</a>
       <a href="https://www.facebook.com/sharer/sharer.php?u={$post.url|urlencode}" target="_blank" rel="noopener" class="share-btn share-facebook" title="分享到 Facebook">Facebook</a>
-      <button class="share-btn share-copy" data-url="{$post.url}" title="复制链接">复制链接</button>
+      <button type="button" class="share-btn share-copy" data-url="{$post.url}" title="复制链接" aria-live="polite">复制链接</button>
     </div>
   </article>
 
@@ -52,7 +52,7 @@
   {/if}
 
   {if $theme.show_prevnext && ($post.prev || $post.next)}
-  <nav class="post-nav">
+    <nav class="post-nav" aria-label="相邻文章">
     {if $post.prev}<a href="{$post.prev.url}"><span>← 上一篇</span>{$post.prev.title}</a>{else}<span></span>{/if}
     {if $post.next}<a class="next" href="{$post.next.url}"><span>下一篇 →</span>{$post.next.title}</a>{else}<span></span>{/if}
   </nav>
@@ -87,20 +87,20 @@
         {/if}
         {/loop}
       {else}
-        <p class="comment-empty">还没有评论，来抢沙发吧~</p>
+        <p class="comment-empty">还没有评论</p>
       {/if}
     </div>
 
     <form class="comment-form lill-comment-form" data-post-id="{$post.id}">
       <h4>发表评论</h4>
       <div class="comment-form-row">
-        <input type="text" name="authorName" placeholder="昵称 *" required>
-        <input type="email" name="authorEmail" placeholder="邮箱（不会公开）">
-        <input type="url" name="authorUrl" placeholder="网站（可选）">
+        <input type="text" name="authorName" placeholder="昵称 *" aria-label="昵称（必填）" autocomplete="nickname" required>
+        <input type="email" name="authorEmail" placeholder="邮箱（不会公开）" aria-label="邮箱（不会公开）" autocomplete="email">
+        <input type="url" name="authorUrl" placeholder="网站（可选）" aria-label="网站（可选）" autocomplete="url">
       </div>
-      <textarea name="content" rows="4" placeholder="说点什么..." required maxlength="2000"></textarea>
+      <textarea name="content" rows="4" placeholder="写下你的评论" aria-label="评论内容（必填）" required maxlength="2000"></textarea>
       <div class="comment-form-footer">
-        <span class="lill-comment-msg"></span>
+        <span class="lill-comment-msg" role="status" aria-live="polite"></span>
         <span class="comment-char-count">0 / 2000</span>
         <button type="submit" class="comment-submit">发表评论</button>
       </div>

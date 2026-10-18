@@ -1,6 +1,6 @@
 {include header}
-<main class="main-content">
-  <h2 class="page-heading">{$page.title}</h2>
+<main class="main-content" id="main-content" tabindex="-1">
+  <h1 class="page-heading">{$page.title}</h1>
   {if $page.type == 'search' && $pagination && $pagination.total > 0}
   <p class="lill-search-result-tip">共找到 {$pagination.total} 篇文章</p>
   {/if}

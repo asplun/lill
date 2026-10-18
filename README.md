@@ -51,6 +51,8 @@
 
 ## 界面预览
 
+默认主题与独立后台采用冷灰蓝背景、哑光面板和深色操作按钮。后台支持手机菜单、按记录排列的列表和可见的批量选择入口；默认主题保留布局、侧栏组件、深色模式和独立页面模板设置。以下为本地验收环境的实际截图，内容为演示数据；第三方主题自行控制前台样式。
+
 **前台（默认主题）**
 
 ![前台首页](screenshots/front-home.png)
@@ -86,6 +88,14 @@
 | 登录 | 日志 | 备份 |
 |:---:|:---:|:---:|
 | ![登录](screenshots/admin-login.png) | ![日志](screenshots/admin-logs.png) | ![备份](screenshots/admin-backup.png) |
+
+| 插件管理 | 初次安装 |
+|:---:|:---:|
+| ![插件](screenshots/admin-plugins.png) | ![安装向导](screenshots/admin-install.png) |
+
+| 手机后台 | 手机默认主题 |
+|:---:|:---:|
+| ![手机后台](screenshots/admin-mobile.png) | ![手机默认主题](screenshots/front-mobile.png) |
 
 ## 快速开始
 

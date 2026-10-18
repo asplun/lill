@@ -1,8 +1,8 @@
 {
   "id": "default",
   "name": "默认主题",
-  "version": "1.2.0",
-  "description": "lill 默认主题：经典博客布局，支持侧边栏组件、归档、搜索与多种显示开关",
+  "version": "1.3.0",
+  "description": "lill 默认主题：冷灰蓝阅读界面、顶部导航与移动菜单，支持侧边栏组件和多种显示设置",
   "author": "lill",
   "settings": [
     {
@@ -10,7 +10,7 @@
       "key": "color",
       "label": "主题色",
       "type": "color",
-      "default": "#4f46e5"
+      "default": "#23282b"
     },
     {
       "group": "外观",

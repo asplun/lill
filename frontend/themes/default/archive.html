@@ -1,6 +1,6 @@
 {include header}
-<main class="main-content">
-  <h2 class="page-heading">{$page.title}</h2>
+<main class="main-content" id="main-content" tabindex="-1">
+  <h1 class="page-heading">{$page.title}</h1>
   {if $groups}
     {loop $groups as $group}
     <h3 class="archive-year">{$group.ym}（{$group.count}）</h3>

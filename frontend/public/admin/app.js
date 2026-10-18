@@ -1,6 +1,8 @@
 let user = null;
 let page = 'dashboard';
 let pageNum = 1;
+let postStatus = '';
+let commentStatus = '';
 
 const TITLES = { dashboard: '控制台', posts: '文章', pages: '页面', categories: '分类', tags: '标签', comments: '评论', media: '附件', themes: '外观', users: '用户', settings: '设置', logs: '日志', backup: '备份', plugins: '插件' };
 
@@ -15,7 +17,8 @@ function toast(msg, type = 'success') {
   setTimeout(() => el.remove(), 3000);
 }
 
-function escape(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function escape(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+const jsArg = value => escape(JSON.stringify(String(value)));
 function fmt(d) { if (!d) return '-'; const x = new Date(d.replace ? d.replace(' ', 'T') + 'Z' : d); if (isNaN(x)) return '-'; return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); }
 function statusLabel(s) {
   const m = { published: ['已发布', 'green'], draft: ['草稿', 'gray'], pending: ['待审核', 'orange'], trash: ['回收站', 'red'], approved: ['已通过', 'green'], spam: ['垃圾', 'red'], active: ['正常', 'green'], banned: ['禁用', 'red'] };
@@ -46,7 +49,7 @@ async function render() {
   document.getElementById('page-title').textContent = TITLES[page] || '';
   setTopbar('');
   const c = document.getElementById('content');
-  c.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  c.innerHTML = '<div class="loading" role="status"><div class="spinner"></div><span class="sr-only">正在加载</span></div>';
   try {
     switch (page) {
       case 'dashboard': return await renderDashboard();
@@ -63,85 +66,79 @@ async function render() {
       case 'backup': return await renderBackup();
       case 'plugins': return await renderPlugins();
       default:
-        if (page.startsWith('plugin-settings:')) return openPluginSettings(page.slice(16));
-        if (page.startsWith('plugin:')) return renderPluginMenuPanel(page.slice(7));
+        if (page.startsWith('plugin-settings:')) return await openPluginSettings(page.slice(16));
+        if (page.startsWith('plugin:')) return await renderPluginMenuPanel(page.slice(7));
         c.innerHTML = '<div class="empty">页面不存在</div>';
     }
   } catch (e) {
     // 被新页面取代而取消的请求：静默忽略，交给新页面渲染
     if (e && e.message === '请求已取消') return;
     c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="render()">重试</button></div>';
-  }
+  } finally { labelTableRows(); }
+}
+
+// 小屏仍保留每个字段的名称，不依赖列在桌面上的位置。
+function labelTableRows() {
+  document.querySelectorAll('#content table').forEach(table => {
+    const labels = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+    table.querySelectorAll('tbody tr').forEach(row => {
+      [...row.children].forEach((cell, index) => {
+        if (cell.colSpan === 1) cell.dataset.label = labels[index] || '';
+      });
+    });
+  });
 }
 
 // ═══ 控制台 ═══
 async function renderDashboard() {
-  const [stats, sys, recentPosts, recentComments] = await Promise.all([
+  const [stats, sys, recentPosts, drafts, comments] = await Promise.all([
     api('/admin/stats/dashboard'),
     api('/admin/stats/system'),
     api('/admin/posts/recent'),
-    api('/admin/comments/recent')
+    api('/admin/posts?status=draft&pageSize=3'),
+    api('/admin/comments?status=pending&pageSize=2')
   ]);
   const o = stats.overview || {};
-  let html = '<div class="stats-grid">' +
-    sc('📝', o.postCount || 0, '文章') + sc('📄', o.pageCount || 0, '页面') + sc('💬', o.commentCount || 0, '评论') +
-    sc('⏳', o.pendingCommentCount || 0, '待审评论') + sc('👥', o.userCount || 0, '用户') +
-    '</div>';
-  
-  // 系统信息
-  html += '<div class="card"><h3 class="card-title">系统信息</h3><div class="info-grid">' +
-    '<div class="info-item"><span class="info-label">lill 版本</span><span class="info-value">v2.0.0</span></div>' +
-    '<div class="info-item"><span class="info-label">Node.js</span><span class="info-value">' + escape(sys.nodeVersion || '-') + '</span></div>' +
-    '<div class="info-item"><span class="info-label">SQLite</span><span class="info-value">' + escape(sys.dbVersion || '-') + '</span></div>' +
+  const draftItems = drafts.items || [];
+  const pendingItems = comments.items || [];
+  const draftCount = drafts.meta?.total || 0;
+  setTopbar('<button class="btn btn-primary" onclick="openPostEditor(\'post\')">+ 写文章</button>');
+  let html = '<section class="dashboard-welcome"><div><h2>欢迎回来，继续你的记录。</h2><p>文章、草稿与读者的回应，都在这里。</p></div><time>' +
+    new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }) + '</time></section>';
+  html += '<div class="stats-grid">' +
+    sc(o.postCount || 0, '已发布文章', '查看文章', "navigate('posts','published')") +
+    sc(draftCount, '草稿', '继续编辑', "navigate('posts','draft')") +
+    sc(o.pendingCommentCount || 0, '待审评论', '前往审核', "navigate('comments','pending')") +
+    sc(o.pageCount || 0, '独立页面', '管理页面', "navigate('pages')") + '</div>';
+  html += '<div class="dashboard-grid"><section class="card dashboard-posts"><div class="panel-heading"><h3>最近文章</h3><button class="text-button" onclick="navigate(\'posts\')">查看全部 →</button></div>';
+  if (recentPosts?.length) {
+    html += '<table><thead><tr><th>标题</th><th>状态</th><th>分类</th><th>创建时间</th></tr></thead><tbody>' +
+      recentPosts.map(p => '<tr><td><button class="title-button" onclick="openPostEditor(\'post\',' + jsArg(p.id) + ')">' + escape(p.title || '无标题') +
+        '</button><small class="record-meta">' + escape(p.author_name || '') + '</small></td><td>' + statusLabel(p.status) +
+        '</td><td>' + escape(p.category_name || '未分类') + '</td><td><time>' + fmt(p.created_at) + '</time></td></tr>').join('') + '</tbody></table>';
+  } else html += '<div class="empty"><p>写下第一篇文章，让记录开始。</p><button class="btn btn-outline" onclick="openPostEditor(\'post\')">写文章</button></div>';
+  html += '</section><div class="dashboard-side"><section class="card"><div class="panel-heading"><h3>待审评论</h3><span class="count-pill">' + (o.pendingCommentCount || 0) + '</span></div>';
+  html += pendingItems.length ? '<div class="pending-list">' + pendingItems.map(c =>
+    '<div class="pending-item"><span class="reader-avatar" aria-hidden="true">' + escape((c.author_name || c.username || '访').slice(0, 1)) +
+    '</span><div><strong>' + escape(c.author_name || c.username || '访客') + '</strong><p>' + escape((c.content || '').slice(0, 90)) + '</p></div></div>').join('') + '</div>'
+    : '<p class="panel-empty">评论已全部处理，可以安心写作了。</p>';
+  html += '<div class="panel-footer"><button class="text-button" onclick="navigate(\'comments\',\'pending\')">前往审核 →</button></div></section>';
+  html += '<section class="card"><div class="panel-heading"><h3>继续编辑</h3><span class="count-pill">' + draftCount + '</span></div>';
+  html += draftItems.length ? '<div class="recent-list">' + draftItems.map(p =>
+    '<div class="recent-item"><button class="title-button" onclick="openPostEditor(\'post\',' + jsArg(p.id) + ')">' + escape(p.title || '无标题') +
+    '<small class="record-meta">草稿 · ' + fmt(p.updated_at || p.created_at) + '</small></button></div>').join('') + '</div>'
+    : '<p class="panel-empty">暂无草稿，新的灵感随时可以开始。</p>';
+  html += '<div class="panel-footer"><button class="text-button" onclick="navigate(\'posts\',\'draft\')">全部草稿 →</button></div></section></div></div>';
+  html += '<details class="system-details"><summary>系统信息与关于 lill</summary><div class="card"><div class="info-grid">' +
+    '<div class="info-item"><span class="info-label">lill 博客系统</span><span class="info-value">v2.0.0</span></div>' +
+    '<div class="info-item"><span class="info-label">Node.js / SQLite</span><span class="info-value">' + escape(sys.nodeVersion || '-') + ' / ' + escape(sys.dbVersion || '-') + '</span></div>' +
     '<div class="info-item"><span class="info-label">运行时间</span><span class="info-value">' + Math.floor((sys.uptime || 0) / 3600) + ' 小时</span></div>' +
-    '<div class="info-item"><span class="info-label">平台</span><span class="info-value">' + escape(sys.platform || '-') + '</span></div>' +
-    '</div></div>';
-
-  // 关于 lill（系统标准 / 品牌标识）
-  html += '<div class="card"><h3 class="card-title">关于 lill</h3><div class="about-lill">' +
-    '<img src="/logo.svg" alt="lill" class="about-logo">' +
-    '<div class="about-info">' +
-    '<div class="about-name">lill 博客系统 <span class="about-ver">v2.0.0</span></div>' +
-    '<div class="about-desc">轻量、可扩展、前后端分离的博客系统。后端 Node.js + SQLite 纯 REST API，前端 Astro 静态站点，主题即模板。</div>' +
-    '<div class="about-meta">主题开发规范见 <code>docs/主题开发指南.md</code> · 后台入口 <code>/admin/</code></div>' +
-    '</div></div></div>';
-  
-  // 最近文章
-  html += '<div class="card"><h3 class="card-title">最近文章</h3>';
-  if (recentPosts && recentPosts.length) {
-    html += '<div class="recent-list">' + recentPosts.map(p => 
-      '<div class="recent-item"><a href="javascript:void(0)" onclick="openPostEditor(\'post\',\'' + p.id + '\')">' + escape(p.title) + '</a>' +
-      '<span class="recent-meta">' + escape(p.author_name || '-') + ' · ' + fmt(p.created_at) + '</span></div>'
-    ).join('') + '</div>';
-  } else {
-    html += '<div class="empty">暂无文章</div>';
-  }
-  html += '</div>';
-  
-  // 最近评论
-  html += '<div class="card"><h3 class="card-title">最近评论</h3>';
-  if (recentComments && recentComments.length) {
-    html += '<div class="recent-list">' + recentComments.map(c => 
-      '<div class="recent-item"><span class="recent-comment">' + escape((c.content || '').substring(0, 50)) + '</span>' +
-      '<span class="recent-meta">' + escape(c.author_name || '匿名') + ' · ' + fmt(c.created_at) + '</span></div>'
-    ).join('') + '</div>';
-  } else {
-    html += '<div class="empty">暂无评论</div>';
-  }
-  html += '</div>';
-  
-  // 快捷操作
-  html += '<div class="card"><h3 class="card-title">快捷操作</h3><div class="toolbar">' +
-    '<button class="btn btn-primary" onclick="openPostEditor(\'post\')">+ 写文章</button>' +
-    '<button class="btn btn-outline" onclick="openPostEditor(\'page\')">+ 新建页面</button>' +
-    '<button class="btn btn-outline" onclick="page=\'media\';render()">上传附件</button>' +
-    '<a class="btn btn-outline" href="/" target="_blank">查看站点</a>' +
-    '</div></div>';
-  
+    '<div class="info-item"><span class="info-label">平台</span><span class="info-value">' + escape(sys.platform || '-') + '</span></div></div>' +
+    '<p class="about-meta">轻量、可扩展的博客系统。主题开发规范见 <code>docs/主题开发指南.md</code>。</p></div></details>';
   document.getElementById('content').innerHTML = html;
 }
-function sc(icon, val, label) {
-  return '<div class="stat-card"><div class="stat-icon">' + icon + '</div><div class="stat-value">' + val + '</div><div class="stat-label">' + label + '</div></div>';
+function sc(val, label, hint, action) {
+  return '<button class="stat-card" onclick="' + action + '"><span class="stat-value">' + val + '</span><span class="stat-copy"><span class="stat-label">' + label + '</span><span class="stat-hint">' + hint + '</span></span></button>';
 }
 
 // ═══ 文章 / 页面 ═══
@@ -301,7 +298,7 @@ window.openPostEditor = async (type, id) => {
   const statusOpts = [['draft', '草稿'], ['published', '发布'], ['pending', '待审核']].map(x => '<option value="' + x[0] + '"' + (st === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
   const tagStr = post && post.tags ? post.tags.map(t => t.name).join(',') : '';
   const saveBtn = '<button class="btn btn-primary btn-block" onclick="savePost(\'' + type + '\',' + (id ? '\'' + id + '\'' : 'null') + ')">' + (id ? '更新' : '保存') + '</button>';
-  setTopbar('<button class="btn btn-outline" onclick="page=\'' + (isPage ? 'pages' : 'posts') + '\';render()">← 返回列表</button>');
+  setTopbar('<button class="btn btn-outline" onclick="navigate(\'' + (isPage ? 'pages' : 'posts') + '\')">← 返回列表</button>');
   document.getElementById('page-title').textContent = (id ? '编辑' : '新建') + (isPage ? '页面' : '文章');
   const tagBox = isPage ? '' : (`
         <div class="side-box">
@@ -326,9 +323,9 @@ window.openPostEditor = async (type, id) => {
             <button type="button" class="tb" title="行内代码" onclick="mdInsertInlineCode()">&lt;/&gt;</button>
           </div>
           <div class="tb-group">
-            <button type="button" class="tb" title="链接 (Ctrl+K)" onclick="mdLink()">🔗 链接</button>
-            <button type="button" class="tb" title="从附件库插入图片" onclick="mdPickMedia()">🖼 图片</button>
-            <button type="button" class="tb" title="通过图片地址插入" onclick="mdImage()">🌐 图片地址</button>
+            <button type="button" class="tb" title="链接 (Ctrl+K)" onclick="mdLink()">链接</button>
+            <button type="button" class="tb" title="从附件库插入图片" onclick="mdPickMedia()">图片</button>
+            <button type="button" class="tb" title="通过图片地址插入" onclick="mdImage()">图片地址</button>
             <button type="button" class="tb" title="引用" onclick="mdPrefix('&gt; ')">❝ 引用</button>
             <button type="button" class="tb" title="代码块" onclick="mdInsertCode()">{ }</button>
           </div>
@@ -340,7 +337,7 @@ window.openPostEditor = async (type, id) => {
           <div class="tb-right">
             <span id="pe-count" class="tb-count">0 字</span>
             <button type="button" class="tb" id="pe-mode-btn" title="写作 / 分屏 / 预览" onclick="mdToggleMode()">分屏</button>
-            <button type="button" class="tb" title="全屏编辑（Esc 退出）" onclick="mdToggleFullscreen()">⛶</button>
+            <button type="button" class="tb" title="全屏编辑（Esc 退出）" onclick="mdToggleFullscreen()">全屏</button>
           </div>
         </div>
         <div class="editor-wrap" id="pe-wrap" data-mode="split">
@@ -464,12 +461,16 @@ window.delPost = async (id) => { if (!confirm('确定删除？')) return; try { 
 
 // ═══ 文章列表 ═══
 async function renderPosts() {
-  const r = await api('/admin/posts?page=' + pageNum + '&pageSize=20');
+  const r = await api('/admin/posts?page=' + pageNum + '&pageSize=20' + (postStatus ? '&status=' + postStatus : ''));
   const rows = (r.items || []).map(p => '<tr><td><input type="checkbox" class="post-check" value="' + p.id + '"></td><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + escape(p.category_name || '-') + '</td><td>' + statusLabel(p.status) + '</td><td>' + (p.comment_count || 0) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'' + p.type + '\',\'' + p.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openPostEditor(\'post\')">+ 写文章</button>');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th><input type="checkbox" onchange="toggleAllPosts(this.checked)"></th><th>标题</th><th>分类</th><th>状态</th><th>评论</th><th>浏览</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty">暂无文章</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  const filters = [['', '全部'], ['published', '已发布'], ['draft', '草稿'], ['pending', '待审核'], ['trash', '回收站']].map(([value, label]) =>
+    '<button class="filter-tab' + (postStatus === value ? ' active' : '') + '" aria-pressed="' + (postStatus === value) + '" onclick="filterPosts(\'' + value + '\')">' + label + '</button>').join('');
+  document.getElementById('content').innerHTML = '<div class="toolbar"><div class="filter-tabs" aria-label="文章状态">' + filters + '</div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllPosts(this.checked)"> 选择本页文章</label></div><div class="table-container"><table><thead><tr><th><input aria-label="选择本页文章" type="checkbox" onchange="toggleAllPosts(this.checked)"></th><th>标题</th><th>分类</th><th>状态</th><th>评论</th><th>浏览</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty">该状态下暂无文章</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  labelTableRows();
 }
 
+window.filterPosts = status => { postStatus = ['', 'published', 'draft', 'pending', 'trash'].includes(status) ? status : ''; pageNum = 1; return render(); };
 window.toggleAllPosts = (checked) => { document.querySelectorAll('.post-check').forEach(c => c.checked = checked); };
 window.batchPosts = async (action) => {
   const ids = Array.from(document.querySelectorAll('.post-check:checked')).map(c => c.value);
@@ -487,6 +488,7 @@ async function renderPages() {
   const rows = (r.items || []).map(p => '<tr><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + statusLabel(p.status) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'page\',\'' + p.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openPostEditor(\'page\')">+ 新建页面</button>');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>标题</th><th>状态</th><th>浏览</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">暂无页面</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  labelTableRows();
 }
 
 // ═══ 操作日志 ═══
@@ -495,6 +497,7 @@ async function renderLogs() {
   const rows = (r.items || []).map(l => '<tr><td>' + fmt(l.created_at) + '</td><td>' + escape(l.username || '-') + '</td><td><code>' + escape(l.action) + '</code></td><td>' + escape(l.detail || '-') + '</td><td>' + escape(l.ip || '-') + '</td></tr>').join('');
   setTopbar('<button class="btn btn-danger" onclick="clearLogs()">清空日志</button>');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>详情</th><th>IP</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">暂无日志</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  labelTableRows();
 }
 
 window.clearLogs = async () => {
@@ -521,6 +524,7 @@ async function renderCategories() {
   const rows = (r || []).map(c => '<tr><td><strong>' + escape(c.name) + '</strong></td><td><code>' + escape(c.slug) + '</code></td><td>' + escape(c.description || '-') + '</td><td>' + (c.parent_name ? escape(c.parent_name) : '-') + '</td><td>' + (c.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openCatEditor(\'' + c.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delCat(\'' + c.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openCatEditor()">+ 新建分类</button>');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>描述</th><th>父级</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">暂无分类</div></td></tr>') + '</tbody></table></div>';
+  labelTableRows();
 }
 
 window.openCatEditor = async (id) => {
@@ -556,6 +560,7 @@ async function renderTags() {
   const rows = (r.items || []).map(t => '<tr><td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openTagEditor(\'' + t.id + '\',\'' + escape(t.name) + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openTagEditor()">+ 新建标签</button>');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty">暂无标签</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  labelTableRows();
 }
 window.openTagEditor = (id, name) => {
   const n = prompt('标签名称：', name || '');
@@ -574,10 +579,9 @@ window.delTag = async (id) => { if (!confirm('确定删除？')) return; try { a
 let selectedComments = new Set();
 
 async function renderComments() {
-  const sel = document.getElementById('cf-status');
-  const status = sel ? sel.value : '';
+  const status = commentStatus;
   const r = await api('/admin/comments?page=' + pageNum + '&pageSize=20' + (status ? '&status=' + status : ''));
-  const rows = (r.items || []).map(c => '<tr><td><input type="checkbox" class="cmt-check" value="' + c.id + '" ' + (selectedComments.has(c.id) ? 'checked' : '') + ' onchange="toggleCmtCheck(\'' + c.id + '\', this.checked)"> ' + escape((c.content || '').substring(0, 50)) + '</td><td>' + escape(c.post_title || '-') + '</td><td>' + escape(c.author_name || c.username || '匿名') + '</td><td>' + statusLabel(c.status) + '</td><td>' + fmt(c.created_at) + '</td><td class="actions">' +
+  const rows = (r.items || []).map(c => '<tr><td><input type="checkbox" aria-label="选择评论" class="cmt-check" value="' + c.id + '" ' + (selectedComments.has(c.id) ? 'checked' : '') + ' onchange="toggleCmtCheck(\'' + c.id + '\', this.checked)"></td><td>' + escape((c.content || '').substring(0, 50)) + '</td><td>' + escape(c.post_title || '-') + '</td><td>' + escape(c.author_name || c.username || '匿名') + '</td><td>' + statusLabel(c.status) + '</td><td>' + fmt(c.created_at) + '</td><td class="actions">' +
     (c.status !== 'approved' ? '<button class="btn btn-sm btn-outline" onclick="setCmt(\'' + c.id + '\',\'approved\')">通过</button> ' : '') +
     (c.status !== 'spam' ? '<button class="btn btn-sm btn-outline" onclick="setCmt(\'' + c.id + '\',\'spam\')">垃圾</button> ' : '') +
     '<button class="btn btn-sm btn-outline" onclick="replyCmt(\'' + c.id + '\')">回复</button> ' +
@@ -588,11 +592,14 @@ async function renderComments() {
   
   setTopbar('');
   document.getElementById('content').innerHTML =
-    '<div class="toolbar"><select id="cf-status" onchange="gotoPage(1)">' +
+    '<div class="toolbar"><label for="cf-status">评论状态</label><select id="cf-status" onchange="filterComments(this.value)">' +
     ['', 'pending', 'approved', 'spam'].map(v => '<option value="' + v + '"' + (status === v ? ' selected' : '') + '>' + ({ '': '所有状态', pending: '待审核', approved: '已通过', spam: '垃圾' }[v]) + '</option>').join('') +
-    '</select></div>' + batchBar +
-    '<div class="table-container"><table><thead><tr><th><input type="checkbox" onchange="toggleAllCmts(this.checked)"></th><th>内容</th><th>文章</th><th>作者</th><th>状态</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">暂无评论</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+    '</select><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllCmts(this.checked)"' +
+    ((r.items || []).length && r.items.every(c => selectedComments.has(c.id)) ? ' checked' : '') + '> 选择本页评论</label></div>' + batchBar +
+    '<div class="table-container"><table><thead><tr><th><input aria-label="选择本页评论" type="checkbox" onchange="toggleAllCmts(this.checked)"></th><th>内容</th><th>文章</th><th>作者</th><th>状态</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">该状态下暂无评论</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  labelTableRows();
 }
+window.filterComments = status => { commentStatus = ['', 'pending', 'approved', 'spam'].includes(status) ? status : ''; selectedComments.clear(); pageNum = 1; return render(); };
 window.setCmt = async (id, status) => { try { await api('/admin/comments/' + id + '/status', { method: 'PATCH', body: { status } }); toast('已更新'); renderComments(); } catch (e) { toast(e.message, 'error'); } };
 window.delCmt = async (id) => { if (!confirm('确定删除？')) return; try { await api('/admin/comments/' + id, { method: 'DELETE' }); toast('已删除'); renderComments(); } catch (e) { toast(e.message, 'error'); } };
 window.toggleCmtCheck = (id, checked) => { if (checked) selectedComments.add(id); else selectedComments.delete(id); renderComments(); };
@@ -677,7 +684,7 @@ async function renderThemes() {
   const themes = await api('/admin/themes');
   let html = '<div class="card"><h3 class="card-title">主题</h3><div class="theme-grid">';
   if (themes.length) themes.forEach(t => {
-    var screenshot = t.screenshot ? '<img src="' + escape(t.screenshot) + '" alt="" loading="lazy">' : '🎨';
+    var screenshot = t.screenshot ? '<img src="' + escape(t.screenshot) + '" alt="" loading="lazy">' : '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M3 4h18v16H3z M3 8h18 M8 8v12"/></svg>';
     html += '<div class="theme-card' + (t.active ? ' active' : '') + '">' +
       '<div class="thumb">' + screenshot + (t.active ? '<span class="theme-badge">使用中</span>' : '') + '</div>' +
       '<div class="tv"><h3>' + escape(t.name) + '</h3>' +
@@ -812,6 +819,7 @@ async function renderUsers() {
   const rows = (r.items || []).map(u => '<tr><td><strong>' + escape(u.username) + '</strong></td><td>' + escape(u.nickname || '-') + '</td><td>' + escape(u.email) + '</td><td><span class="tag tag-blue">' + roleLabel(u.role) + '</span></td><td>' + statusLabel(u.status) + '</td><td>' + (u.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openUserEditor(\'' + u.id + '\')">编辑</button> ' + (u.id === (user && user.id) ? '' : '<button class="btn btn-sm btn-danger" onclick="delUser(\'' + u.id + '\')">删除</button>') + '</td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openUserEditor()">+ 新建用户</button>');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>用户名</th><th>昵称</th><th>邮箱</th><th>角色</th><th>状态</th><th>文章</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">暂无用户</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  labelTableRows();
 }
 window.openUserEditor = async (id) => {
   let u = null;
@@ -847,10 +855,10 @@ async function renderSettings() {
   const o = {}; (r || []).forEach(x => o[x.key] = x.value);
   
   let html = '<div class="settings-tabs">' +
-    '<button class="settings-tab active" onclick="switchSettingsTab(\'basic\')">基本</button>' +
-    '<button class="settings-tab" onclick="switchSettingsTab(\'comment\')">评论</button>' +
-    '<button class="settings-tab" onclick="switchSettingsTab(\'reading\')">阅读</button>' +
-    '<button class="settings-tab" onclick="switchSettingsTab(\'permalink\')">永久链接</button>' +
+    '<button class="settings-tab active" onclick="switchSettingsTab(\'basic\',this)">基本</button>' +
+    '<button class="settings-tab" onclick="switchSettingsTab(\'comment\',this)">评论</button>' +
+    '<button class="settings-tab" onclick="switchSettingsTab(\'reading\',this)">阅读</button>' +
+    '<button class="settings-tab" onclick="switchSettingsTab(\'permalink\',this)">永久链接</button>' +
     '</div>';
   
   // 基本设置
@@ -920,9 +928,9 @@ async function renderSettings() {
   document.getElementById('content').innerHTML = html;
   setTopbar('');
 }
-window.switchSettingsTab = (tab) => {
+window.switchSettingsTab = (tab, button) => {
   document.querySelectorAll('.settings-tab').forEach(el => el.classList.remove('active'));
-  event.target.classList.add('active');
+  if (button) button.classList.add('active');
   document.querySelectorAll('.settings-panel').forEach(el => el.style.display = 'none');
   document.getElementById('settings-' + tab).style.display = 'block';
 };
@@ -1001,16 +1009,26 @@ function mdToHtml(md) {
 
 // ═══ 导航（事件委托，兼容插件动态注入的菜单项）═══
 window.gotoPage = (p) => { pageNum = p; render(); };
+window.navigate = (next, status = '') => {
+  page = next; pageNum = 1;
+  if (next === 'posts') postStatus = status;
+  if (next === 'comments') { commentStatus = status; selectedComments.clear(); }
+  document.querySelectorAll('.menu-item').forEach(el => {
+    const active = el.dataset.page === next;
+    el.classList.toggle('active', active);
+    if (active) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
+  });
+  return render();
+};
 document.querySelector('.sidebar-menu').addEventListener('click', (ev) => {
   const el = ev.target.closest('.menu-item');
   if (!el) return;
   // 插件菜单若给了 url，则直接跳转，不当作内部页面
-  if (el.dataset.url) { location.href = el.dataset.url; return; }
+  if (el.dataset.url) { ev.preventDefault(); location.href = el.dataset.url; return; }
   if (!el.dataset.page) return;
   ev.preventDefault();
-  document.querySelectorAll('.menu-item').forEach(e => e.classList.remove('active'));
-  el.classList.add('active');
-  page = el.dataset.page; pageNum = 1; render();
+  window.navigate(el.dataset.page);
 });
 
 // 拉取插件注册的后台菜单，注入到侧边栏「插件」分组
@@ -1024,7 +1042,7 @@ async function loadPluginMenus() {
       const icon = m.icon || '🔌';
       const url = m.url ? ' data-url="' + escape(m.url) + '"' : '';
       const pageAttr = m.url ? '' : ' data-page="' + escape(m.page || ('plugin:' + m.id)) + '"';
-      return '<a class="menu-item"' + url + pageAttr + '><span>' + icon + '</span>' + escape(m.title || m.id) + '</a>';
+      return '<a href="#" class="menu-item"' + url + pageAttr + '><span aria-hidden="true">' + escape(icon) + '</span><span>' + escape(m.title || m.id) + '</span></a>';
     }).join('');
     if (section) section.style.display = '';
   } catch (e) { /* 插件菜单加载失败不影响后台 */ }
@@ -1040,7 +1058,11 @@ if (!localStorage.getItem('lill_token')) {
   try {
     user = await api('/auth/me', { timeout: 8000 });
     authed = !!user;
-    if (user) document.getElementById('user-name').textContent = user.nickname || user.username;
+    if (user) {
+      document.getElementById('user-name').textContent = user.nickname || user.username;
+      const avatar = document.getElementById('user-avatar');
+      if (avatar) avatar.textContent = (user.nickname || user.username || 'L').slice(0, 1).toUpperCase();
+    }
   } catch (e) { authed = false; }
 }
 if (!authed) {
@@ -1098,6 +1120,7 @@ async function renderPlugins() {
     + '<div class="table-container"><table><thead><tr><th>名称</th><th>版本</th><th>描述</th><th>状态</th><th>操作</th></tr></thead><tbody>'
     + (rows || '<tr><td colspan="5"><div class="empty">暂无插件，点击右上角上传安装</div></td></tr>')
     + '</tbody></table></div>';
+  labelTableRows();
 }
 window.renderPlugins = renderPlugins;
 window.renderPluginMenuPanel = renderPluginMenuPanel;
@@ -1117,7 +1140,7 @@ async function renderPluginMenuPanel(id) {
     + '<p style="color:#64748b">插件可以：① 在 <code>plugin.json</code> 里写 <code>settings</code>，后台会自动生成设置页；'
     + '② 在 <code>ctx.addAdminMenu({ ..., page: \'plugin-settings:&lt;目录名&gt;\' })</code> 中指向设置页；'
     + '③ 用 <code>url</code> 指向插件自带的页面。</p>'
-    + '<button class="btn btn-outline" onclick="page=\'plugins\';render()">前往插件管理</button></div>';
+    + '<button class="btn btn-outline" onclick="navigate(\'plugins\')">前往插件管理</button></div>';
 }
 
 // ═══ 插件设置页（对标 Typecho 插件配置面板 / WP 插件设置页）═══
@@ -1127,7 +1150,7 @@ async function openPluginSettings(dir) {
   c.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   let r;
   try { r = await api('/admin/plugins/' + encodeURIComponent(dir) + '/config'); }
-  catch (e) { c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="page=\'plugins\';render()">← 返回插件列表</button></div>'; return; }
+  catch (e) { c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="navigate(\'plugins\')">← 返回插件列表</button></div>'; return; }
 
   const schema = r.schema || [];
   const values = r.values || {};
@@ -1139,7 +1162,7 @@ async function openPluginSettings(dir) {
     html += settingsFormHTML(schema, values, 'data-ps-key');
     html += '<button class="btn btn-primary" onclick="savePluginSettings(\'' + escape(dir) + '\')">保存设置</button>';
   }
-  html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="page=\'plugins\';render()">← 返回插件列表</button></div></div>';
+  html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="navigate(\'plugins\')">← 返回插件列表</button></div></div>';
   c.innerHTML = html;
 }
 window.openPluginSettings = openPluginSettings;

@@ -6,40 +6,73 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
   <title>登录 - lill 博客</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/admin/auth.css?v=20261018-ui2">
   <script>
     // 未安装时跳转安装向导
     fetch('/api/v1/install/status').then(r => r.json()).then(d => {
       if (d && d.data && d.data.installed === false) location.replace('/admin/install/');
     }).catch(() => {});
   </script>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;background:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center}
-    .login-box{background:#fff;border-radius:12px;padding:40px;box-shadow:0 4px 24px rgba(0,0,0,.08);width:100%;max-width:400px}
-    .login-box h1{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px;font-size:26px;font-weight:700}
-    .login-box h1 .logo-img{width:40px;height:40px;border-radius:11px;display:block}
-    .login-box .sub{text-align:center;color:#64748b;margin-bottom:28px;font-size:14px}
-    .login-box input{width:100%;padding:12px 16px;margin-bottom:14px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px;outline:none;transition:border-color .2s}
-    .login-box input:focus{border-color:#4f46e5}
-    .login-box button{width:100%;padding:12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;transition:background .2s}
-    .login-box button:hover{background:#4338ca}
-    .error{color:#ef4444;text-align:center;margin-bottom:14px;font-size:13px;min-height:20px}
-  </style>
 </head>
-<body>
-  <div class="login-box">
-    <h1><img src="/logo.svg" alt="lill" class="logo-img"><span>lill</span></h1>
-    <p class="sub">管理后台登录</p>
-    <div id="err" class="error"></div>
-    <input type="text" id="u" placeholder="用户名" autocomplete="username">
-    <input type="password" id="p" placeholder="密码" autocomplete="current-password">
-    <button id="b">登录</button>
-  </div>
-  <script>
-    async function login() {
-      const btn = document.getElementById('b');
+<body class="auth-page">
+  <main class="auth-shell">
+    <header class="auth-header">
+      <div class="auth-brand" aria-label="lill 博客系统">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="m3 19 7-14M9 19l7-14m-1 14 7-14"/></svg>
+        <span class="brand-name">lill</span>
+      </div>
+      <a class="site-link" href="/">查看站点<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a>
+    </header>
+
+    <div class="login-layout">
+      <section class="auth-welcome" aria-labelledby="welcome-title">
+        <h1 id="welcome-title">欢迎回来，<br>继续你的记录。</h1>
+        <p>文章、草稿与读者的回应，都在这里。</p>
+      </section>
+
+      <section class="auth-form-panel" aria-labelledby="login-title">
+        <h2 id="login-title">登录管理后台</h2>
+        <p class="form-description">使用你的管理员账号登录。</p>
+        <div id="err" class="error" role="alert" tabindex="-1" hidden></div>
+        <form id="loginForm" action="/api/v1/auth/login" method="post" aria-labelledby="login-title">
+          <div class="form-group">
+            <label for="u">用户名或邮箱</label>
+            <input type="text" id="u" name="username" placeholder="输入用户名或邮箱" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+          </div>
+          <div class="form-group">
+            <label for="p">密码</label>
+            <input type="password" id="p" name="password" placeholder="输入密码" autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="btn btn-primary login-submit" id="b" disabled>
+            <span class="spinner" id="loginSpinner" aria-hidden="true" hidden></span>
+            <span id="loginLabel">登录</span>
+          </button>
+        </form>
+        <noscript><p class="error">请启用 JavaScript 后登录管理后台。</p></noscript>
+      </section>
+    </div>
+
+    <footer class="auth-footer"><span>lill 博客系统</span><span>记录、思考与生活。</span></footer>
+  </main>
+  <script is:inline>
+    const form = document.getElementById('loginForm');
+    const btn = document.getElementById('b');
+    const error = document.getElementById('err');
+    const label = document.getElementById('loginLabel');
+    const spinner = document.getElementById('loginSpinner');
+
+    async function login(event) {
+      event.preventDefault();
+      if (btn.disabled) return;
+      error.hidden = true;
+      error.textContent = '';
       btn.disabled = true;
+      form.setAttribute('aria-busy', 'true');
+      label.textContent = '正在登录…';
+      spinner.hidden = false;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
@@ -53,18 +86,26 @@
           })
         });
         const data = await res.json();
-        if (data.code !== 0) throw new Error(data.message || '登录失败');
+        if (!res.ok || data.code !== 0) throw new Error(data.message || '登录失败，请重试');
+        if (!data.data || !data.data.token) throw new Error('登录响应异常，请重试');
         localStorage.setItem('lill_token', data.data.token); if (data.data.csrfToken) localStorage.setItem('lill_csrf_token', data.data.csrfToken);
         location.href = '/admin/';
       } catch (e) {
-        document.getElementById('err').textContent = (e.name === 'AbortError') ? '请求超时，请重试' : e.message;
+        error.textContent = e.name === 'AbortError' ? '请求超时，请重试' :
+          e instanceof TypeError ? '无法连接服务器，请检查网络后重试' :
+          e instanceof SyntaxError ? '服务器返回异常，请稍后重试' : e.message || '登录失败，请重试';
+        error.hidden = false;
+        error.focus();
       } finally {
         clearTimeout(timer);
         btn.disabled = false;
+        form.setAttribute('aria-busy', 'false');
+        label.textContent = '登录';
+        spinner.hidden = true;
       }
     }
-    document.getElementById('b').onclick = login;
-    document.getElementById('p').onkeydown = e => { if (e.key === 'Enter') login(); };
+    form.addEventListener('submit', login);
+    btn.disabled = false;
   </script>
 </body>
 </html>

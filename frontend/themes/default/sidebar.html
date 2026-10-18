@@ -6,13 +6,13 @@
   <div class="widget">
     <h3 class="widget-title">搜索</h3>
     <form class="widget-search" action="/search" method="get" role="search">
-      <input type="search" name="q" placeholder="输入关键词…" value="{$page.query.q}">
+      <input type="search" name="q" placeholder="输入关键词…" value="{$page.query.q}" aria-label="搜索文章">
       <button type="submit">搜索</button>
     </form>
   </div>
   {/if}
 
-  {if $theme.sidebar_recent_posts && $sidebar.recentPosts}
+  {if $theme.sidebar_recent_posts && $sidebar.recentPosts.length}
   <div class="widget">
     <h3 class="widget-title">最新文章</h3>
     <ul class="widget-list">
@@ -23,7 +23,7 @@
   </div>
   {/if}
 
-  {if $theme.sidebar_recent_comments && $sidebar.recentComments}
+  {if $theme.sidebar_recent_comments && $sidebar.recentComments.length}
   <div class="widget">
     <h3 class="widget-title">最新评论</h3>
     <ul class="widget-list widget-comments">
@@ -34,7 +34,7 @@
   </div>
   {/if}
 
-  {if $theme.sidebar_categories && $sidebar.categories}
+  {if $theme.sidebar_categories && $sidebar.categories.length}
   <div class="widget">
     <h3 class="widget-title">分类目录</h3>
     <ul class="widget-list">
@@ -45,7 +45,7 @@
   </div>
   {/if}
 
-  {if $theme.sidebar_tags && $sidebar.tags}
+  {if $theme.sidebar_tags && $sidebar.tags.length}
   <div class="widget">
     <h3 class="widget-title">标签云</h3>
     <div class="tag-cloud">
@@ -54,7 +54,7 @@
   </div>
   {/if}
 
-  {if $theme.sidebar_archives && $sidebar.archives}
+  {if $theme.sidebar_archives && $sidebar.archives.length}
   <div class="widget">
     <h3 class="widget-title">文章归档</h3>
     <ul class="widget-list">
@@ -74,21 +74,17 @@
   </div>
   {/if}
 
-</aside>
-{/if}
-
-  {if $theme.sidebar_hot_posts && $sidebar.hotPosts}
+  {if $theme.sidebar_hot_posts && $sidebar.hotPosts.length}
   <div class="widget">
     <h3 class="widget-title">热门文章</h3>
     <ul class="widget-list">
       {loop $sidebar.hotPosts as $p}
-      <li><a href="{$p.url}">{$p.title}</a><span class="widget-meta">👁️ {$p.view_count}</span></li>
+      <li><a href="{$p.url}">{$p.title}</a><span class="widget-meta">{$p.view_count} 次阅读</span></li>
       {/loop}
     </ul>
   </div>
   {/if}
-
-  {if $theme.sidebar_hot_tags && $sidebar.hotTags}
+  {if $theme.sidebar_hot_tags && $sidebar.hotTags.length}
   <div class="widget">
     <h3 class="widget-title">热门标签</h3>
     <div class="tag-cloud">
@@ -96,3 +92,5 @@
     </div>
   </div>
   {/if}
+</aside>
+{/if}

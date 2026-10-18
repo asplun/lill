@@ -3,21 +3,24 @@
   <a class="post-thumb" href="{$post.url}"><img src="{$post.cover_image}" alt="{$post.title}" loading="lazy"></a>
   {/if}
   <div class="post-card-body">
-    <h2 class="post-title">
+    <div class="post-card-head">
+      <span class="post-date">{$post.published_at|date:'Y 年 m 月 d 日'}</span>
       {if $theme.show_sticky && $post.sticky}<span class="sticky-badge">置顶</span>{/if}
-      <a href="{$post.url}">{$post.title}</a>
-    </h2>
-    <div class="post-meta">
-      <span>📅 {$post.published_at|date}</span>
-      {if $theme.show_author && $post.author_nickname}<span>✍️ {$post.author_nickname}</span>{/if}
-      {if $theme.show_category && $post.category_name}<span>📁 <a href="/category/{$post.category_slug}">{$post.category_name}</a></span>{/if}
-      {if $theme.show_views}<span>👁️ {$post.view_count}</span>{/if}
     </div>
+    <h2 class="post-title"><a href="{$post.url}">{$post.title}</a></h2>
     {if $theme.home_mode == 'full' && $post.html_content}
     <div class="post-content">{$post.html_content|raw}</div>
     {else}
     <div class="post-excerpt">{$post.excerpt}</div>
-    <a class="read-more" href="{$post.url}">阅读全文 →</a>
     {/if}
+    <div class="post-card-footer">
+      {if $theme.home_mode != 'full' || !$post.html_content}<a class="read-more" href="{$post.url}" aria-label="阅读全文：{$post.title}">阅读全文</a>{/if}
+      <div class="post-meta">
+        {if $theme.show_author && $post.author_nickname}<span>{$post.author_nickname}</span>{/if}
+        {if $theme.show_category && $post.category_name}<a href="/category/{$post.category_slug}">{$post.category_name}</a>{/if}
+        {if $theme.show_views}<span>{$post.view_count} 次阅读</span>{/if}
+        {if $theme.show_comment && $post.comment_count}<a href="{$post.url}#comments">{$post.comment_count} 条评论</a>{/if}
+      </div>
+    </div>
   </div>
 </article>

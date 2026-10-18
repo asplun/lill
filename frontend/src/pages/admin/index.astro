@@ -1,6 +1,25 @@
 ---
-// lill 管理后台 — 独立 SPA，不复用博客布局
-const token = Astro.cookies.get('lill_token')?.value;
+// 后台独立外壳，不依赖任何前台主题。
+const menus = [
+  { title: '工作台', items: [['dashboard', '概览']] },
+  { title: '内容', items: [['posts', '文章'], ['pages', '独立页面'], ['comments', '评论'], ['categories', '分类'], ['tags', '标签'], ['media', '附件']] },
+  { title: '站点', items: [['themes', '外观'], ['plugins', '插件'], ['users', '用户'], ['settings', '设置'], ['logs', '日志'], ['backup', '备份']] },
+];
+const icons: Record<string, string> = {
+  dashboard: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+  posts: 'M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9 M12 12l8-8 2 2-8 8-4 1z',
+  pages: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M8 13h8 M8 17h5',
+  comments: 'M21 11a8 8 0 0 1-8 8H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z M7 8h10 M7 12h7',
+  categories: 'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  tags: 'M3 3h8l10 10-8 8L3 11z M7 7h.01',
+  media: 'M4 3h16v18H4z M4 16l5-5 4 4 3-3 4 4 M15 7h.01',
+  themes: 'M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-4 2 2 0 0 1 1-4h2a4 4 0 0 0 4-4c0-4-4-6-9-6z M7 9h.01 M11 6h.01 M16 7h.01 M6 14h.01',
+  plugins: 'M8 3v4 M16 3v4 M6 7h12v4a6 6 0 0 1-12 0z M12 17v5',
+  users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M17 4a4 4 0 0 1 0 7 M22 21v-2a4 4 0 0 0-3-4',
+  settings: 'M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
+  logs: 'M6 3h12v18H6z M9 7h6 M9 12h6 M9 17h4',
+  backup: 'M3 12a9 9 0 1 0 3-7 M3 3v5h5 M12 7v5l3 2',
+};
 ---
 
 <!DOCTYPE html>
@@ -16,50 +35,55 @@ const token = Astro.cookies.get('lill_token')?.value;
       if (d && d.data && d.data.installed === false) location.replace('/admin/install/');
     }).catch(() => {});
   </script>
-  <link rel="stylesheet" href="/admin/admin.css">
+  <link rel="stylesheet" href="/admin/admin.css?v=20261018-ui2">
 </head>
 <body>
+<a class="skip-link" href="#content">跳到主要内容</a>
 <div class="admin">
-  <aside class="sidebar">
-    <div class="sidebar-logo"><img src="/logo.svg" alt="lill" class="logo-img"><span>lill</span><em class="ver">v2.0</em></div>
-    <nav class="sidebar-menu">
-      <div class="menu-section">概览</div>
-      <a class="menu-item active" data-page="dashboard"><span>📊</span>控制台</a>
-      <div class="menu-section">内容</div>
-      <a class="menu-item" data-page="posts"><span>📝</span>文章</a>
-      <a class="menu-item" data-page="pages"><span>📄</span>页面</a>
-      <a class="menu-item" data-page="categories"><span>📁</span>分类</a>
-      <a class="menu-item" data-page="tags"><span>🏷️</span>标签</a>
-      <a class="menu-item" data-page="comments"><span>💬</span>评论</a>
-      <a class="menu-item" data-page="media"><span>🖼️</span>附件</a>
-      <div class="menu-section">系统</div>
-      <a class="menu-item" data-page="themes"><span>🎨</span>外观</a>
-      <a class="menu-item" data-page="users"><span>👥</span>用户</a>
-      <a class="menu-item" data-page="settings"><span>⚙️</span>设置</a>
-      <a class="menu-item" data-page="logs"><span>📋</span>日志</a>
-      <a class="menu-item" data-page="backup"><span>💾</span>备份</a>
+  <button class="sidebar-scrim" id="sidebar-scrim" aria-label="关闭菜单" tabindex="-1" hidden></button>
+  <aside class="sidebar" id="admin-sidebar" aria-label="后台导航">
+    <div class="sidebar-logo">
+      <a href="/admin/" aria-label="lill 管理后台">
+        <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="m6 20 9-14M9 27 22 7M18 27l9-14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span>lill</span>
+      </a>
+      <button class="icon-button sidebar-close" id="sidebar-close" aria-label="关闭菜单" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <nav class="sidebar-menu" aria-label="管理功能">
+      {menus.map(group => <Fragment>
+        <div class="menu-section">{group.title}</div>
+        {group.items.map(([key, label]) => <a href="#" class:list={['menu-item', { active: key === 'dashboard' }]} data-page={key} aria-current={key === 'dashboard' ? 'page' : undefined}>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d={icons[key]}/></svg>
+          <span>{label}</span>
+        </a>)}
+      </Fragment>)}
       <div class="menu-section" id="plugin-menu-section" style="display:none">插件</div>
       <div id="plugin-menus"></div>
-      <div class="menu-section">扩展</div>
-      <a class="menu-item" data-page="plugins"><span>🔌</span>插件管理</a>
     </nav>
     <div class="sidebar-footer">
-      <div class="user"><div class="avatar">A</div><span class="name" id="user-name">Admin</span></div>
-      <button class="logout" id="logout-btn">退出登录</button>
-      <div class="sys-badge">lill 博客系统 · v2.0.0</div>
+      <div class="avatar" id="user-avatar" aria-hidden="true">L</div>
+      <div class="user-info"><span class="name" id="user-name">管理员</span><button class="logout" id="logout-btn" type="button">退出登录</button></div>
     </div>
   </aside>
-
   <main class="main">
     <header class="topbar">
-      <h2 id="page-title">控制台</h2>
+      <div class="topbar-heading">
+        <button class="icon-button menu-toggle" id="menu-toggle" type="button" aria-label="打开菜单" aria-expanded="false" aria-controls="admin-sidebar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1 id="page-title">控制台</h1>
+        <a class="site-link" href="/" target="_blank" rel="noopener">查看站点<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7 M21 3l-11 11 M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg></a>
+      </div>
       <div class="topbar-actions" id="topbar-actions"></div>
     </header>
-    <div class="content" id="content"><div class="loading"><div class="spinner"></div></div></div>
+    <div class="content" id="content" tabindex="-1"><div class="loading" role="status"><div class="spinner"></div><span class="sr-only">正在加载</span></div></div>
+    <footer class="admin-footer"><span>lill 博客系统</span><span>写作，简单一点。</span></footer>
   </main>
 </div>
-
 <script is:inline src="/api.js"></script>
-<script is:inline type="module" src="/admin/app.js"></script>
+<script is:inline type="module" src="/admin/app.js?v=20261018-ui2"></script>
+<script is:inline src="/admin/shell.js?v=20261018-ui2" defer></script>
 </body>
 </html>

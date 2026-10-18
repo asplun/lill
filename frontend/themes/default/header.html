@@ -1,15 +1,52 @@
+<div class="site-shell">
+<a class="skip-link" href="#main-content">跳到内容</a>
 <header class="site-header">
-  <div class="wrap">
+  <div class="wrap header-inner">
     <div class="site-brand">
-      <h1 class="site-name"><a href="/">{$site.name}</a></h1>
-      {if $site.description}<p class="site-desc">{$site.description}</p>{/if}
+      <a class="site-name" href="/">{$site.name}</a>
     </div>
-    <button class="mobile-menu-toggle" data-lill-toggle="menu" aria-label="菜单">☰</button>
-    <nav class="site-nav">
-      {loop $nav as $item}<a href="{$item.url}"{if $item.active} class="active"{/if}>{$item.title}</a>{/loop}
-      <a href="#" data-lill-toggle="dark" title="切换深色模式">◐</a>
+    <nav class="site-nav" id="site-nav" aria-label="主导航">
+      {loop $nav as $item}<a href="{$item.url}"{if $item.active} class="active" aria-current="page"{/if}>{$item.title}</a>{/loop}
     </nav>
+    {if $theme.sidebar_search}
+    <form class="site-search header-search{if $page.type == 'index'} home-header-search{/if}" action="/search" method="get" role="search">
+      <input type="search" name="q" placeholder="搜索文章" value="{$page.query.q}" aria-label="搜索文章">
+      <button type="submit" class="icon-button" aria-label="提交搜索" title="搜索文章">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+      </button>
+    </form>
+    {/if}
+    <div class="header-actions">
+      <button type="button" class="icon-button theme-toggle" data-lill-toggle="dark" aria-label="切换深色模式" title="切换深色模式">
+        <svg class="moon-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/></svg>
+        <svg class="sun-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
+      </button>
+      <button type="button" class="icon-button mobile-menu-toggle" data-lill-toggle="menu" aria-label="打开菜单" aria-controls="site-nav" aria-expanded="false" title="打开菜单">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path class="menu-lines" d="M4 7h16M4 12h16M4 17h16"/><path class="menu-close" d="m6 6 12 12M6 18 18 6"/></svg>
+      </button>
+    </div>
   </div>
 </header>
-<div class="wrap"><div data-lill-hello="top"></div></div>
+<div class="wrap announcement-top"><div data-lill-hello="top"></div></div>
+{if $page.type == 'index'}
+<section class="wrap home-intro" aria-labelledby="home-title">
+  <h1 id="home-title">{$site.description|default:$site.name}</h1>
+  {if $theme.social_weibo || $theme.social_github || $theme.social_twitter || $theme.social_email}
+  <nav class="social-links" aria-label="社交链接">
+    {if $theme.social_weibo}<a href="{$theme.social_weibo}" target="_blank" rel="noopener noreferrer">微博</a>{/if}
+    {if $theme.social_github}<a href="{$theme.social_github}" target="_blank" rel="noopener noreferrer">GitHub</a>{/if}
+    {if $theme.social_twitter}<a href="{$theme.social_twitter}" target="_blank" rel="noopener noreferrer">Twitter</a>{/if}
+    {if $theme.social_email}<a href="mailto:{$theme.social_email}">邮件</a>{/if}
+  </nav>
+  {/if}
+  {if $theme.sidebar_search}
+  <form class="site-search home-search" action="/search" method="get" role="search">
+    <input type="search" name="q" placeholder="搜索文章" value="{$page.query.q}" aria-label="搜索文章">
+    <button type="submit" class="icon-button" aria-label="提交搜索" title="搜索文章">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+    </button>
+  </form>
+  {/if}
+</section>
+{/if}
 <div class="wrap layout">

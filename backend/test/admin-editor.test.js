@@ -239,3 +239,47 @@ test('页面编辑器：保留别名与模板，不显示分类标签框', async
   title.dispatch('input');
   assert.equal(elements.get('pe-slug').value, 'existing-post');
 });
+
+test('控制台显示真实草稿与待审评论，并转义用户内容', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: {
+      '/admin/stats/dashboard': { overview: { postCount: 24, pageCount: 4, pendingCommentCount: 1 } },
+      '/admin/stats/system': { nodeVersion: 'v22', dbVersion: '3', uptime: 3600 },
+      '/admin/posts/recent': [{ id: 'p1', title: 'Hello World', status: 'published' }],
+      '/admin/posts?status=draft&pageSize=3': {
+        items: [{ id: 'd1', title: '<script>草稿</script>', status: 'draft' }],
+        meta: { total: 7 },
+      },
+      '/admin/comments?status=pending&pageSize=2': {
+        items: [{ id: 'c1', author_name: '读者', content: '<img src=x>待审核内容' }],
+        meta: { total: 1 },
+      },
+    },
+  });
+  await sandbox.renderDashboard();
+  const html = elements.get('content').innerHTML;
+  assert.ok(html.includes('&lt;script&gt;草稿&lt;/script&gt;'));
+  assert.ok(html.includes('&lt;img src=x&gt;待审核内容'));
+  assert.ok(!html.includes('<script>草稿'));
+  assert.ok(html.includes('>7<'), '草稿总数应来自分页总量，不能使用当前页长度');
+  assert.ok(apiCalls.some(call => call.path === '/admin/comments?status=pending&pageSize=2'));
+});
+
+test('文章状态筛选实际传给接口，切回全部后移除筛选', async () => {
+  const { sandbox, apiCalls } = await createAdminApp();
+  await sandbox.filterPosts('draft');
+  await sandbox.renderPosts();
+  assert.ok(apiCalls.some(call => call.path === '/admin/posts?page=1&pageSize=20&status=draft'));
+  apiCalls.length = 0;
+  await sandbox.filterPosts('');
+  await sandbox.renderPosts();
+  assert.ok(apiCalls.some(call => call.path === '/admin/posts?page=1&pageSize=20'));
+});
+
+test('评论状态筛选在重建页面容器后保留', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp();
+  await sandbox.filterComments('pending');
+  elements.get('content').innerHTML = '<div class="loading"></div>';
+  await sandbox.renderComments();
+  assert.ok(apiCalls.some(call => call.path === '/admin/comments?page=1&pageSize=20&status=pending'));
+});
