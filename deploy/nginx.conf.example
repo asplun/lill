@@ -46,6 +46,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 160s;          # 备份请求的后端期限为 150 秒；普通 API 仍由后端 20 秒兜底
         client_max_body_size 50M;          # 媒体上传大小上限
     }
 
@@ -104,9 +105,9 @@ server {
     location / {
         # 路由壳与 api.js / theme.js 会被持续修改，统一回源校验
         add_header Cache-Control "no-cache";
-        # 真实文件/目录优先；都不存在时落到 404 外壳，而不是首页
-        try_files $uri $uri/ =404;
-        error_page 404 /404.html;
+        # 通用外壳按实际 pathname 请求 bootstrap，服务端解析永久链接。
+        # 未知内容会返回 API 404，不会作为首页渲染。
+        try_files $uri $uri/ /index.html;
     }
 }
 

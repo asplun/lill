@@ -63,7 +63,7 @@ test('default navigation follows its own selection without changing other themes
     await save(['page:nav-about', 'index', 'category:nav-cat']);
     const view = await boot('type=page&slug=about');
     assert.deepEqual(view.theme.extension.navigation?.map(item => [item.title, item.url, item.active]), [
-      ['关于 "lill"', '/page/about', true], ['首页', '/', false], ['随笔', '/category/notes', false],
+      ['关于 "lill"', '/page/about', true], ['首页', '/', false], ['随笔', '/category/notes/', false],
     ]);
   });
 
@@ -74,7 +74,7 @@ test('default navigation follows its own selection without changing other themes
     assert.equal(view.theme.extension.navigation?.[0]?.url, '/page/about-new');
     db.prepare("UPDATE posts SET status = 'draft' WHERE id = 'nav-about'").run();
     view = await boot();
-    assert.deepEqual(view.theme.extension.navigation?.map(item => item.url), ['/', '/category/notes']);
+    assert.deepEqual(view.theme.extension.navigation?.map(item => item.url), ['/', '/category/notes/']);
     const r = await api.request('GET', '/api/v1/admin/themes/default/settings', { headers });
     assert.deepEqual(r.payload.data.values.navigation, ['page:nav-about', 'index', 'category:nav-cat']);
   });
@@ -98,7 +98,7 @@ test('default navigation follows its own selection without changing other themes
     db.prepare("UPDATE categories SET name = '新分类', slug = 'new-category' WHERE id = 'nav-changing'").run();
     const view = await boot('type=category&slug=new-category');
     assert.deepEqual(view.theme.extension.navigation.map(item => [item.title, item.url, item.active]), [
-      ['新分类', '/category/new-category', true], ['首页', '/', false],
+      ['新分类', '/category/new-category/', true], ['首页', '/', false],
     ]);
     db.prepare("DELETE FROM categories WHERE id = 'nav-changing'").run();
     assert.deepEqual((await boot()).theme.extension.navigation.map(item => item.url), ['/']);

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -22,7 +23,7 @@ async function createAdminApp(options = {}) {
   const elements = new Map();
   const protectedIds = new Set(['content', 'page-title', 'topbar-actions']);
   const apiCalls = [];
-  const store = new Map();
+  const store = new Map([['lill_token', 'test-only-admin-session']]);
 
   class FakeElement {
     constructor(tag = 'div') {
@@ -94,6 +95,7 @@ async function createAdminApp(options = {}) {
   }
 
   const responses = {
+    '/auth/me': { id: 'admin-test', username: 'admin', role: 'admin' },
     '/admin/categories': [],
     '/admin/page-templates': { templates: [{ key: 'page-links', name: '友情链接', file: 'page-links.html' }] },
     '/admin/options': [{ key: 'permalink', value: '/archives/{slug}/' }],
@@ -114,7 +116,7 @@ async function createAdminApp(options = {}) {
 
   const sandbox = {
     console, setTimeout, clearTimeout, Date, JSON, Math, Promise, Object, Array, String, Number, Boolean, RegExp, Error,
-    encodeURIComponent, decodeURIComponent,
+    encodeURIComponent, decodeURIComponent, crypto: webcrypto, URL,
     prompt: options.prompt || (() => null),
     confirm: options.confirm || (() => false),
     localStorage: {

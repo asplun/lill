@@ -11,7 +11,7 @@
     {if $theme.home_mode == 'full' && $post.html_content}
     <div class="post-content">{$post.html_content|raw}</div>
     {else}
-    <div class="post-excerpt">{$post.excerpt}</div>
+    <div class="post-excerpt">{if $post.excerpt_html}{$post.excerpt_html|raw}{else}{$post.excerpt}{/if}</div>
     {/if}
     <div class="post-card-footer">
       {if $theme.home_mode != 'full' || !$post.html_content}<a class="read-more" href="{$post.url}" aria-label="阅读全文：{$post.title}">阅读全文</a>{/if}

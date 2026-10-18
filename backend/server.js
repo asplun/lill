@@ -53,7 +53,7 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL,
-    content TEXT NOT NULL DEFAULT '', html_content TEXT, excerpt TEXT, cover_image TEXT,
+    content TEXT NOT NULL DEFAULT '', html_content TEXT, excerpt TEXT, excerpt_auto INTEGER, cover_image TEXT,
     type TEXT DEFAULT 'post', status TEXT DEFAULT 'draft', visibility TEXT DEFAULT 'public',
     password TEXT, comment_allowed INTEGER DEFAULT 1, view_count INTEGER DEFAULT 0,
     comment_count INTEGER DEFAULT 0, sticky INTEGER DEFAULT 0, "order" INTEGER DEFAULT 0,
@@ -151,6 +151,19 @@ function ensureColumn(table, column, ddl) {
 ensureColumn('posts', 'template', "template TEXT DEFAULT ''");
 ensureColumn('posts', 'cover_image', 'cover_image TEXT');
 ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
+ensureColumn('posts', 'excerpt_auto', 'excerpt_auto INTEGER');
+// Legacy rows have no mode: classify once, never reinterpret explicitly saved modes.
+{
+  const rows = db.prepare('SELECT id, content, excerpt FROM posts WHERE excerpt_auto IS NULL').all();
+  if (rows.length) {
+    db.exec('BEGIN');
+    try {
+      const update = db.prepare('UPDATE posts SET excerpt_auto = ? WHERE id = ?');
+      for (const row of rows) update.run(!row.excerpt || row.excerpt === plainText(row.content).slice(0, 200) ? 1 : 0, row.id);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+}
 // 公开互动接口使用的列必须由核心提供，不能依赖第三方主题迁移。
 ensureColumn('posts', 'likes', 'likes INTEGER DEFAULT 0');
 ensureColumn('comments', 'likes', 'likes INTEGER DEFAULT 0');
@@ -163,11 +176,11 @@ ensureColumn('widgets', 'updated_at', "updated_at TEXT DEFAULT (datetime('now'))
 // 又转成了可见标签源码。修复渲染器后，这里按标记重渲染一次全部正文。
 // ════════════════════════════════════════════════════════════
 {
-  const FIX_KEY = 'md_renderer_v2';
+  const FIX_KEY = 'md_renderer_v3_security';
   const done = db.prepare('SELECT id FROM options WHERE key = ?').get(FIX_KEY);
   if (!done) {
     try {
-      const rows = db.prepare("SELECT id, content FROM posts WHERE content IS NOT NULL AND content != ''").all();
+      const rows = db.prepare('SELECT id, content FROM posts').all();
       const upd = db.prepare('UPDATE posts SET html_content = ? WHERE id = ?');
       db.exec('BEGIN');
       let n = 0;
@@ -234,7 +247,7 @@ if (!isInstalled()) {
         '现在，去写下你的第一篇文章吧。',
       ].join('\n');
       const pid = uid();
-      db.prepare(`INSERT INTO posts (id, title, slug, content, html_content, excerpt, type, status, visibility, published_at, author_id, category_id) VALUES (?, ?, ?, ?, ?, ?, 'post', 'published', 'public', datetime('now'), ?, ?)`)
+      db.prepare(`INSERT INTO posts (id, title, slug, content, html_content, excerpt, excerpt_auto, type, status, visibility, published_at, author_id, category_id) VALUES (?, ?, ?, ?, ?, ?, 1, 'post', 'published', 'public', datetime('now'), ?, ?)`)
         .run(pid, 'Hello World', 'hello-world', content, renderMD(content), plainText(content).substring(0, 200), admin.id, cat.id);
       console.log('✓ 已创建默认文章：Hello World');
     }
@@ -381,7 +394,7 @@ const mail = createMail({ settings });
 const security = createSecurity({ db, settings });
 const core = createCoreProviders({ mail, security, uploadDir: UPLOAD_DIR });
 const themeRuntime = await loadThemeRuntime(THEMES_DIR);
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, core, themeRuntime, runActiveThemeHook, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, DB_PATH, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, core, themeRuntime, runActiveThemeHook, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
 /* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
    主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
    扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */
@@ -425,14 +438,17 @@ const REQUEST_TIMEOUT = 20000; // 请求级超时兜底：避免个别慢请求�
 const server = http.createServer(async (req, res) => {
   const startTime = Date.now();
   const path = req.url.split('?')[0];
+  const requestTimeout = req.method === 'POST' && path === '/api/v1/admin/backup' ? 150000 : REQUEST_TIMEOUT;
+  let timedOut = false;
 
   // 兜底超时：到点仍未响应则返回 503，前端可立即提示而非一直等待
   const guard = setTimeout(() => {
-    if (!res.headersSent) {
+    if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+      timedOut = true;
       logRequest(req.method, path, 503, Date.now() - startTime);
       error(res, '请求处理超时，请稍后重试', 503);
     }
-  }, REQUEST_TIMEOUT);
+  }, requestTimeout);
   res.on('finish', () => clearTimeout(guard));
   res.on('close', () => clearTimeout(guard));
 
@@ -440,7 +456,7 @@ const server = http.createServer(async (req, res) => {
   const ALLOWED_ORIGIN = process.env.FRONTEND_URL || 'https://test.abohe.cn';
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';");
@@ -490,8 +506,13 @@ const server = http.createServer(async (req, res) => {
       }
     }
     await matched.fn(req, res, matched.params);
-    logRequest(req.method, path, 200, Date.now() - startTime);
+    if (!timedOut) logRequest(req.method, path, 200, Date.now() - startTime);
   } catch (e) {
+    // Timed-out/disconnected handlers can finish late; never send a second error.
+    if (res.headersSent || res.writableEnded || res.destroyed) {
+      if (!res.writableEnded && !res.destroyed) res.destroy();
+      return;
+    }
     const status = (e.message === '未登录' || e.message === 'Token expired' || e.message === 'Invalid') ? 401 : 500;
     logRequest(req.method, path, status, Date.now() - startTime);
     if (status === 401) error(res, '未登录', 401);

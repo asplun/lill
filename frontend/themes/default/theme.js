@@ -102,7 +102,8 @@
 
   function initPostControls() {
     var copy = document.querySelector('.site-shell .share-copy');
-    if (copy) {
+    if (copy && !copy.hasAttribute('data-copy-ready')) {
+      copy.setAttribute('data-copy-ready', '');
       copy.addEventListener('click', function () {
         var url = new URL(copy.getAttribute('data-url'), location.href).href;
         if (!navigator.clipboard || !navigator.clipboard.writeText) {
@@ -151,65 +152,88 @@
     form.addEventListener('lill:comment:submitted', function (event) {
       var result = event.detail;
       if (!result || result.status !== 'approved' || !result.comment || !section) return;
-      var comment = result.comment;
-      var list = section.querySelector('.comment-list');
-      var item = document.createElement('div');
-      item.className = 'comment-item';
-      item.id = 'comment-' + comment.id;
-      item.setAttribute('data-created-at', comment.created_at || '');
-      // Build from text so author names and comment content never become HTML.
-      var body = document.createElement('div');
-      body.className = 'comment-body';
-      var head = document.createElement('div');
-      head.className = 'comment-head';
-      var author = document.createElement('strong');
-      author.textContent = comment.author;
-      head.appendChild(author);
-      var text = document.createElement('div');
-      text.className = 'comment-text';
-      text.style.whiteSpace = 'pre-wrap';
-      text.textContent = comment.content;
-      body.appendChild(head);
-      body.appendChild(text);
-      var reply = document.createElement('button');
-      reply.type = 'button';
-      reply.className = 'comment-reply-btn';
-      reply.textContent = '回复';
-      reply.setAttribute('data-comment-id', comment.id);
-      reply.setAttribute('data-comment-author', comment.author);
-      body.appendChild(reply);
-      item.appendChild(body);
-      function insertSorted(container) {
-        var ascending = (window.__LILL_SCOPE__ || {}).commentSort === 'asc';
-        var key = (comment.created_at || '') + '/' + comment.id;
-        var next = Array.prototype.slice.call(container.children).find(function (child) {
-          if (!child.classList.contains('comment-item')) return false;
-          var other = (child.getAttribute('data-created-at') || '') + '/' + child.id.slice(8);
-          return ascending ? key < other : key > other;
-        });
-        container.insertBefore(item, next || null);
-      }
-      var parentItem = comment.parent_id && document.getElementById('comment-' + comment.parent_id);
-      if (parentItem && list.contains(parentItem)) {
-        var replies = parentItem.nextElementSibling;
-        if (!replies || !replies.classList.contains('comment-replies')) {
-          replies = document.createElement('div');
-          replies.className = 'comment-replies';
-          parentItem.after(replies);
-        }
-        insertSorted(replies);
-      } else insertSorted(list);
-      var empty = list.querySelector('.comment-empty');
-      if (empty) empty.remove();
-      var total = section.querySelector('.comments-title span');
-      if (total) total.textContent = String((parseInt(total.textContent, 10) || 0) + 1);
+      // Re-read the page so flat/threaded layout, counts and page boundaries stay consistent.
+      loadCommentPage(new URL(location.href)).catch(function () {
+        var message = form.querySelector('.lill-comment-msg');
+        if (message) message.textContent = '评论已提交，请刷新查看最新分页';
+      });
     });
     updateCount();
+  }
+
+  var commentTemplate;
+  var commentRequest = 0;
+  function loadCommentPage(url, updateHistory) {
+    var scope = window.__LILL_SCOPE__ || {};
+    var section = document.getElementById('comments');
+    if (!scope.post || !section || !window.lillAPI || !window.LillEngine) return Promise.resolve();
+    var page = Math.max(1, parseInt(url.searchParams.get('commentPage'), 10) || 1);
+    var sort = url.searchParams.get('commentSort') || scope.commentSort || 'desc';
+    var request = ++commentRequest;
+    if (!commentTemplate) {
+      commentTemplate = fetch('/themes/default/comments.html', { cache: 'no-cache' }).then(function (response) {
+        if (!response.ok) throw new Error('评论模板加载失败');
+        return response.text();
+      }).catch(function (error) { commentTemplate = null; throw error; });
+    }
+    return Promise.all([
+      window.lillAPI.get('/comments?postId=' + encodeURIComponent(scope.post.id) + '&page=' + page + '&sort=' + encodeURIComponent(sort)),
+      commentTemplate
+    ]).then(function (results) {
+      if (request !== commentRequest) return;
+      var comments = results[0];
+      scope.comments = comments.items;
+      scope.commentFlat = comments.commentFlat || comments.items;
+      scope.commentMeta = comments.meta;
+      scope.commentDisplay = comments.display;
+      scope.commentSort = comments.sort;
+      var fragment = document.createElement('div');
+      fragment.innerHTML = window.LillEngine.render(results[1], {}, scope);
+      // Keep the original form: the shared runtime owns its submit listener.
+      section.querySelector('.comment-list').innerHTML = fragment.querySelector('.comment-list').innerHTML;
+      section.querySelector('.comments-title span').textContent = String(comments.meta.total);
+      section.setAttribute('data-comment-display', comments.display);
+      var previous = section.querySelector('.comment-pagination');
+      var pagination = fragment.querySelector('.comment-pagination');
+      if (previous) {
+        if (pagination) previous.replaceWith(pagination);
+        else previous.remove();
+      } else if (pagination) section.querySelector('.comment-list').after(pagination);
+      if (updateHistory) history.pushState(null, '', url.href);
+    });
+  }
+
+  function initCommentPagination() {
+    var scope = window.__LILL_SCOPE__ || {};
+    if (!scope.post || !document.getElementById('comments')) return;
+    document.addEventListener('click', function (event) {
+      var link = event.target.closest('a[data-comment-page]');
+      if (!link || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      var url = new URL(location.href);
+      url.searchParams.set('commentPage', link.getAttribute('data-comment-page'));
+      url.searchParams.set('commentSort', (window.__LILL_SCOPE__ || {}).commentSort || 'desc');
+      url.hash = 'comments';
+      event.preventDefault();
+      loadCommentPage(url, true).catch(function () { location.href = url.href; });
+    });
+    window.addEventListener('popstate', function () {
+      loadCommentPage(new URL(location.href)).catch(function () {});
+    });
+    // Older shared runtimes do not forward commentPage; this theme completes its own entry path.
+    var url = new URL(location.href);
+    var requestedPage = Math.max(1, parseInt(url.searchParams.get('commentPage'), 10) || 1);
+    var requestedSort = url.searchParams.get('commentSort') || scope.commentSort || 'desc';
+    if ((url.searchParams.has('commentPage') || url.searchParams.has('commentSort')) &&
+        (!scope.commentMeta || scope.commentMeta.page !== Math.min(requestedPage, scope.commentMeta.totalPages || 1) ||
+         scope.commentSort !== requestedSort)) {
+      loadCommentPage(url).catch(function () {});
+    }
   }
 
   initMenu();
   initColorScheme();
   initPostControls();
+  initCommentPagination();
   var customCss = document.getElementById('lill-theme-custom-css');
   if (customCss) document.head.appendChild(customCss);
 

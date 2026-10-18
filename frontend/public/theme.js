@@ -479,6 +479,7 @@
   }
 
   function render(boot) {
+    pageType = boot.page?.type || pageType;
     var themeId = boot.themeId || 'default';
     var scope = {
       site: boot.site || {}, theme: boot.theme || {}, page: boot.page || {},
@@ -534,6 +535,8 @@
   API.get('/site/bootstrap?type=' + encodeURIComponent(pageType) +
     '&slug=' + encodeURIComponent(slug) +
     '&page=' + pageNum +
+    '&commentPage=' + (parseInt(qs.get('commentPage')) || 1) +
+    '&commentSort=' + encodeURIComponent(qs.get('commentSort') || '') +
     '&path=' + encodeURIComponent(location.pathname) +
     '&q=' + encodeURIComponent(keyword) +
     '&month=' + encodeURIComponent(month))

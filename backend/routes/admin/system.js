@@ -1,15 +1,47 @@
 /** Dashboard statistics, logs, backups, system diagnostics, and site metadata routes. */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, readFileSync, statfsSync, createReadStream, unlinkSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, lstatSync, readFileSync, statfsSync, createReadStream, unlinkSync, renameSync, rmSync, chmodSync } from 'node:fs';
+import { join, dirname, resolve, sep } from 'node:path';
+import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
+import { pipeline } from 'node:stream/promises';
+import * as sqlite from 'node:sqlite';
 
 const BACKUP_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const runFile = promisify(execFile);
+const isBackupName = name => /^lill-(?:backup-[\w-]+\.db|uploads-[\w-]+\.zip)$/.test(name);
+
+async function snapshotDatabase(sourcePath, targetPath) {
+  const source = new sqlite.DatabaseSync(sourcePath, { readOnly: true });
+  try {
+    source.exec('PRAGMA busy_timeout=5000');
+    if (typeof sqlite.backup === 'function') {
+      // Keep the application's write connection separate from the async backup.
+      await sqlite.backup(source, targetPath);
+    } else {
+      // Official SQLite snapshot fallback for Node releases without backup().
+      source.prepare('VACUUM main INTO ?').run(targetPath);
+    }
+    const restored = new sqlite.DatabaseSync(targetPath, { readOnly: true });
+    try {
+      const schema = restored.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
+      const integrity = restored.prepare('PRAGMA quick_check').all();
+      if (!schema || integrity.length !== 1 || integrity[0].quick_check !== 'ok') {
+        throw new Error('备份数据库结构或完整性校验失败');
+      }
+    } finally { restored.close(); }
+  } finally { source.close(); }
+}
 
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, authenticate } = ctx;
   const { route, logAction } = helpers;
   const backendDir = dirname(dirname(ctx.THEMES_DIR));
-  const backupDir = join(backendDir, 'data', 'backups');
+  // Resolve lazily so registration remains usable with lightweight route contexts.
+  const getBackupDir = () => {
+    if (!ctx.DB_PATH) throw new Error('备份缺少运行上下文 DB_PATH');
+    return resolve(dirname(ctx.DB_PATH), 'backups');
+  };
 
   route('GET', '/api/v1/admin/stats/dashboard', async (req, res) => {
     await authenticate(req);
@@ -67,30 +99,68 @@ export function register(router, ctx, helpers) {
 
   route('POST', '/api/v1/admin/backup', async (req, res) => {
     const auth = await authenticate(req);
-    const dataDir = join(backendDir, 'data');
-    mkdirSync(backupDir, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const responseClosed = () => res.headersSent || res.writableEnded || res.destroyed || req.aborted;
+    if (responseClosed()) return;
+    const backupDir = getBackupDir();
+    if (!ctx.UPLOAD_DIR) throw new Error('备份缺少运行上下文 UPLOAD_DIR');
+    const uploadsDir = resolve(ctx.UPLOAD_DIR);
+    if (backupDir === uploadsDir || backupDir.startsWith(uploadsDir + sep)) throw new Error('备份目录不能位于附件目录内');
+    mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomBytes(6).toString('hex');
     const databasePath = join(backupDir, 'lill-backup-' + timestamp + '.db');
-    copyFileSync(join(dataDir, 'lill.db'), databasePath);
-
+    const uploadsZip = join(backupDir, 'lill-uploads-' + timestamp + '.zip');
+    const stagingDir = mkdtempSync(join(backupDir, '.pending-'));
+    const published = [];
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    const ensureActive = () => {
+      if (responseClosed()) cancel();
+      controller.signal.throwIfAborted();
+    };
+    // A guard response or disconnected client must not leave a backup running.
+    res.once('finish', cancel);
+    res.once('close', cancel);
+    req.once('aborted', cancel);
     let uploads = null;
-    const uploadsDir = join(backendDir, 'uploads');
-    if (existsSync(uploadsDir)) {
-      const uploadsZip = join(backupDir, 'lill-uploads-' + timestamp + '.zip');
-      try {
-        execSync(`cd "${uploadsDir}" && zip -r "${uploadsZip}" . -x '.*'`, { stdio: 'pipe' });
+    try {
+      const stagedDatabase = join(stagingDir, 'database.db');
+      await snapshotDatabase(resolve(ctx.DB_PATH), stagedDatabase);
+      ensureActive();
+      chmodSync(stagedDatabase, 0o600);
+      if (!statSync(uploadsDir).isDirectory()) throw new Error('附件目录无效');
+      const stagedUploads = join(stagingDir, 'uploads.zip');
+      if (readdirSync(uploadsDir).length) {
+        await runFile('zip', ['-q', '-r', '-y', stagedUploads, '.'], {
+          cwd: uploadsDir, timeout: 120000, signal: controller.signal, killSignal: 'SIGKILL',
+        });
+        ensureActive();
+        if (!statSync(stagedUploads).size) throw new Error('附件归档为空');
+        chmodSync(stagedUploads, 0o600);
         uploads = { path: uploadsZip, message: '附件已打包' };
-      } catch (e) {
-        uploads = { message: '附件打包失败: ' + e.message };
       }
+      // Publish only after both artifacts have succeeded and the DB was verified.
+      ensureActive();
+      renameSync(stagedDatabase, databasePath);
+      published.push(databasePath);
+      if (uploads) { renameSync(stagedUploads, uploadsZip); published.push(uploadsZip); }
+    } catch (e) {
+      for (const path of published) { try { unlinkSync(path); } catch {} }
+      // The timeout/client already owns the response; never write or throw late.
+      if (controller.signal.aborted || responseClosed()) return;
+      throw e;
+    } finally {
+      res.off('finish', cancel);
+      res.off('close', cancel);
+      req.off('aborted', cancel);
+      rmSync(stagingDir, { recursive: true, force: true });
     }
 
     let cleaned = 0;
     try {
       const now = Date.now();
-      for (const file of readdirSync(backupDir)) {
-        if (!file.startsWith('lill-backup-')) continue;
-        const path = join(backupDir, file);
+      for (const file of readdirSync(backupDir, { withFileTypes: true })) {
+        if (!file.isFile() || !isBackupName(file.name)) continue;
+        const path = join(backupDir, file.name);
         if (now - statSync(path).mtimeMs > BACKUP_AGE_MS) { unlinkSync(path); cleaned++; }
       }
     } catch { /* cleanup failure does not fail the backup */ }
@@ -101,11 +171,13 @@ export function register(router, ctx, helpers) {
 
   route('GET', '/api/v1/admin/backup/list', async (req, res) => {
     await authenticate(req);
+    const backupDir = getBackupDir();
     const backups = [];
     if (existsSync(backupDir)) {
-      for (const file of readdirSync(backupDir).filter(name => name.endsWith('.zip') || name.endsWith('.db'))) {
-        const stats = statSync(join(backupDir, file));
-        backups.push({ name: file, size: stats.size, created_at: stats.mtime.toISOString() });
+      for (const file of readdirSync(backupDir, { withFileTypes: true })) {
+        if (!file.isFile() || !isBackupName(file.name)) continue;
+        const stats = statSync(join(backupDir, file.name));
+        backups.push({ name: file.name, size: stats.size, created_at: stats.mtime.toISOString() });
       }
     }
     json(res, backups.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
@@ -114,13 +186,15 @@ export function register(router, ctx, helpers) {
   route('GET', '/api/v1/admin/backup/:name/download', async (req, res, params) => {
     await authenticate(req);
     const name = params.name;
-    if (!name || name.includes('..') || (!name.endsWith('.zip') && !name.endsWith('.db'))) return error(res, '无效文件名', 400);
+    if (!isBackupName(name)) return error(res, '无效文件名', 400);
+    const backupDir = getBackupDir();
     const path = join(backupDir, name);
-    if (!path.startsWith(backupDir + '/')) return error(res, '无效文件名', 400);
-    if (!existsSync(path)) return error(res, '备份不存在', 404);
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    if (!stats?.isFile()) return error(res, '备份不存在', 404);
     res.setHeader('Content-Type', name.endsWith('.db') ? 'application/octet-stream' : 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="' + name + '"');
-    createReadStream(path).pipe(res);
+    res.setHeader('Content-Length', stats.size);
+    try { await pipeline(createReadStream(path), res); } catch (e) { res.destroy(e); }
   });
 
   route('GET', '/api/v1/admin/backup/progress', async (req, res) => {

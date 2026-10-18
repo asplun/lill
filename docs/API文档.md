@@ -108,7 +108,7 @@ token 通过 [`POST /auth/login`](#31-登录) 或 [`POST /install`](#42-执行�
 
 ## 2. 公开 API（无需登录）
 
-公开内容必须同时满足 `status = published`、`visibility = public`，且未设置密码。文章列表、详情、页面、bootstrap、归档、RSS、分类/标签计数、评论及点赞入口均遵循此限制。`status=draft` 等查询参数不会放宽访问权限；直接读取受限内容返回 `404`。目前没有访客密码文章解锁接口。
+公开内容必须同时满足 `status = published`、`visibility = public`、未设置密码，且发布时间为空（兼容旧记录）或已到当前 UTC 时间。文章列表、详情、页面、bootstrap、导航、归档、RSS、分类/标签计数、评论及点赞入口均遵循此限制。`status=draft` 等查询参数不会放宽访问权限；直接读取受限内容返回 `404`。目前没有访客密码文章解锁接口。
 
 公开文章使用字段白名单，不返回 `password`。bootstrap 的 `theme` 和 `options.theme_config` 均过滤已声明的后端私用配置键。
 
@@ -146,6 +146,8 @@ curl "https://your-domain.com/api/v1/posts?page=1&pageSize=10&categorySlug=tech"
       "title": "Hello World",
       "slug": "hello-world",
       "excerpt": "欢迎使用 lill……",
+      "excerpt_auto": 1,
+      "excerpt_html": "",
       "cover_image": null,
       "view_count": 12,
       "sticky": 0,
@@ -154,14 +156,16 @@ curl "https://your-domain.com/api/v1/posts?page=1&pageSize=10&categorySlug=tech"
       "category_name": "未分类",
       "category_slug": "uncategorized",
       "url": "https://your-domain.com/archives/pmusfm3c1ffc9372b870d/",
-      "route": "/post/hello-world"
+      "route": "/archives/pmusfm3c1ffc9372b870d/"
     }
   ],
   "meta": { "total": 1, "page": 1, "pageSize": 10, "totalPages": 1, "hasNext": false, "hasPrev": false }
 }
 ```
 
-> `url` 是按「永久链接」设置生成的正式地址；`route` 是 Astro 静态页路由，主题可直接用。
+> `url` 是正式绝对地址，`route` 是同一永久链接的本站路径，二者不再分用不同规则。
+> `excerpt_auto` 区分自动/手填；安全 HTML 摘要仅在阅读设置启用 HTML 时由 `excerpt_html` 提供，
+> 不要直接把 `excerpt` 当可信 HTML。
 
 ### 2.2 文章详情
 
@@ -187,7 +191,7 @@ GET /api/v1/posts/:slug
   "prev": { "title": "上一篇", "slug": "prev-post" },
   "next": { "title": "下一篇", "slug": "next-post" },
   "url": "https://your-domain.com/archives/pmusfm3c1ffc9372b870d/",
-  "route": "/post/hello-world"
+  "route": "/archives/pmusfm3c1ffc9372b870d/"
 }
 ```
 
@@ -225,7 +229,7 @@ GET /api/v1/categories
     "id": "c1", "name": "技术", "slug": "tech", "description": null,
     "parent_id": null, "sort_order": 0, "post_count": 5,
     "url": "https://your-domain.com/category/tech/",
-    "route": "/category/tech"
+    "route": "/category/tech/"
   }
 ]
 ```
@@ -237,7 +241,7 @@ GET /api/v1/tags
 ```
 
 ```json
-[{ "id": "t1", "name": "JavaScript", "slug": "javascript", "post_count": 3, "url": "…", "route": "/tag/javascript" }]
+[{ "id": "t1", "name": "JavaScript", "slug": "javascript", "post_count": 3, "url": "…", "route": "/tag/javascript/" }]
 ```
 
 ### 2.7 最新评论（侧边栏 Widget）
@@ -252,7 +256,7 @@ GET /api/v1/comments/recent?limit=5
     "id": "cm1", "content": "写得很好", "created_at": "2026-10-05 10:00:00",
     "author_name": "访客", "post_id": "p1", "post_title": "Hello World",
     "post_slug": "hello-world", "nickname": null, "avatar": null,
-    "post_url": "/post/hello-world", "post_route": "/post/hello-world"
+    "post_url": "/archives/pmusfm3c1ffc9372b870d/", "post_route": "/archives/pmusfm3c1ffc9372b870d/"
   }
 ]
 ```
@@ -297,6 +301,7 @@ Content-Type: application/json
 ```
 
 > 是否需审核由后台「评论设置 → 评论审核」控制。开启时 `status` 为 `pending`。
+> 只有管理员、编辑及该文章的作者角色免审。普通登录用户并不自动免审，独立的垃圾评论检查仍然生效。
 
 ### 2.10 站点公开配置
 
@@ -304,7 +309,8 @@ Content-Type: application/json
 GET /api/v1/options/public
 ```
 
-返回所有 `autoload = 1` 的站点配置，并合并当前主题的默认值与已保存值：
+仅返回核心公开白名单中且 `autoload = 1` 的站点配置，并合并当前主题声明为公开的默认值与已保存值。
+插件配置、安装标记、邮件或安全密钥不会因 `autoload = 1` 而公开；插件需要通过自己的公开接口选择性输出数据。
 
 ```json
 {
@@ -331,7 +337,7 @@ GET /api/v1/feed
 ### 2.12 站点渲染引导
 
 ```
-GET /api/v1/site/bootstrap?type=index&slug=&page=1&q=&month=
+GET /api/v1/site/bootstrap?type=index&slug=&page=1&q=&month=&path=/
 ```
 
 主题前端页面的主数据源：一次请求返回站点信息、主题设置、导航、当前页内容与分页元数据。
@@ -343,9 +349,24 @@ GET /api/v1/site/bootstrap?type=index&slug=&page=1&q=&month=
 | `page` | 页码，默认 `1` |
 | `q` | 搜索关键词（`type=search`） |
 | `month` | 归档月份 `YYYY-MM`（`type=archive`） |
+| `path` | 当前前台 pathname；服务端优先按已保存永久链接规则解析，返回实际 `page.type/slug`，不存在返回 `404` |
+| `commentPage` | 内容页的评论页码，默认 `1` |
+| `commentSort` | `asc` / `desc` / `hot`，未指定时使用排序 cookie 或倒序 |
 
-> 仅返回 `status = 'published'` 且 `visibility = 'public'` 且未设密码的内容。
+> 仅返回已到发布时间、`status = 'published'`、`visibility = 'public'` 且未设密码的内容。
 > 主题设置中标为「后端私用」的密钥（支付/存储/SMTP 凭据等）会在此接口中剔除，不再下发。
+
+文章 `url/route/permalink` 使用同一规则生成，默认 `/archives/{cid}/`，旧 `/post/<slug>` 仍可读取。
+历史保存的非法规则、动态值命中系统前缀或 `/archive/`、`/search/` 等内置地址时，生成可访问的旧 slug 地址，
+不会回退成无法解析的默认 ID 路径，也不占用内置页。
+分类与标签路径支持 `{mid}` 或 `{slug}`。后台拒绝外站地址、系统路径、未知变量及不含内容身份的规则。
+Nginx 最终回退必须使用通用前台外壳，参见部署指南；纯静态壳的 HTTP 响应可能为 `200`，不存在内容由 API 返回 `404`，不是 SSR HTTP 状态保证。
+
+`data.commentMeta` 与 `/comments` 的 `meta` 统一提供 `total`、`replyTotal`、`topLevelTotal`、
+`paginationTotal`、`page`、`pageSize`、`totalPages`、`hasPrev`、`hasNext`、`pages`。
+嵌套显示按顶层评论分页并带齐回复；平铺显示按所有通过的评论分页。
+全站 `comments_per_page/comment_display` 为默认。文章页数以全站 `posts_per_page` 为默认，
+主题仅显式保存的有效数值可覆盖，主题清单的默认数值不再覆盖全站。
 
 ### 2.13 点赞 / 取消点赞
 
@@ -480,6 +501,8 @@ Content-Type: application/json
 - 创建：管理员账号、站点配置、默认分类「未分类」、默认主题、Hello World 文章，并自动启用内置「Hello World 公告栏」插件
 - 返回的 `csrfToken` 要与 `token` 一起保存；后台所有写操作都要通过 `X-CSRF-Token` 请求头带回
 - 已安装时返回 `403`；同一 IP 每分钟最多 10 次尝试（超出返回 `429`）
+- 并发安装在写事务内重新检查状态，只允许一个安装成功。核心安装已提交而可选内置插件失败时，
+  仍返回成功和登录 session，另附 `data.warnings: string[]`；失败插件会被停用，不需要重装或清库。
 
 ### 4.3 安装日志
 
@@ -516,16 +539,23 @@ GET /api/v1/install/log
 | `title` | string | 标题（必填，最长 200） |
 | `slug` | string | 别名，留空自动生成 |
 | `content` | string | Markdown 原文（最长 50000） |
-| `excerpt` | string | 摘要，留空自动截取 |
+| `excerpt` | string | 手填摘要；未指定 `excerptAuto` 时，留空兼容自动模式 |
+| `excerptAuto` | bool | 是否自动摘要；显式 `false` 保留手填摘要，`true` 随全站长度及 `<!--more-->` 输出 |
 | `coverImage` | string | 封面图 URL |
 | `type` | string | `post` / `page` |
-| `status` | string | `draft` / `published` |
+| `status` | string | `draft` / `published` / `pending`；投稿者只能保存草稿 |
 | `sticky` | bool | 是否置顶 |
 | `order` | int | 页面排序 |
-| `publishedAt` | string | 发布时间，发布时留空自动填充 |
+| `publishedAt` | string | 有效 SQL UTC 时间或 ISO 8601；首次发布省略自动填充，后续省略保持。未来时间在到点前不会公开 |
+| `commentAllowed` | bool | 单篇允许评论，默认 `true`；全站关闭评论优先 |
 | `categoryId` | string | 分类 ID |
 | `tagNames` | string[] | 标签名数组（自动创建不存在的标签） |
 | `fields` | object | 自定义字段（主题可扩展） |
+
+`type/status` 等非法枚举返回 `400`。未实现私密阅读或密码解锁，因此非 `public` 的
+`visibility` 和非空 `password` 会明确返回 `400`，而非静默保存成公开内容。
+文章、版本快照、标签及关联更新在同一事务内执行，失败整体回滚；重复标签按名称复用。
+跨域独立部署时，服务端允许预检中的 `X-CSRF-Token`，`FRONTEND_URL` 应设为前端的准确 origin。
 
 **批量操作：**
 
@@ -703,7 +733,7 @@ POST /admin/themes/install
 | GET | `/admin/logs` | 操作日志（分页） |
 | GET | `/admin/logs/stats` | 日志聚合统计（`total` / `actions` / `users`） |
 | DELETE | `/admin/logs` | 清理 N 天前日志（`{ "days": 30 }`，默认 30） |
-| POST | `/admin/backup` | 备份数据库（复制 `data/lill.db`） |
+| POST | `/admin/backup` | 对实际 `DB_PATH` 创建 WAL 一致性 SQLite 快照，并归档实际 `UPLOAD_DIR` 附件 |
 | GET | `/admin/backup/list` | 已有备份列表（按时间倒序，含 `size`） |
 | GET | `/admin/backup/:name/download` | 下载备份文件（仅 `.db` / `.zip`） |
 | GET | `/admin/backup/progress` | 备份进度（同步备份，恒为 `idle`） |
@@ -735,7 +765,13 @@ POST /admin/themes/install
 
 > 本版为单站点部署：`/admin/sites` 仅用于兼容旧版前端，不提供站点切换接口（`POST /admin/sites/switch` 已移除，返回 `404`）。
 >
-> `backup/:name/download` 与主题文件编辑器一样做了路径穿越校验，只允许 `data/backups/` 下的 `.db` 与 `.zip`。
+> 备份位于实际数据库同目录的 `backups/`，不是从主题目录推导。只有管理员可生成、列出和下载；
+> 下载只允许规范命名的普通 `.db/.zip` 文件，拒绝目录及符号链接。产物校验失败或附件打包失败
+> 会返回错误，而非报告备份成功。数据库与附件是两份文件，尚未提供后台一键恢复功能。
+> 依赖系统 `zip`；缺失会明确失败。大库在较旧 Node 的 `VACUUM INTO` 回退及校验阶段仍有同步成本。
+> 备份在本次请求内完成，不是后台任务：附件归档期限 120 秒，后端请求期限 150 秒。
+> 反向代理应设置 `proxy_read_timeout 160s`，客户端建议至少 180 秒；超时或断连会取消归档并清理暂存，
+> 不会在错误响应后继续发布备份或二次写响应。
 
 ### 5.10 插件
 

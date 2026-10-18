@@ -20,6 +20,12 @@ function toast(msg, type = 'success') {
 function escape(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 const jsArg = value => escape(JSON.stringify(String(value)));
 function fmt(d) { if (!d) return '-'; const x = new Date(d.replace ? d.replace(' ', 'T') + 'Z' : d); if (isNaN(x)) return '-'; return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); }
+function localDateTime(value) {
+  if (!value) return '';
+  const date = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : value.replace(' ', 'T') + 'Z');
+  if (isNaN(date)) return '';
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+}
 function statusLabel(s) {
   const m = { published: ['已发布', 'green'], draft: ['草稿', 'gray'], pending: ['待审核', 'orange'], trash: ['回收站', 'red'], approved: ['已通过', 'green'], spam: ['垃圾', 'red'], active: ['正常', 'green'], banned: ['禁用', 'red'] };
   const t = m[s] || [s || '-', 'gray'];
@@ -28,6 +34,25 @@ function statusLabel(s) {
 function roleLabel(r) {
   const m = { admin: '管理员', editor: '编辑', author: '作者', contributor: '投稿者', subscriber: '订阅者' };
   return m[r] || r;
+}
+const contentRoles = ['admin', 'editor', 'author', 'contributor'];
+const managesTaxonomy = () => ['admin', 'editor'].includes(user?.role);
+function canVisit(destination) {
+  if (user?.role === 'admin' || destination === 'dashboard') return true;
+  if (destination === 'comments') return user?.role === 'editor';
+  return contentRoles.includes(user?.role) && ['posts', 'pages', 'categories', 'tags', 'media'].includes(destination);
+}
+function applyRoleNavigation() {
+  document.querySelectorAll('.menu-item[data-page]').forEach(el => { el.hidden = !canVisit(el.dataset.page); });
+  document.querySelectorAll('.menu-section').forEach(section => {
+    if (section.id === 'plugin-menu-section') return;
+    let item = section.nextElementSibling, visible = false;
+    while (item && !item.classList.contains('menu-section')) {
+      if (item.classList.contains('menu-item') && !item.hidden) visible = true;
+      item = item.nextElementSibling;
+    }
+    section.hidden = !visible;
+  });
 }
 function setTopbar(html) { document.getElementById('topbar-actions').innerHTML = html || ''; }
 
@@ -106,6 +131,12 @@ function labelTableRows() {
 
 // ═══ 控制台 ═══
 async function renderDashboard() {
+  if (user?.role !== 'admin') {
+    document.getElementById('content').innerHTML = '<div class="card"><h2>欢迎，' + escape(user?.nickname || user?.username) +
+      '</h2><p>' + (contentRoles.includes(user?.role) ? '从内容菜单开始写作和管理。' : '当前账号没有内容管理权限，可以返回站点参与评论。') +
+      '</p><a class="btn btn-outline" href="/">查看站点</a></div>';
+    return;
+  }
   const [stats, sys, recentPosts, drafts, comments] = await Promise.all([
     api('/admin/stats/dashboard'),
     api('/admin/stats/system'),
@@ -314,12 +345,13 @@ async function loadPostEditor(type, id, signal) {
     id ? api('/admin/posts/' + id, { signal }) : null,
     api('/admin/categories', { signal }).catch(() => []),
     isPage ? api('/admin/page-templates', { signal }).catch(() => null) : null,
-    api('/admin/options', { signal }).catch(() => null),
+    api(user?.role === 'admin' ? '/admin/options' : '/options/public', { signal }).catch(() => null),
   ]);
   // 请求被切页或另一个编辑器取消后，不再覆盖当前页面。
   if (signal.aborted) return;
   const pageTpls = templates?.templates || [];
-  const permalinkTpl = (options || []).find(o => o.key === 'permalink')?.value || '/archives/{cid}/';
+  const permalinkTpl = (isPage ? '/page/{slug}' : (Array.isArray(options)
+    ? options.find(o => o.key === 'permalink')?.value : options?.permalink)) || '/archives/{cid}/';
   const curTpl = post ? (post.template || '') : '';
   const tplOpts = ['<option value=""' + (curTpl ? '' : ' selected') + '>默认模板（page.html）</option>']
     .concat(pageTpls.map(t => '<option value="' + escape(t.key) + '"' + (curTpl === t.key ? ' selected' : '') + '>' + escape(t.name) + '（' + escape(t.file) + '）</option>'))
@@ -329,8 +361,9 @@ async function loadPostEditor(type, id, signal) {
     ? '<div class="form-group"><label>页面模板</label><select id="pe-template">' + tplOpts + '</select></div>'
     : '';
   const catOpts = ['<option value="">无分类</option>'].concat((cats || []).map(c => '<option value="' + c.id + '"' + (post && post.category_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
-  const st = post ? post.status : 'published';
-  const statusOpts = [['draft', '草稿'], ['published', '发布'], ['pending', '待审核']].map(x => '<option value="' + x[0] + '"' + (st === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
+  const st = post ? post.status : (user?.role === 'contributor' ? 'draft' : 'published');
+  const statuses = user?.role === 'contributor' ? [['draft', '草稿']] : [['draft', '草稿'], ['published', '发布'], ['pending', '待审核']];
+  const statusOpts = statuses.map(x => '<option value="' + x[0] + '"' + (st === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
   const tagStr = post && post.tags ? post.tags.map(t => t.name).join(',') : '';
   const saveBtn = '<button class="btn btn-primary btn-block" onclick="savePost(\'' + type + '\',' + (id ? '\'' + id + '\'' : 'null') + ')">' + (id ? '更新' : '保存') + '</button>';
   setTopbar('<button class="btn btn-outline" onclick="navigate(\'' + (isPage ? 'pages' : 'posts') + '\')">← 返回列表</button>');
@@ -379,12 +412,14 @@ async function loadPostEditor(type, id, signal) {
           <div class="editor-pane"><textarea id="pe-content" placeholder="开始写作…支持 Markdown，Ctrl/Cmd+S 保存">${escape(post ? post.content : '')}</textarea></div>
           <div class="preview-pane" id="pe-preview"></div>
         </div>
-        <div class="form-group" style="margin-top:16px"><label>摘要（可选）</label><textarea id="pe-excerpt" rows="2" placeholder="留空自动截取">${escape(post ? post.excerpt : '')}</textarea></div>
+        <div class="form-group" style="margin-top:16px"><label class="check-line"><input id="pe-excerpt-auto" type="checkbox"${post?.excerpt_auto === 0 ? '' : ' checked'}> 自动生成摘要</label><textarea id="pe-excerpt" rows="2" placeholder="关闭自动摘要后可手动填写">${escape(post?.excerpt_auto === 0 ? post.excerpt : '')}</textarea><div class="hint">自动模式遵循全站摘要长度，也支持正文中的 &lt;!--more--&gt; 分割线。</div></div>
       </div>
       <aside class="editor-side">
         <div class="side-box">
           <div class="side-box-title">发布</div>
           <div class="form-group"><label>状态</label><select id="pe-status">${statusOpts}</select></div>
+          <div class="form-group"><label for="pe-published-at">发布时间</label><input id="pe-published-at" type="datetime-local" step="1" value="${localDateTime(post?.published_at)}"><div class="hint">本地时间；留空在首次发布时使用当前时间，未来时间到点后自动公开。</div></div>
+          <label class="check-line"><input type="checkbox" id="pe-comment-allowed"${post?.comment_allowed === 0 ? '' : ' checked'}> 允许评论</label>
           ${isPage ? '' : '<label class="check-line"><input type="checkbox" id="pe-sticky"' + (post && post.sticky ? ' checked' : '') + '> 置顶到首页</label>'}
           <div class="side-actions">${saveBtn}</div>
         </div>
@@ -397,6 +432,7 @@ async function loadPostEditor(type, id, signal) {
           <div class="side-box-title">更多</div>
           <div class="form-group"><label>封面图（URL，可选）</label><input id="pe-cover" value="${escape(post ? (post.cover_image || '') : '')}" placeholder="https://…"></div>
           ${tplGroup}
+          ${isPage ? '<div class="form-group"><label for="pe-order">页面顺序</label><input id="pe-order" type="number" step="1" value="' + (post?.order || 0) + '"><div class="hint">数字越小越靠前</div></div>' : ''}
         </div>
       </aside>
     </div>
@@ -406,6 +442,10 @@ async function loadPostEditor(type, id, signal) {
   const slugInput = document.getElementById('pe-slug');
   const slugHint = document.getElementById('pe-slug-hint');
   const excerptInput = document.getElementById('pe-excerpt');
+  const excerptAuto = document.getElementById('pe-excerpt-auto');
+  const syncExcerptMode = () => { excerptInput.disabled = excerptAuto.checked; };
+  excerptAuto.addEventListener('change', syncExcerptMode);
+  syncExcerptMode();
   // 别名联动：新建时跟随标题自动生成；手动改过或编辑旧文后不再自动覆盖
   let slugTouched = !!post;
   const renderSlugHint = () => {
@@ -439,7 +479,7 @@ async function loadPostEditor(type, id, signal) {
   window.__lillDraftSave = () => {
     clearTimeout(draftTimer);
     draftTimer = setTimeout(() => {
-      try { localStorage.setItem(draftKey, JSON.stringify({ title: titleInput.value, content: ta.value, excerpt: excerptInput.value, at: Date.now() })); } catch (e) {}
+      try { localStorage.setItem(draftKey, JSON.stringify({ title: titleInput.value, content: ta.value, excerpt: excerptInput.value, excerptAuto: excerptAuto.checked, at: Date.now() })); } catch (e) {}
     }, 800);
   };
   try {
@@ -448,15 +488,22 @@ async function loadPostEditor(type, id, signal) {
       const draft = JSON.parse(raw);
       const serverContent = post ? (post.content || '') : '';
       const serverTitle = post ? (post.title || '') : '';
-      const changed = draft && ((draft.content || '') !== serverContent || (draft.title || '') !== serverTitle);
+      const draftAutomatic = typeof draft?.excerptAuto === 'boolean' ? draft.excerptAuto : !draft?.excerpt;
+      const changed = draft && ((draft.content || '') !== serverContent || (draft.title || '') !== serverTitle ||
+        (draft.excerpt || '') !== excerptInput.value || draftAutomatic !== excerptAuto.checked);
       if (changed && (draft.content || draft.title) && confirm('检测到未保存的草稿（' + new Date(draft.at).toLocaleString() + '），是否恢复？')) {
         titleInput.value = draft.title || titleInput.value;
         ta.value = draft.content;
         excerptInput.value = draft.excerpt || '';
+        excerptAuto.checked = draftAutomatic;
+        syncExcerptMode();
         if (!slugTouched && !slugInput.value) slugInput.value = mdClientSlug(titleInput.value);
       }
     }
   } catch (e) {}
+  titleInput.addEventListener('input', window.__lillDraftSave);
+  excerptInput.addEventListener('input', window.__lillDraftSave);
+  excerptAuto.addEventListener('change', window.__lillDraftSave);
   mdSync();
   renderSlugHint();
 }
@@ -473,7 +520,13 @@ window.savePost = async (type, id) => {
     slug: document.getElementById('pe-slug').value.trim(),
     status: document.getElementById('pe-status').value,
     excerpt: document.getElementById('pe-excerpt').value || null,
+    excerptAuto: document.getElementById('pe-excerpt-auto').checked,
+    commentAllowed: document.getElementById('pe-comment-allowed').checked,
   };
+  const published = document.getElementById('pe-published-at');
+  if (published.value !== published.defaultValue) body.publishedAt = published.value ? new Date(published.value).toISOString() : null;
+  const order = document.getElementById('pe-order');
+  if (order) body.order = Number(order.value);
   const catEl = document.getElementById('pe-cat');
   if (catEl) body.categoryId = catEl.value || null;
   const tagEl = document.getElementById('pe-tags');
@@ -498,9 +551,9 @@ window.delPost = async (id) => { if (!confirm('确定删除？')) return; const 
 // ═══ 文章列表 ═══
 async function renderPosts() {
   const r = await api('/admin/posts?page=' + pageNum + '&pageSize=20' + (postStatus ? '&status=' + postStatus : ''));
-  const rows = (r.items || []).map(p => '<tr><td><input type="checkbox" class="post-check" value="' + p.id + '"></td><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + escape(p.category_name || '-') + '</td><td>' + statusLabel(p.status) + '</td><td>' + (p.comment_count || 0) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'' + p.type + '\',\'' + p.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
+  const rows = (r.items || []).map(p => '<tr><td><input type="checkbox" class="post-check" value="' + p.id + '"></td><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + escape(p.category_name || '-') + '</td><td>' + statusLabel(p.status) + '</td><td>' + (p.comment_count || 0) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'post\',' + jsArg(p.id) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openPostEditor(\'post\')">+ 写文章</button>');
-  const filters = [['', '全部'], ['published', '已发布'], ['draft', '草稿'], ['pending', '待审核'], ['trash', '回收站']].map(([value, label]) =>
+  const filters = (user?.role === 'contributor' ? [['', '全部'], ['draft', '草稿']] : [['', '全部'], ['published', '已发布'], ['draft', '草稿'], ['pending', '待审核'], ['trash', '回收站']]).map(([value, label]) =>
     '<button class="filter-tab' + (postStatus === value ? ' active' : '') + '" aria-pressed="' + (postStatus === value) + '" onclick="filterPosts(\'' + value + '\')">' + label + '</button>').join('');
   document.getElementById('content').innerHTML = '<div class="toolbar"><div class="filter-tabs" aria-label="文章状态">' + filters + '</div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllPosts(this.checked)"> 选择本页文章</label></div><div class="table-container"><table><thead><tr><th><input aria-label="选择本页文章" type="checkbox" onchange="toggleAllPosts(this.checked)"></th><th>标题</th><th>分类</th><th>状态</th><th>评论</th><th>浏览</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty">该状态下暂无文章</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
@@ -545,22 +598,51 @@ window.clearLogs = async () => {
 
 // ═══ 备份 ═══
 async function renderBackup() {
+  const backups = await api('/admin/backup/list');
   setTopbar('<button class="btn btn-primary" onclick="createBackup()">+ 创建备份</button>');
-  document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">数据库备份</h3><p style="color:#64748b;margin-bottom:16px">创建当前数据库的完整备份文件。</p><button class="btn btn-primary" onclick="createBackup()">立即创建备份</button></div>';
+  const rows = backups.map(b => '<tr><td>' + escape(b.name) + '</td><td>' +
+    (b.size / 1024).toFixed(1) + ' KB</td><td>' + escape(new Date(b.created_at).toLocaleString('zh-CN')) +
+    '</td><td><button class="btn btn-sm btn-outline" onclick="downloadBackup(' + jsArg(b.name) + ')">下载</button></td></tr>').join('');
+  document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">站点备份</h3>' +
+    '<p>数据库和附件分别打包。数据库包含账号及配置，请将下载的备份妥善保存。</p></div>' +
+    '<div class="table-container"><table><thead><tr><th>文件</th><th>大小</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="4"><div class="empty">暂无备份，点击创建备份</div></td></tr>') + '</tbody></table></div>';
 }
 
 window.createBackup = async () => {
-  const btn = document.querySelector('button[onclick="createBackup()"]');
-  if (btn) { btn.disabled = true; btn.textContent = '备份中...'; }
-  try { const r = await api('/admin/backup', { method: 'POST' }); toast('备份成功: ' + r.path); } catch (e) { toast(e.message, 'error'); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = '立即创建备份'; } }
+  const view = activeView;
+  const buttons = [...document.querySelectorAll('button[onclick="createBackup()"]')];
+  if (buttons.some(button => button.disabled)) return;
+  buttons.forEach(button => { button.disabled = true; button.textContent = '备份中…'; });
+  try {
+    await api('/admin/backup', { method: 'POST', timeout: 180000 });
+    toast('备份已创建，可以下载'); refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+  finally { buttons.forEach(button => { button.disabled = false; button.textContent = '+ 创建备份'; }); }
+};
+window.downloadBackup = async name => {
+  try {
+    const response = await fetch('/api/v1/admin/backup/' + encodeURIComponent(name) + '/download', {
+      headers: { Authorization: 'Bearer ' + window.lillAPI.getToken() },
+      signal: AbortSignal.timeout(120000),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      throw new Error(error?.message || '下载失败，请重试');
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url; link.download = name;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { toast(e.message, 'error'); }
 };
 
 // ═══ 分类 ═══
 async function renderCategories() {
   const r = await api('/admin/categories');
-  const rows = (r || []).map(c => '<tr><td><strong>' + escape(c.name) + '</strong></td><td><code>' + escape(c.slug) + '</code></td><td>' + escape(c.description || '-') + '</td><td>' + (c.parent_name ? escape(c.parent_name) : '-') + '</td><td>' + (c.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openCatEditor(\'' + c.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delCat(\'' + c.id + '\')">删除</button></td></tr>').join('');
-  setTopbar('<button class="btn btn-primary" onclick="openCatEditor()">+ 新建分类</button>');
+  const rows = (r || []).map(c => '<tr><td><strong>' + escape(c.name) + '</strong></td><td><code>' + escape(c.slug) + '</code></td><td>' + escape(c.description || '-') + '</td><td>' + (c.parent_name ? escape(c.parent_name) : '-') + '</td><td>' + (c.post_count || 0) + '</td><td class="actions">' + (managesTaxonomy() ? '<button class="btn btn-sm btn-outline" onclick="openCatEditor(\'' + c.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delCat(\'' + c.id + '\')">删除</button>' : '只读') + '</td></tr>').join('');
+  setTopbar(managesTaxonomy() ? '<button class="btn btn-primary" onclick="openCatEditor()">+ 新建分类</button>' : '');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>描述</th><th>父级</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">暂无分类</div></td></tr>') + '</tbody></table></div>';
   labelTableRows();
 }
@@ -598,8 +680,8 @@ window.delCat = async (id) => { if (!confirm('确定删除？该分类下的文�
 // ═══ 标签 ═══
 async function renderTags() {
   const r = await api('/admin/tags?pageSize=100&page=' + pageNum);
-  const rows = (r.items || []).map(t => '<tr><td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openTagEditor(' + jsArg(t.id) + ',' + jsArg(t.name) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button></td></tr>').join('');
-  setTopbar('<button class="btn btn-primary" onclick="openTagEditor()">+ 新建标签</button>');
+  const rows = (r.items || []).map(t => '<tr><td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="actions">' + (managesTaxonomy() ? '<button class="btn btn-sm btn-outline" onclick="openTagEditor(' + jsArg(t.id) + ',' + jsArg(t.name) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button>' : '只读') + '</td></tr>').join('');
+  setTopbar(managesTaxonomy() ? '<button class="btn btn-primary" onclick="openTagEditor()">+ 新建标签</button>' : '');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty">暂无标签</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
 }
@@ -619,10 +701,12 @@ window.delTag = async (id) => { if (!confirm('确定删除？')) return; const v
 
 // ═══ 评论 ═══
 let selectedComments = new Set();
+let commentRows = new Map();
 
 async function renderComments() {
   const status = commentStatus;
   const r = await api('/admin/comments?page=' + pageNum + '&pageSize=20' + (status ? '&status=' + status : ''));
+  commentRows = new Map((r.items || []).map(c => [c.id, c]));
   const rows = (r.items || []).map(c => '<tr><td><input type="checkbox" aria-label="选择评论" class="cmt-check" value="' + c.id + '" ' + (selectedComments.has(c.id) ? 'checked' : '') + ' onchange="toggleCmtCheck(\'' + c.id + '\', this.checked)"></td><td>' + escape((c.content || '').substring(0, 50)) + '</td><td>' + escape(c.post_title || '-') + '</td><td>' + escape(c.author_name || c.username || '匿名') + '</td><td>' + statusLabel(c.status) + '</td><td>' + fmt(c.created_at) + '</td><td class="actions">' +
     (c.status !== 'approved' ? '<button class="btn btn-sm btn-outline" onclick="setCmt(\'' + c.id + '\',\'approved\')">通过</button> ' : '') +
     (c.status !== 'spam' ? '<button class="btn btn-sm btn-outline" onclick="setCmt(\'' + c.id + '\',\'spam\')">垃圾</button> ' : '') +
@@ -686,7 +770,7 @@ window.batchCmtDelete = async () => {
 window.replyCmt = async (id) => {
   const view = activeView;
   try {
-    const c = (await api('/admin/comments?pageSize=100')).items.find(x => x.id === id);
+    const c = commentRows.get(id);
     if (!c) return toast('评论不存在', 'error');
     const content = prompt('回复 ' + (c.author_name || '匿名') + '：', '');
     if (!content) return;
@@ -697,7 +781,7 @@ window.replyCmt = async (id) => {
 window.editCmt = async (id) => {
   const view = activeView;
   try {
-    const c = (await api('/admin/comments?pageSize=100')).items.find(x => x.id === id);
+    const c = commentRows.get(id);
     if (!c) return toast('评论不存在', 'error');
     const content = prompt('编辑评论：', c.content || '');
     if (!content) return;
@@ -1090,44 +1174,180 @@ window.saveSettings = async () => {
 /** 后台预览用的轻量 Markdown 渲染：与后端 renderMD 的常用语法保持一致 */
 function mdToHtml(md) {
   if (!md) return '<p class="preview-empty">预览会显示在这里</p>';
-  let html = String(md).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const codeBlocks = [];
-  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
-    codeBlocks.push('<pre><code class="language-' + (lang || 'text') + '">' + code.replace(/\n$/, '') + '</code></pre>');
-    return '\u0000CODE' + (codeBlocks.length - 1) + '\u0000';
-  });
-  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  html = html.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1">');
-  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  html = html.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-  const out = [];
-  let listType = null;
-  const closeList = () => { if (listType) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); listType = null; } };
-  for (const line of html.split('\n')) {
-    const trimmed = line.trim();
-    if (/^\u0000CODE\d+\u0000$/.test(trimmed)) { closeList(); out.push(trimmed); continue; }
-    if (!trimmed) { closeList(); continue; }
-    const h = /^(#{1,4})\s+(.*)$/.exec(trimmed);
-    if (h) { closeList(); const lvl = h[1].length; out.push('<h' + lvl + '>' + h[2] + '</h' + lvl + '>'); continue; }
-    if (/^(---|\*\*\*)$/.test(trimmed)) { closeList(); out.push('<hr>'); continue; }
-    const ul = /^[-*]\s+(.*)$/.exec(trimmed);
-    if (ul) { if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; } out.push('<li>' + ul[1] + '</li>'); continue; }
-    const ol = /^\d+\.\s+(.*)$/.exec(trimmed);
-    if (ol) { if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; } out.push('<li>' + ol[1] + '</li>'); continue; }
-    const bq = /^&gt;\s?(.*)$/.exec(trimmed);
-    if (bq) { closeList(); out.push('<blockquote>' + bq[1] + '</blockquote>'); continue; }
-    closeList();
-    out.push('<p>' + trimmed + '</p>');
+  const escapeText = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escapeAttribute = value => escapeText(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const emphasis = value => value.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del>$1</del>');
+
+  // 私有占位符不能由输入伪造；代码与已生成的标签不再经过其他 Markdown 正则。
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+  const tokens = [];
+  const tokenPattern = new RegExp('\\x00(?:CODE|INLINE)' + nonce + '(\\d+)\\x00', 'g');
+  const stash = (value, text, block = false) => {
+    const index = tokens.push({ html: value, text }) - 1;
+    return '\x00' + (block ? 'CODE' : 'INLINE') + nonce + index + '\x00';
+  };
+  const restore = value => value.replace(tokenPattern, (_, index) => tokens[Number(index)].html);
+  const literal = value => value.replace(tokenPattern, (_, index) => tokens[Number(index)].text);
+
+  // 1. 在转义之前隔离代码，但其输出内容只作为纯文本转义一次。
+  const source = String(md);
+  const fences = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?\n/gm;
+  let html = '', cursor = 0, fence;
+  while ((fence = fences.exec(source))) {
+    // 短 fence 不能提前结束长 fence；编辑中未闭合的代码也保护到文末。
+    const closing = new RegExp('^ {0,3}' + fence[1][0] + '{' + fence[1].length + ',}[ \\t]*(?=\\r?$)', 'gm');
+    closing.lastIndex = fences.lastIndex;
+    const end = closing.exec(source);
+    const text = source.slice(fences.lastIndex, end ? end.index : source.length).replace(/\r?\n$/, '');
+    const lang = fence[2].trim() || 'text';
+    html += source.slice(cursor, fence.index) + stash('<pre><code class="language-' +
+      escapeAttribute(lang) + '">' + escapeText(text) + '</code></pre>', text, true);
+    cursor = end ? closing.lastIndex : source.length;
+    fences.lastIndex = cursor;
   }
-  closeList();
-  return out.join('\n').replace(/\u0000CODE(\d+)\u0000/g, (m, i) => codeBlocks[Number(i)]);
+  html += source.slice(cursor);
+  html = html.replace(/(?<!`)(`+)(?!`)([^\n]+?)\1(?!`)/g, (_, ticks, code) =>
+    stash('<code>' + escapeText(code) + '</code>', code));
+  // 摘要边界不是正文；代码示例已隔离，实体形式的示例仍作为文字显示。
+  html = html.replace(/<!--\s*more\s*-->/gi, '');
+
+  const safeUrl = (url, image) => {
+    // 不通过删除/trim 控制字符来“修复”危险协议，也不解码 HTML 实体后再输出。
+    if (!url || /[\s\u0000-\u001f\u007f-\u009f\\]/u.test(url)) return false;
+    if (/%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(url)) return false;
+    if (/&#(?:x[0-9a-f]+|\d+);?|&(?:colon|tab|newline);/i.test(url)) return false;
+    if (url.startsWith('//')) return false;
+    try {
+      const protocol = new URL(url, 'https://markdown.invalid/').protocol;
+      return protocol === 'http:' || protocol === 'https:' || (!image && protocol === 'mailto:');
+    } catch { return false; }
+  };
+
+  // 只扫描链接目标的配对括号及可选引号标题，不引入完整 Markdown 解析器。
+  const readTarget = (source, start) => {
+    let depth = 0, quote = '';
+    for (let end = start; end < source.length; end++) {
+      const char = source[end];
+      if (char === '\\') { end++; continue; }
+      if (quote) { if (char === quote) quote = ''; continue; }
+      if ((char === '"' || char === "'") && /[ \t]/.test(source[end - 1] || '')) {
+        quote = char;
+        continue;
+      }
+      if (char === '(') depth++;
+      if (char !== ')') continue;
+      if (depth) { depth--; continue; }
+      const target = source.slice(start, end);
+      const titled = /^(.+?)[ \t]+(["'])([\s\S]*)\2[ \t]*$/.exec(target);
+      const unescape = value => value.replace(/\\([\\()[\]"'])/g, '$1');
+      return {
+        end: end + 1,
+        url: unescape(titled ? titled[1] : target),
+        title: titled ? unescape(titled[3]) : null,
+      };
+    }
+    return null;
+  };
+  const replaceLinks = (source, image) => {
+    // 一层嵌套方括号用于图片 alt 中的文字链接；先处理图片，再处理外层链接。
+    const pattern = new RegExp((image ? '!' : '') + '\\[((?:\\\\.|[^\\[\\]\\\\\\n]|\\[(?:\\\\.|[^\\[\\]\\\\\\n])*\\])*)\\]\\(', 'g');
+    let output = '', cursor = 0, match;
+    while ((match = pattern.exec(source))) {
+      const target = readTarget(source, pattern.lastIndex);
+      if (!target) continue;
+      output += source.slice(cursor, match.index);
+      const label = literal(match[1]);
+      if (!safeUrl(target.url, image)) {
+        output += stash(escapeText(label), label);
+      } else {
+        const title = target.title === null ? '' : ' title="' + escapeAttribute(literal(target.title)) + '"';
+        const destination = escapeAttribute(target.url);
+        const value = image
+          ? '<img src="' + destination + '" alt="' + escapeAttribute(label) + '"' + title + ' loading="lazy">'
+          : '<a href="' + destination + '"' + title + ' target="_blank" rel="noopener">' + restore(emphasis(escapeText(match[1]))) + '</a>';
+        output += stash(value, label);
+      }
+      cursor = target.end;
+      pattern.lastIndex = cursor;
+    }
+    return output + source.slice(cursor);
+  };
+  html = replaceLinks(html, true);
+  html = replaceLinks(html, false);
+  // 原始 HTML 始终是文本；只有上述受控生成的标签在最后一步还原。
+  html = escapeText(html);
+
+  // 预览保留原有星号列表与分割线；先隔离，避免被强调语法二次转换。
+  html = html.replace(/^\* (.+)$/gm, '- $1')
+    .replace(/^\*\*\*$/gm, () => stash('<hr>', '', true));
+
+  // 3. 标题（标题内容已经按文本转义）
+  html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>')
+    .replace(/^##### (.+)$/gm, '<h5>$1</h5>')
+    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // 4. 粗体、斜体、删除线
+  html = emphasis(html);
+
+  // 5. 分割线
+  html = html.replace(/^---+$/gm, '<hr>');
+
+  // 6. 引用
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // 7. 表格
+  html = html.replace(/((?:^\|.+\|\n)+)/gm, (match) => {
+    const rows = match.trim().split('\n');
+    if (rows.length < 2) return match;
+    const header = rows[0].split('|').filter((_, i, a) => i > 0 && i < a.length - 1).map(s => s.trim());
+    const body = rows.slice(2).map(r => r.split('|').filter((_, i, a) => i > 0 && i < a.length - 1).map(s => s.trim()));
+    let t = '<table><thead><tr>';
+    for (const h of header) t += '<th>' + h + '</th>';
+    t += '</tr></thead><tbody>';
+    for (const row of body) {
+      t += '<tr>';
+      for (const c of row) t += '<td>' + c + '</td>';
+      t += '</tr>';
+    }
+    t += '</tbody></table>';
+    return t;
+  });
+
+  // 8. 无序列表
+  html = html.replace(/(^|\n)((?:- .+\n?)+)/g, (_, prefix, list) => {
+    const items = list.trim().split('\n').map(s => '<li>' + s.replace(/^- /, '') + '</li>').join('');
+    return prefix + '<ul>' + items + '</ul>';
+  });
+
+  // 9. 有序列表
+  html = html.replace(/(^|\n)((?:\d+\. .+\n?)+)/g, (_, prefix, list) => {
+    const items = list.trim().split('\n').map(s => '<li>' + s.replace(/^\d+\. /, '') + '</li>').join('');
+    return prefix + '<ol>' + items + '</ol>';
+  });
+
+  // 11. 段落：按空行分块；块级标签与代码块占位符不再被 <p> 包裹
+  const BLOCK = /^(<(h[1-6]|ul|ol|pre|blockquote|table|hr|div)\b)/i;
+  html = html.split(/\n{2,}/).map((block) => {
+    const t = block.trim();
+    if (!t) return '';
+    if (BLOCK.test(t) || t.startsWith('\x00CODE' + nonce)) return t;
+    return '<p>' + t.replace(/\n/g, '<br>') + '</p>';
+  }).filter(Boolean).join('\n');
+
+  // 12. 还原隔离片段，不再进行链接/图片转换或 HTML 实体解码。
+  return restore(html);
 }
 
 // ═══ 导航（事件委托，兼容插件动态注入的菜单项）═══
 window.gotoPage = (p) => { pageNum = p; render(); };
 window.navigate = (next, status = '') => {
+  if (!canVisit(next)) return toast('当前账号没有此功能的管理权限', 'error');
   const key = [next, 1, next === 'posts' || next === 'comments' ? status : ''].join(':');
   if (activeView?.key === key && !activeView.signal.aborted && !activeView.failed) return activeView.promise;
   page = next; pageNum = 1;
@@ -1189,8 +1409,9 @@ if (!authed) {
   document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:#64748b">登录已过期，正在跳转登录页…</p></div>';
   location.href = '/admin/login';
 } else {
-  loadPluginMenus();
-  render();
+  applyRoleNavigation();
+  if (user.role === 'admin') loadPluginMenus();
+  window.navigate(user.role === 'admin' || !contentRoles.includes(user.role) ? 'dashboard' : 'posts');
 }
 
 

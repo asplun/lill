@@ -8,11 +8,13 @@ import { scanThemeAssets, scanPageTemplates } from '../lib/themes.js';
 import { orderBy, normQQ, shapeComment } from '../lib/comment-util.js';
 import { clientIp } from '../lib/http.js';
 import { listNavigationItems } from '../lib/navigation.js';
+import { PUBLIC_POST_WHERE, publicOptions } from '../lib/public-content.js';
+import { readingPolicy, positiveInteger, postsOrderSql, excerptFor, commentPagination } from '../lib/reading-policy.js';
+import { readPermalinkOptions, permalinkPath, resolvePermalink } from '../lib/permalinks.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
 // 访客只能看到已发布、公开且未设置密码的内容。密码文章暂不提供访客验证流程。
-const PUBLIC_POST_WHERE = "p.status = 'published' AND p.visibility = 'public' AND (p.password IS NULL OR p.password = '')";
 const PUBLIC_POST_FIELDS = `
   p.id, p.title, p.slug, p.content, p.html_content, p.excerpt, p.cover_image,
   p.type, p.status, p.visibility, p.comment_allowed, p.view_count, p.comment_count,
@@ -68,39 +70,12 @@ async function viewerContext(req, post) {
 // 永久链接处理
 // ════════════════════════════════════════
 function getPermalinkUrl(type, post, category, tag) {
-  const getOpt = (k, d) => { const r = db.prepare('SELECT value FROM options WHERE key = ?').get(k); return (r && r.value) || d; };
-  const siteUrl = getOpt('site_url', '').replace(/\/$/, '');
-  
-  if (type === 'post') {
-    const format = getOpt('permalink', '/archives/{cid}/');
-    const cid = post.id;
-    const slug = post.slug;
-    const categorySlug = category ? category.slug : '';
-    const year = post.published_at ? post.published_at.substring(0, 4) : '';
-    const month = post.published_at ? post.published_at.substring(5, 7) : '';
-    const path = format
-      .replace('{cid}', cid)
-      .replace('{slug}', slug)
-      .replace('{category}', categorySlug)
-      .replace('{year}', year)
-      .replace('{month}', month);
-    return { url: siteUrl + path, route: '/post/' + slug };
-  }
-  if (type === 'category') {
-    const format = getOpt('category_prefix', '/category/{slug}/');
-    const path = format.replace('{slug}', category.slug).replace('{mid}', category.id);
-    return { url: siteUrl + path, route: '/category/' + category.slug };
-  }
-  if (type === 'tag') {
-    const format = getOpt('tag_prefix', '/tag/{slug}/');
-    const path = format.replace('{slug}', tag.slug).replace('{mid}', tag.id);
-    return { url: siteUrl + path, route: '/tag/' + tag.slug };
-  }
-  if (type === 'page') {
-    const path = '/page/' + post.slug;
-    return { url: siteUrl + path, route: path };
-  }
-  return { url: '', route: '' };
+  const siteUrl = (db.prepare("SELECT value FROM options WHERE key = 'site_url'").get()?.value || '').replace(/\/$/, '');
+  const item = type === 'category' ? category : type === 'tag' ? tag : post;
+  let path;
+  try { path = permalinkPath(type, item, category, readPermalinkOptions(db)); }
+  catch { path = '/' + type + '/' + encodeURIComponent(item.slug); } // Legacy slug routes remain readable even with invalid saved rules.
+  return { url: siteUrl + path, route: path };
 }
 
 
@@ -114,9 +89,7 @@ function publicThemeConfig(cfg, themeId) {
 }
 
 function buildThemeOptions() {
-  const rows = db.prepare('SELECT key, value FROM options WHERE autoload = 1').all();
-  const result = {};
-  rows.forEach(x => { result[x.key] = x.value; });
+  const result = publicOptions(db);
   const activeTheme = db.prepare('SELECT * FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get();
   if (!activeTheme) {
     result.theme_config = {};
@@ -154,24 +127,39 @@ function decoratePost(p) {
   return p;
 }
 
+function adjacentPosts(post) {
+  for (const [key, comparison, direction] of [['prev', '<', 'DESC'], ['next', '>', 'ASC']]) {
+    post[key] = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.published_at, p.created_at, c.slug AS category_slug
+      FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = ? AND ${PUBLIC_POST_WHERE}
+      AND p.published_at ${comparison} ? ORDER BY p.published_at ${direction} LIMIT 1`).get(post.type, post.published_at) || null;
+    if (post[key]) decoratePost(post[key]);
+  }
+}
+
 function listPosts(o) {
-  const page = Math.max(1, parseInt(o.page) || 1);
-  const pageSize = Math.max(1, parseInt(o.pageSize) || 10);
+  const policy = readingPolicy(db);
+  const page = positiveInteger(o.page, 1);
+  const pageSize = positiveInteger(o.pageSize, policy.postsPerPage);
   const typeFilter = o.type || 'post';
   let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
   const params = [typeFilter];
   if (o.categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(o.categorySlug); }
+  if (o.categoryId) { where += ' AND p.category_id = ?'; params.push(o.categoryId); }
   if (o.tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(o.tag); }
   if (o.keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${o.keyword}%`, `%${o.keyword}%`, `%${o.keyword}%`); }
   const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
   const items = db.prepare(`
-    SELECT p.id, p.title, p.slug, p.excerpt, p.cover_image, p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
+    SELECT p.id, p.title, p.slug, p.type, p.content, p.excerpt_auto, p.excerpt, p.cover_image, p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
            u.nickname as author_nickname, c.name as category_name, c.slug as category_slug,
            (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id AND cm.status = 'approved') as comment_count${o.full ? ', p.html_content' : ''}
     FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id
-    ${where} ORDER BY p.sticky DESC, p.published_at DESC, p.created_at DESC LIMIT ? OFFSET ?
+    ${where} ORDER BY ${postsOrderSql(o.order || policy.postsOrder)} LIMIT ? OFFSET ?
   `).all(...params, pageSize, (page - 1) * pageSize);
-  items.forEach(decoratePost);
+  items.forEach(post => {
+    Object.assign(post, excerptFor(post, policy));
+    delete post.content;
+    decoratePost(post);
+  });
   return { items, meta: { total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)), hasNext: page * pageSize < total, hasPrev: page > 1 } };
 }
 
@@ -194,28 +182,49 @@ function listArchives() {
 function listRecentComments(limit) {
   const items = db.prepare(`
     SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
-           p.title as post_title, p.slug as post_slug, p.type as post_type, u.nickname, u.avatar
+           p.title as post_title, p.slug as post_slug, p.type as post_type,
+           p.published_at, p.created_at as post_created_at, cat.slug as category_slug, u.nickname, u.avatar
     FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id
+      LEFT JOIN categories cat ON cat.id = p.category_id
     WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}
     ORDER BY c.created_at DESC LIMIT ?
   `).all(limit || 5);
-  items.forEach(c => { c.post_url = '/' + (c.post_type === 'page' ? 'page' : 'post') + '/' + c.post_slug; c.post_route = c.post_url; c.author = c.nickname || c.author_name || '匿名'; });
+  items.forEach(c => {
+    c.post_url = getPermalinkUrl(c.post_type === 'page' ? 'page' : 'post',
+      { id: c.post_id, slug: c.post_slug, published_at: c.published_at, created_at: c.post_created_at }, { slug: c.category_slug }).route;
+    c.post_route = c.post_url; c.author = c.nickname || c.author_name || '匿名';
+  });
   return items;
 }
 
 route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const type = url.searchParams.get('type') || 'index';
-  const slug = url.searchParams.get('slug') || '';
+  let type = url.searchParams.get('type') || 'index';
+  let slug = url.searchParams.get('slug') || '';
+  const frontPath = url.searchParams.get('path') || '';
+  if (frontPath) {
+    const builtin = { '/': 'index', '/archive': 'archive', '/archive/': 'archive', '/search': 'search', '/search/': 'search' }[frontPath];
+    if (builtin) { type = builtin; slug = ''; }
+    else {
+      let resolved = resolvePermalink(db, frontPath);
+      // A proxy may rewrite a one-segment page alias to the page shell.
+      if (!resolved && type === 'page' && /^\/[^/]+\/?$/.test(frontPath)) {
+        resolved = resolvePermalink(db, '/page/' + frontPath.split('/')[1]);
+      }
+      if (!resolved) return error(res, '内容不存在', 404);
+      ({ type, slug } = resolved);
+    }
+    url.searchParams.set('type', type);
+    url.searchParams.set('slug', slug);
+  }
   const page = parseInt(url.searchParams.get('page')) || 1;
   const q = url.searchParams.get('q') || '';
   const month = url.searchParams.get('month') || '';
 
   const options = buildThemeOptions();
   const cfg = options.theme_config || {};
-  // 每页文章数：主题「布局与导航」的 pageSize 优先，未设置时回落站点选项 posts_per_page
-  const themePerPage = parseInt(cfg.posts_per_page ?? cfg.pageSize);
-  const perPage = (themePerPage > 0 ? themePerPage : parseInt(options.posts_per_page)) || 10;
+  // 只认数据库中显式保存的主题覆盖，不用 manifest 的默认数目覆盖全站设置。
+  const perPage = readingPolicy(db).postsPerPage;
   const activeThemeId = options.active_theme || 'default';
   const themesDir = ctx.THEMES_DIR || __themeDir;
   const pageTemplatesList = scanPageTemplates(activeThemeId, themesDir);
@@ -230,12 +239,14 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     ? themeExt.decorateWidgets
     : () => [];
   const sidebar = {
-    recentPosts: listPosts({ pageSize: 5 }).items,
+    recentPosts: listPosts({ pageSize: 5, order: 'date' }).items,
     categories: cats,
     tags: listTags(),
     archives: listArchives(),
     recentComments: listRecentComments(5),
-    hotPosts: db.prepare(`SELECT p.id, p.title, p.slug, p.view_count, p.likes, p.published_at FROM posts p WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post' ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(decoratePost),
+    hotPosts: db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.view_count, p.likes, p.published_at, p.created_at, c.slug AS category_slug
+      FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post'
+      ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(decoratePost),
     hotTags: listTags().slice().sort((a, b) => b.post_count - a.post_count).slice(0, 10),
     widgets: {
       left: decorateWidgets(cfg.leftWidgets),
@@ -243,7 +254,6 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     },
   };
 
-  const frontPath = url.searchParams.get('path') || '';
   const pageInfo = { type, slug, url: frontPath || ('/' + (type === 'index' ? '' : type + '/')), title: '', query: { page, q, month } };
   let data = {};
   try {
@@ -265,10 +275,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     `).get(slug, type);
     if (!post) return error(res, '内容不存在', 404);
     post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
-    post.prev = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at < ? ORDER BY p.published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
-    post.next = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at > ? ORDER BY p.published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
-    if (post.prev) post.prev.url = '/' + type + '/' + post.prev.slug;
-    if (post.next) post.next.url = '/' + type + '/' + post.next.slug;
+    adjacentPosts(post);
     decoratePost(post);
     post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
     /* 阅读时长：原版 post.php 的元信息行显示「N 分钟」而不是阅读量。
@@ -307,49 +314,14 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
        <div class="md-card comments-section">，首页留言链接直指 #comment-308）。
        此前只判 type==='post'，使所有 type==='page' 的页面评论区整体不渲染。 */
     if (type === 'post' || type === 'page') {
-      const cmtViewer = await optionalUser(req);
-      const total = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
-      /* 评论排序：与原版 helpers.php themecomment_sort() 一致 ——
-         默认 desc；URL ?commentSort=asc|desc 覆盖；无 URL 参数时用 cookie lill_comment_sort（30 天）记忆 */
-      let cmtSort = String(url.searchParams.get('commentSort') || '');
-      if (cmtSort !== 'asc' && cmtSort !== 'desc') {
-        const ck = String(req.headers.cookie || '').match(/(?:^|;\s*)lill_comment_sort=(asc|desc)/);
-        cmtSort = ck ? ck[1] : 'desc';
-      }
-      const dir = cmtSort === 'asc' ? 'ASC' : 'DESC';
-      const rows = db.prepare(`SELECT c.*, u.email AS user_email, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? AND c.status = 'approved' ORDER BY c.created_at ${dir}, c.id ${dir}`).all(post.id);
-      // 与 GET /api/v1/comments 同构（头像 / QQ / 博主徽标 / 删除权限）
-      const shaped = rows.map(c => shapeComment(c, post.author_id, cmtViewer));
-      const byId = {};
-      rows.forEach((c, i) => { byId[c.id] = shaped[i]; });
-      /* 原版 lib/helpers.php themerender_comment_tree() 输出的是「扁平列表」：
-         所有评论按排序顺序逐条渲染，回复用 .comment-quote 引用父评论（父评论正文截断 42 字） */
-      data.commentFlat = shaped.map((c, i) => {
-        const pid = rows[i].parent_id;
-        const p = pid && byId[pid] ? byId[pid] : null;
-        let parentAuthor = '', parentText = '';
-        if (p) {
-          parentAuthor = p.author;
-          parentText = String(p.content || '')
-            .replace(/!\[[^\]]*\]\([^)]*\)/g, '$1')
-            .replace(/<[^>]*>/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          if (parentText.length > 42) parentText = parentText.slice(0, 42) + '…';
-        }
-        return { ...c, parent_author: parentAuthor, parent_text: parentText, parent_ref: p ? p.id : 0 };
+      const comments = await readComments(req, post, {
+        page: url.searchParams.get('commentPage'), sort: url.searchParams.get('commentSort'),
       });
-      data.commentSort = cmtSort;
-      /* 兼容 JSON 消费方（theme.js 的局部刷新与 /api/v1/comments 同构） */
-      const items = rows.filter(r => !r.parent_id && r.status === 'approved');
-      for (const c of items) c.replies = rows.filter(r => r.parent_id === c.id);
-      data.comments = items.map(c => {
-        const item = shapeComment(c, post.author_id, cmtViewer);
-        item.replies = (c.replies || []).map(k => shapeComment(k, post.author_id, cmtViewer));
-        item.reply_count = item.replies.length;
-        return item;
-      });
-      data.commentMeta = { total };
+      data.comments = comments.items;
+      data.commentFlat = comments.commentFlat;
+      data.commentSort = comments.sort;
+      data.commentDisplay = comments.display;
+      data.commentMeta = comments.meta;
       data.commentAllowed = commentsAllowed(post);
     }
   } else if (type === 'archive') {
@@ -463,8 +435,6 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
 // 文章列表（支持分页、分类、标签、关键词搜索）
 route('GET', '/api/v1/posts', async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const page = parseInt(url.searchParams.get('page')) || 1;
-  const pageSize = parseInt(url.searchParams.get('pageSize')) || 10;
   // 安全隔离:公共接口强制只返回已发布且公开的内容
   const typeFilter = url.searchParams.get('type') || 'post';
   const categoryId = url.searchParams.get('categoryId');
@@ -473,33 +443,19 @@ route('GET', '/api/v1/posts', async (req, res) => {
   const keyword = url.searchParams.get('keyword');
   const full = url.searchParams.get('full') === '1';
 
-  let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
-
-  const params = [typeFilter];
-  if (categoryId) { where += ' AND p.category_id = ?'; params.push(categoryId); }
-  if (categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(categorySlug); }
-  if (tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(tag); }
-  if (keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`); }
-
-  const total = (db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params)).c;
-  const items = db.prepare(`
-    SELECT p.id, p.title, p.slug, p.excerpt, p.cover_image, p.view_count, p.sticky, p.published_at,
-           u.nickname as author_nickname, c.name as category_name, c.slug as category_slug${full ? ', p.html_content' : ''}
-    FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id
-    ${where} ORDER BY p.sticky DESC, p.published_at DESC LIMIT ? OFFSET ?
-  `).all(...params, pageSize, (page - 1) * pageSize);
-
-  // 为每篇文章生成 permalink URL
-  const catMap = {};
-  db.prepare('SELECT id, slug FROM categories').all().forEach(c => catMap[c.id] = c.slug);
-  items.forEach(p => { const r = getPermalinkUrl('post', p, p.category_id ? { slug: catMap[p.category_id] } : null); p.url = r.url; p.route = r.route; });
-  json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
+  const result = listPosts({
+    type: typeFilter, categoryId, categorySlug, tag, keyword, full,
+    page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize'),
+  });
+  // Preserve the direct API's absolute URL contract; bootstrap uses the route.
+  result.items.forEach(post => { post.url = post.permalink; });
+  json(res, result);
 });
 
 // 独立页面列表（导航菜单用）
 route('GET', '/api/v1/pages', async (req, res) => {
   const pages = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.created_at FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
-  json(res, pages);
+  json(res, pages.map(page => decoratePost({ ...page, type: 'page' })));
 });
 
 // 归档（按年月分组，侧边栏 Widget）
@@ -529,8 +485,7 @@ route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
   `).get(params.slug);
   if (!post) return error(res, '文章不存在', 404);
   post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
-  post.prev = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at < ? ORDER BY p.published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
-  post.next = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at > ? ORDER BY p.published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
+  adjacentPosts(post);
   db.prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?').run(post.id);
   const postUrlResult = getPermalinkUrl('post', post, post.category_id ? { slug: post.category_slug } : null); post.url = postUrlResult.url; post.route = postUrlResult.route;
   /* 正文经主题短代码转换后与访客身份相关（如 {hide} 回复可见），不能沿用 60 秒公开缓存 */
@@ -549,13 +504,14 @@ route('GET', '/api/v1/feed', async (req, res) => {
   const siteName = getOpt('site_name', 'lill 博客');
   const siteDesc = getOpt('site_description', '');
   const siteUrl = getOpt('site_url', '').replace(/\/$/, '');
-  const posts = db.prepare(`SELECT p.title, p.slug, p.excerpt, p.published_at FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} ORDER BY p.published_at DESC LIMIT 20`).all();
+  const posts = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.published_at, c.slug AS category_slug
+    FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} ORDER BY p.published_at DESC LIMIT 20`).all();
   const x = value => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel>\n';
   xml += '<title>' + x(siteName) + '</title>\n<link>' + x(siteUrl) + '</link>\n<description>' + x(siteDesc) + '</description>\n';
   xml += '<language>zh-CN</language>\n<lastBuildDate>' + new Date().toUTCString() + '</lastBuildDate>\n';
   for (const post of posts) {
-    const link = siteUrl + '/post/' + encodeURIComponent(post.slug);
+    const link = getPermalinkUrl('post', post, { slug: post.category_slug }).url;
     xml += '<item>\n<title>' + x(post.title) + '</title>\n<link>' + x(link) + '</link>\n<guid isPermaLink="true">' + x(link) + '</guid>\n';
     xml += '<description>' + x(post.excerpt || '') + '</description>\n';
     if (post.published_at) xml += '<pubDate>' + new Date(String(post.published_at).replace(' ', 'T') + 'Z').toUTCString() + '</pubDate>\n';
@@ -579,9 +535,7 @@ route('GET', '/api/v1/tags', async (req, res) => {
 });
 
 route('GET', '/api/v1/options/public', async (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM options WHERE autoload = 1').all();
-  const result = {};
-  rows.forEach(x => { result[x.key] = x.value; });
+  const result = publicOptions(db);
   const activeTheme = db.prepare('SELECT * FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get();
   if (activeTheme) {
     let saved = {};
@@ -603,7 +557,7 @@ route('GET', '/api/v1/options/public', async (req, res) => {
 /* ════════════════════════════════════════════════════════════════
    评论（文章）：列表 / 发表 / 点赞
    theme 弹窗式评论系统的数据端 —— 支持最新·最热排序、两级回复、
-   QQ·邮箱头像、登录用户自动实名且免审核（游客仍走「评论审核」开关）。
+   QQ·邮箱头像、登录用户实名；审核与文章编辑权限分别判定。
    ════════════════════════════════════════════════════════════════ */
 
 // 可选登录：带 Bearer 就解析，没有/失效按游客处理（不抛错）
@@ -628,48 +582,60 @@ function commentsAllowed(post) {
   return post.comment_allowed !== 0 && disabled?.value !== 'true';
 }
 
+async function readComments(req, post, options = {}) {
+  const policy = readingPolicy(db);
+  const page = positiveInteger(options.page, 1);
+  const pageSize = positiveInteger(options.pageSize, policy.commentsPerPage);
+  const cookie = String(req.headers.cookie || '').match(/(?:^|;\s*)lill_comment_sort=(asc|desc)/);
+  const sort = ['asc', 'desc', 'hot'].includes(options.sort) ? options.sort : cookie?.[1] || 'desc';
+  const direction = sort === 'asc' ? 'ASC' : 'DESC';
+  const display = policy.commentDisplay;
+  const roots = `(c.parent_id IS NULL OR c.parent_id = '' OR NOT EXISTS
+    (SELECT 1 FROM comments parent WHERE parent.id = c.parent_id AND parent.post_id = c.post_id AND parent.status = 'approved'))`;
+  const total = db.prepare("SELECT COUNT(*) AS c FROM comments WHERE post_id = ? AND status = 'approved'").get(post.id).c;
+  const topLevelTotal = db.prepare(`SELECT COUNT(*) AS c FROM comments c WHERE c.post_id = ? AND c.status = 'approved' AND ${roots}`).get(post.id).c;
+  const select = `SELECT c.*, u.email AS user_email, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id`;
+  const rows = db.prepare(`${select} WHERE c.post_id = ? AND c.status = 'approved'
+    ${display === 'threaded' ? 'AND ' + roots : ''}
+    ORDER BY ${orderBy(sort, 'c')}, c.id ${direction} LIMIT ? OFFSET ?`).all(post.id, pageSize, (page - 1) * pageSize);
+  const children = db.prepare(`${select} WHERE c.post_id = ? AND c.parent_id = ? AND c.status = 'approved' ORDER BY c.created_at ASC, c.id ASC`);
+  const parent = db.prepare(`${select} WHERE c.post_id = ? AND c.id = ? AND c.status = 'approved'`);
+  const viewer = await optionalUser(req);
+  const pageRows = [...rows];
+  const items = rows.map(row => {
+    const replies = display === 'threaded' ? children.all(post.id, row.id) : [];
+    pageRows.push(...replies);
+    return { ...shapeComment(row, post.author_id, viewer), replies: replies.map(reply => shapeComment(reply, post.author_id, viewer)), reply_count: replies.length };
+  });
+  const flat = pageRows.slice().sort((a, b) => {
+    if (sort === 'hot' && a.likes !== b.likes) return (b.likes || 0) - (a.likes || 0);
+    const comparison = String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
+    return sort === 'asc' ? comparison : -comparison;
+  }).map(row => {
+    const ancestor = row.parent_id ? parent.get(post.id, row.parent_id) : null;
+    const shaped = ancestor ? shapeComment(ancestor, post.author_id, viewer) : null;
+    let quote = String(shaped?.content || '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    if (quote.length > 42) quote = quote.slice(0, 42) + '…';
+    return { ...shapeComment(row, post.author_id, viewer), parent_author: shaped?.author || '', parent_text: quote, parent_ref: shaped?.id || 0 };
+  });
+  return {
+    items: display === 'flat' ? flat.map(item => ({ ...item, replies: [], reply_count: 0 })) : items,
+    commentFlat: flat, display, sort,
+    meta: commentPagination(total, total - topLevelTotal, topLevelTotal, display, page, pageSize),
+  };
+}
+
 route('GET', '/api/v1/comments', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   const url = new URL(req.url, `http://${req.headers.host}`);
   const postId = url.searchParams.get('postId');
   if (!postId) return error(res, '缺少 postId');
-  const page = Math.max(1, parseInt(url.searchParams.get('page')) || 1);
-  const ps = Math.min(50, Math.max(1, parseInt(url.searchParams.get('pageSize')) || 20));
-  // 排序取值与原版 helpers.php themecomment_sort() 对齐：desc（默认，最新在前）/ asc（最早在前）；
-  // hot（按点赞）是 lill 原有扩展，保留以兼容旧调用
-  const sortRaw = url.searchParams.get('sort') || '';
-  const sort = (sortRaw === 'hot' || sortRaw === 'asc' || sortRaw === 'desc') ? sortRaw : 'desc';
   const post = db.prepare(`SELECT p.id, p.author_id FROM posts p WHERE p.id = ? AND ${PUBLIC_POST_WHERE}`).get(postId);
   if (!post) return error(res, '文章不存在', 404);
-  const ownerId = post.author_id;
-
-  const total = (db.prepare('SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = ?').get(postId, 'approved')).c;
-  const replyTotal = (db.prepare('SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = ? AND parent_id IS NOT NULL').get(postId, 'approved')).c;
-  const items = db.prepare(
-    `SELECT c.*, u.email AS user_email, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id
-     WHERE c.post_id = ? AND c.status = ? AND c.parent_id IS NULL
-     ORDER BY ${orderBy(sort, 'c')} LIMIT ? OFFSET ?`
-  ).all(postId, 'approved', ps, (page - 1) * ps);
-  const kids = db.prepare(
-    `SELECT c.*, u.email AS user_email, u.nickname, u.avatar FROM comments c LEFT JOIN users u ON c.user_id = u.id
-     WHERE c.parent_id = ? AND c.status = ? ORDER BY c.created_at ASC`
-  );
-  const viewer = await optionalUser(req);
-  const list = items.map(r => {
-    const item = shapeComment(r, ownerId, viewer);
-    item.replies = kids.all(r.id, 'approved').map(k => shapeComment(k, ownerId, viewer));
-    item.reply_count = item.replies.length;
-    return item;
-  });
-  json(res, {
-    items: list,
-    sort,
-    meta: {
-      total, replyTotal, page, pageSize: ps,
-      totalPages: Math.max(1, Math.ceil(total / ps)),
-      hasNext: page * ps < total, hasPrev: page > 1
-    }
-  });
+  json(res, await readComments(req, post, {
+    page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize'),
+    sort: url.searchParams.get('sort') || url.searchParams.get('commentSort'),
+  }));
 });
 
 route('POST', '/api/v1/comments', async (req, res) => {
@@ -711,8 +677,9 @@ route('POST', '/api/v1/comments', async (req, res) => {
     authorUrl = body.authorUrl || '';
     authorQq = normQQ(body.authorQq);
   }
-  // 登录用户视为可信（与 theme 原版「博主自己评论免审核」一致的思路）；游客按开关
-  let status = user ? 'approved' : (commentModerationOn() ? 'pending' : 'approved');
+  const canEditPost = !!(user && (['admin', 'editor'].includes(user.role)
+    || (user.role === 'author' && user.id === post.author_id)));
+  let status = canEditPost || !commentModerationOn() ? 'approved' : 'pending';
 
   /* ===== 垃圾评论过滤：规则引擎 + 豆包 AI（对照原版 comment-api.php 第 174-212 行） =====
      站长本人（文章作者或管理员）免检；否则先跑规则，再按范围跑 AI 语义层。

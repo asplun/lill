@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
+import { rollbackPluginActivation } from '../../lib/plugin-ext.js';
 
 const PLUGIN_DIR_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
@@ -9,6 +10,13 @@ export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, uid, authenticate, PLUGINS_DIR, activatePlugin, deactivatePlugin, triggerHook, _adminMenus } = ctx;
   const { route, logAction } = helpers;
   const manifestPath = dir => join(PLUGINS_DIR, dir, 'plugin.json');
+  const pending = new Set();
+  const withPluginOperation = async (dir, res, operation) => {
+    if (pending.has(dir)) return error(res, '插件操作正在进行，请稍后重试', 409);
+    pending.add(dir);
+    try { return await operation(); }
+    finally { pending.delete(dir); }
+  };
 
   route('GET', '/api/v1/admin/plugins', async (req, res) => {
     await authenticate(req);
@@ -40,23 +48,43 @@ export function register(router, ctx, helpers) {
     if (!body.dir || !PLUGIN_DIR_PATTERN.test(body.dir) || body.dir.includes('..')) return error(res, '非法插件目录名', 400);
     if (!existsSync(manifestPath(body.dir))) return error(res, '插件不存在', 404);
 
-    let manifest = {};
-    try { manifest = JSON.parse(readFileSync(manifestPath(body.dir), 'utf8')); } catch {}
-    const existing = db.prepare('SELECT * FROM plugins WHERE dir = ?').get(body.dir);
-    const active = existing ? !existing.active : true;
-    if (existing) db.prepare('UPDATE plugins SET active = ? WHERE dir = ?').run(active ? 1 : 0, body.dir);
-    else db.prepare('INSERT INTO plugins (id, dir, name, version, description, active) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(uid(), body.dir, manifest.name || body.dir, manifest.version || '1.0.0', manifest.description || '', active ? 1 : 0);
+    return withPluginOperation(body.dir, res, async () => {
+      let manifest = {};
+      try { manifest = JSON.parse(readFileSync(manifestPath(body.dir), 'utf8')); } catch {}
+      const existing = db.prepare('SELECT * FROM plugins WHERE dir = ?').get(body.dir);
+      const active = existing ? !existing.active : true;
+      let deactivated = false;
 
-    let hot = 'ok';
-    try {
-      if (active) await activatePlugin(body.dir);
-      else deactivatePlugin(body.dir);
-    } catch (e) {
-      hot = 'reload_failed: ' + e.message;
-    }
-    logAction(auth.id, active ? 'plugin.enable' : 'plugin.disable', body.dir, req);
-    json(res, { dir: body.dir, active, hot, message: active ? '插件已启用' : '插件已禁用' });
+      try {
+        if (active) {
+          const entry = await activatePlugin(body.dir);
+          if (!entry) throw new Error('插件未成功加载或未导出 activate');
+        } else {
+          await deactivatePlugin(body.dir);
+          deactivated = true;
+        }
+        // 生命周期完成之后才保存状态，不能把缺失入口或异步失败误报为成功。
+        if (existing) db.prepare('UPDATE plugins SET active = ? WHERE dir = ?').run(active ? 1 : 0, body.dir);
+        else db.prepare('INSERT INTO plugins (id, dir, name, version, description, active) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(uid(), body.dir, manifest.name || body.dir, manifest.version || '1.0.0', manifest.description || '', active ? 1 : 0);
+      } catch (e) {
+        if (active) {
+          // 包括激活成功但持久化失败；回滚不依赖插件自己的 deactivate 能否成功。
+          try { rollbackPluginActivation(body.dir, ctx._activePlugins); }
+          catch (cleanupError) { return error(res, '插件启用失败: ' + e.message + '；回滚失败: ' + cleanupError.message, 500); }
+        } else if (deactivated) {
+          // 数据库仍是启用状态时，恢复运行时，避免显示启用却没有任何注册项。
+          try {
+            if (!await activatePlugin(body.dir)) throw new Error('插件未成功恢复');
+          } catch (restoreError) {
+            return error(res, '插件禁用失败: ' + e.message + '；恢复启用状态失败: ' + restoreError.message, 500);
+          }
+        }
+        return error(res, (active ? '插件启用失败: ' : '插件禁用失败: ') + e.message, 500);
+      }
+      logAction(auth.id, active ? 'plugin.enable' : 'plugin.disable', body.dir, req);
+      json(res, { dir: body.dir, active, hot: 'ok', message: active ? '插件已启用' : '插件已禁用' });
+    });
   });
 
   route('GET', '/api/v1/admin/plugin-menus', async (req, res) => {
@@ -98,7 +126,7 @@ export function register(router, ctx, helpers) {
       if (field.type === 'number') { const number = Number(value); return Number.isFinite(number) ? number : 0; }
       return value;
     };
-    const stmt = db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')");
+    const stmt = db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 0) ON CONFLICT(key) DO UPDATE SET value = excluded.value, autoload = 0, updated_at = datetime('now')");
     let saved = 0;
     for (const field of schema) {
       if (!field?.key || !Object.prototype.hasOwnProperty.call(body, field.key)) continue;
@@ -180,11 +208,14 @@ export function register(router, ctx, helpers) {
     if (!pluginPath.startsWith(PLUGINS_DIR + '/')) return error(res, '非法插件目录名', 400);
     if (!existsSync(pluginPath)) return error(res, '插件不存在', 404);
 
-    try { deactivatePlugin(dir); } catch {}
-    db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run(dir);
-    renameSync(pluginPath, join(PLUGINS_DIR, '.trash-' + uid() + '-' + dir));
-    db.prepare('DELETE FROM plugins WHERE dir = ?').run(dir);
-    logAction(auth.id, 'plugin.uninstall', dir, req);
-    json(res, { dir, message: '插件已卸载' });
+    return withPluginOperation(dir, res, async () => {
+      try { await deactivatePlugin(dir); }
+      catch (e) { return error(res, '插件卸载失败（停用失败）: ' + e.message, 500); }
+      db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run(dir);
+      renameSync(pluginPath, join(PLUGINS_DIR, '.trash-' + uid() + '-' + dir));
+      db.prepare('DELETE FROM plugins WHERE dir = ?').run(dir);
+      logAction(auth.id, 'plugin.uninstall', dir, req);
+      json(res, { dir, message: '插件已卸载' });
+    });
   });
 }

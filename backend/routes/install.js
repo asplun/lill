@@ -8,6 +8,7 @@
  */
 import { accessSync, constants, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { rollbackPluginActivation } from '../lib/plugin-ext.js';
 
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, signJWT, generateCSRFToken, checkRateLimit, PLUGINS_DIR, ensureBuiltinPlugin } = ctx;
@@ -84,12 +85,18 @@ route('POST', '/api/v1/install', async (req, res) => {
       return error(res, '站点地址必须是有效 URL（以 http:// 或 https:// 开头）', 400);
     }
 
+    let adminId;
     try {
-      db.exec('BEGIN');
+      db.exec('BEGIN IMMEDIATE');
+      // 请求体读取会让出执行权；必须在写事务内重新确认，避免并发安装创建第二个管理员。
+      if (isInstalled()) {
+        db.exec('ROLLBACK');
+        return error(res, '站点已安装，如需重装请先清空数据库', 403);
+      }
       const now = new Date().toISOString();
 
       // 1) 管理员账号
-      const adminId = uid();
+      adminId = uid();
       db.prepare('INSERT INTO users (id, username, email, password, nickname, role, status) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(adminId, adminUser, adminEmail, hashPwd(adminPass), adminUser, 'admin', 'active');
 
@@ -156,31 +163,44 @@ route('POST', '/api/v1/install', async (req, res) => {
           '现在，去写下你的第一篇文章吧。',
         ].join('\n');
         const pid = uid();
-        db.prepare(`INSERT INTO posts (id, title, slug, content, html_content, excerpt, type, status, visibility, published_at, author_id, category_id) VALUES (?, ?, ?, ?, ?, ?, 'post', 'published', 'public', datetime('now'), ?, ?)`)
+        db.prepare(`INSERT INTO posts (id, title, slug, content, html_content, excerpt, excerpt_auto, type, status, visibility, published_at, author_id, category_id) VALUES (?, ?, ?, ?, ?, ?, 1, 'post', 'published', 'public', datetime('now'), ?, ?)`)
           .run(pid, 'Hello World', 'hello-world', content, renderMD(content), plainText(content).substring(0, 200), adminId, catId);
       }
 
       db.exec('COMMIT');
-
-      // 安装请求发生在服务已经启动之后，补登记并立即热激活内置插件，
-      // 不要求用户再手动重启 Node 服务才能看到默认功能。
-      if (typeof ensureBuiltinPlugin === 'function') ensureBuiltinPlugin(db, PLUGINS_DIR, 'hello-world');
-      if (typeof ctx.activatePlugin === 'function') await ctx.activatePlugin('hello-world');
-
-      // 安装成功即签发登录 token，前端可直接进入后台
-      const token = signJWT({ id: adminId, username: adminUser, role: 'admin' });
-      console.log('✓ 安装完成 | 管理员:', adminUser, '| 站点:', siteName);
-      json(res, {
-        installed: true,
-        token,
-        csrfToken: generateCSRFToken(),
-        user: { id: adminId, username: adminUser, nickname: adminUser, email: adminEmail, role: 'admin' },
-      });
     } catch (e) {
       try { db.exec('ROLLBACK'); } catch (_) { /* ignore */ }
       console.error('✗ 安装失败:', e.message);
       return error(res, '安装失败：' + e.message, 500);
     }
+
+    // 核心数据已提交；可选插件失败不能假装回滚安装或丢失首次登录 session。
+    const warnings = [];
+    try {
+      if (typeof ensureBuiltinPlugin === 'function') ensureBuiltinPlugin(db, PLUGINS_DIR, 'hello-world');
+      const builtin = db.prepare('SELECT active FROM plugins WHERE dir = ?').get('hello-world');
+      if (builtin?.active && (typeof ctx.activatePlugin !== 'function' || !await ctx.activatePlugin('hello-world'))) {
+        throw new Error('插件未成功加载或未导出 activate');
+      }
+    } catch (e) {
+      warnings.push('内置插件 hello-world 启用失败：' + e.message);
+      try { rollbackPluginActivation('hello-world', ctx._activePlugins); }
+      catch (cleanupError) { warnings.push('插件运行时清理失败：' + cleanupError.message); }
+      try { db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run('hello-world'); }
+      catch (persistError) { warnings.push('插件停用状态保存失败：' + persistError.message); }
+      console.warn('⚠ 安装已完成，' + warnings.join('；'));
+    }
+
+    // 安装成功即签发登录 token，前端可直接进入后台并处理可选插件警告。
+    const token = signJWT({ id: adminId, username: adminUser, role: 'admin' });
+    console.log('✓ 安装完成 | 管理员:', adminUser, '| 站点:', siteName);
+    json(res, {
+      installed: true,
+      token,
+      csrfToken: generateCSRFToken(),
+      user: { id: adminId, username: adminUser, nickname: adminUser, email: adminEmail, role: 'admin' },
+      ...(warnings.length ? { warnings } : {}),
+    });
   });
 
   // 安装日志 - 获取安装日志

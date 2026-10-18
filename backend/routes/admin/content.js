@@ -31,6 +31,62 @@ export function register(router, ctx, helpers) {
     if (slugTaken(slug, excludeId)) return { error: '别名「' + slug + '」已被占用，请换一个', taken: true };
     return { slug };
   };
+  // 统一存储为 SQLite 可直接比较的 UTC 时间；拒绝 Date 自动进位的非法日期。
+  const normalizePublishedAt = value => {
+    if (typeof value !== 'string') return null;
+    const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2})(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value.trim());
+    if (!match) return null;
+    const wallTime = `${match[1]}T${match[2]}:${match[3] || '00'}`;
+    const wallDate = new Date(wallTime + 'Z');
+    if (!Number.isFinite(wallDate.getTime()) || wallDate.toISOString().slice(0, 19) !== wallTime) return null;
+    const date = new Date(wallTime + (match[4] || '') + (match[5] || 'Z'));
+    if (!Number.isFinite(date.getTime())) return null;
+    const iso = date.toISOString();
+    return iso.length === 24 ? iso.slice(0, 19).replace('T', ' ') : null;
+  };
+  const nowPublishedAt = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const validateWrite = body => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return '内容参数必须是对象';
+    if (body.type !== undefined && !['post', 'page'].includes(body.type)) return '无效内容类型，仅支持 post/page';
+    if (body.status !== undefined && !['draft', 'published', 'pending'].includes(body.status)) return '无效内容状态，仅支持 draft/published/pending';
+    if (body.visibility !== undefined && body.visibility !== 'public') return '尚未支持非公开可见性，请勿提交私密或密码内容';
+    if (body.password !== undefined && body.password !== null && body.password !== '') return '尚未支持密码保护内容';
+    if (body.commentAllowed !== undefined && typeof body.commentAllowed !== 'boolean') return '允许评论必须为布尔值';
+    if (body.order !== undefined && !Number.isSafeInteger(body.order)) return '页面顺序必须为整数';
+    if (body.excerptAuto !== undefined && typeof body.excerptAuto !== 'boolean') return '自动摘要必须为布尔值';
+    if (body.publishedAt !== undefined) {
+      if (body.publishedAt === null || body.publishedAt === '') body.publishedAt = null;
+      else {
+        const date = normalizePublishedAt(body.publishedAt);
+        if (!date) return '发布时间格式无效，请使用有效日期时间（YYYY-MM-DD HH:mm:ss 或 ISO 8601）';
+        body.publishedAt = date;
+      }
+    }
+    if (body.tagNames !== undefined) {
+      if (!Array.isArray(body.tagNames) || body.tagNames.some(name => typeof name !== 'string' || !name.trim() || name.length > 100)) return '标签必须是非空名称数组，每个名称不超过 100 个字符';
+      body.tagNames = [...new Set(body.tagNames.map(name => name.trim()))];
+    }
+    return null;
+  };
+  // 必须在文章事务内调用；名称是标签身份，slug 冲突只影响新标签的 URL。
+  const replaceTags = (postId, names) => {
+    const findTag = db.prepare('SELECT id FROM tags WHERE name = ?');
+    const slugExists = db.prepare('SELECT id FROM tags WHERE slug = ?');
+    const insertTag = db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)');
+    const linkTag = db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)');
+    db.prepare('DELETE FROM post_tags WHERE post_id = ?').run(postId);
+    for (const name of names) {
+      let tag = findTag.get(name);
+      if (!tag) {
+        const base = slugify(name) || 'tag-' + uid();
+        let slug = base, suffix = 2;
+        while (slugExists.get(slug)) slug = base + '-' + suffix++;
+        tag = { id: uid() };
+        insertTag.run(tag.id, name, slug);
+      }
+      linkTag.run(postId, tag.id);
+    }
+  };
   route('GET', '/api/v1/admin/posts', (req, res) => listPostsHandler(req, res));
   route('GET', '/api/v1/admin/pages', (req, res) => listPostsHandler(req, res, 'page'));
   route('GET', '/api/v1/admin/page-templates', async (req, res) => {
@@ -41,31 +97,26 @@ export function register(router, ctx, helpers) {
   route('POST', '/api/v1/admin/posts', async (req, res) => {
     const auth = await authenticate(req);
     const body = await parseBody(req);
+    const invalid = validateWrite(body);
+    if (invalid) return error(res, invalid, 400);
     const denied = validatePostWrite(auth, body);
     if (denied) return error(res, denied, 403);
     validators.required(body.title, '标题');
     validators.string(body.title, '标题', 200);
-    if (body.content) validators.string(body.content, '内容', 50000);
+    if (body.content !== undefined) validators.string(body.content, '内容', 50000);
     const id = uid();
     const slugResult = resolveSlug(body.slug, body.title);
     if (slugResult.error) return error(res, slugResult.error, slugResult.taken ? 409 : 400);
     const slug = slugResult.slug;
-    const status = body.status || 'draft';
-    const publishedAt = body.publishedAt || (status === 'published' ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null);
-    const excerpt = body.excerpt || plainText(body.content || '').substring(0, 200);
+    const status = body.status ?? 'draft';
+    const publishedAt = body.publishedAt || (status === 'published' ? nowPublishedAt() : null);
+    const automaticExcerpt = body.excerptAuto ?? !body.excerpt;
+    const excerpt = automaticExcerpt ? plainText(body.content || '').substring(0, 200) : (body.excerpt || '');
     const tpl = normalizePageTemplate(body.type || 'post', body.template);
-    db.prepare('INSERT INTO posts (id, title, slug, content, html_content, excerpt, cover_image, type, status, sticky, published_at, author_id, category_id, fields, template) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(body.fields || {}), tpl);
-    if (body.tagNames?.length) withTransaction(db, () => {
-      const findTag = db.prepare('SELECT id FROM tags WHERE slug = ?');
-      const insertTag = db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)');
-      const linkTag = db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)');
-      for (const name of body.tagNames) {
-        const ts = slugify(name) || 'tag-' + Date.now().toString(36);
-        let tag = findTag.get(ts);
-        if (!tag) { const tid = uid(); insertTag.run(tid, name, ts); tag = { id: tid }; }
-        linkTag.run(id, tag.id);
-      }
+    withTransaction(db, () => {
+      db.prepare('INSERT INTO posts (id, title, slug, content, html_content, excerpt, cover_image, type, status, sticky, published_at, author_id, category_id, fields, template, comment_allowed, "order", excerpt_auto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(body.fields || {}), tpl, body.commentAllowed === false ? 0 : 1, body.order ?? 0, automaticExcerpt ? 1 : 0);
+      if (body.tagNames !== undefined) replaceTags(id, body.tagNames);
     });
     logAction(auth.id, 'post.create', '创建文章: ' + body.title, req);
     const created = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
@@ -78,14 +129,14 @@ export function register(router, ctx, helpers) {
     if (!exist) return error(res, '文章不存在', 404);
     if (!canManagePost(auth, exist)) return error(res, '无权限', 403);
     const body = await parseBody(req);
+    const invalid = validateWrite(body);
+    if (invalid) return error(res, invalid, 400);
     const denied = validatePostWrite(auth, body);
     if (denied) return error(res, denied, 403);
     if (body.title !== undefined) validators.string(body.title, '标题', 200);
     if (body.content !== undefined) validators.string(body.content, '内容', 50000);
-    db.prepare('INSERT INTO post_versions (id, post_id, title, content, html_content, excerpt, status, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(uid(), exist.id, exist.title, exist.content, exist.html_content, exist.excerpt, exist.status, exist.author_id);
     const updates = [], args = [];
-    const fields = [['title','title'],['content','content'],['excerpt','excerpt'],['coverImage','cover_image'],['type','type'],['status','status'],['sticky','sticky'],['order','"order"'],['publishedAt','published_at'],['categoryId','category_id']];
+    const fields = [['title','title'],['content','content'],['coverImage','cover_image'],['type','type'],['status','status'],['sticky','sticky'],['order','"order"'],['categoryId','category_id']];
     // 自定义别名单独处理：留空保持原值，避免误改导致旧链接失效
     if (body.slug !== undefined && String(body.slug).trim() !== '') {
       const slugResult = resolveSlug(body.slug, exist.title, exist.id);
@@ -94,22 +145,24 @@ export function register(router, ctx, helpers) {
     }
     if (body.template !== undefined) { updates.push('template = ?'); args.push(normalizePageTemplate(body.type || exist.type, body.template)); }
     for (const [f, d] of fields) if (body[f] !== undefined) { updates.push(d + ' = ?'); args.push(f === 'sticky' ? (body[f] ? 1 : 0) : body[f]); }
-    if (body.content) updates.push('html_content = ?'), args.push(renderMD(body.content));
-    if (body.excerpt === undefined && body.content) updates.push('excerpt = ?'), args.push(plainText(body.content).substring(0, 200));
-    if (body.status === 'published' && body.publishedAt === undefined && !exist.published_at) { updates.push('published_at = ?'); args.push(new Date().toISOString().slice(0, 19).replace('T', ' ')); }
+    if (body.content !== undefined) updates.push('html_content = ?'), args.push(renderMD(body.content));
+    if (body.commentAllowed !== undefined) updates.push('comment_allowed = ?'), args.push(body.commentAllowed ? 1 : 0);
+    const automaticExcerpt = body.excerptAuto ?? (body.excerpt !== undefined ? !body.excerpt : exist.excerpt_auto === 1);
+    if (body.excerpt !== undefined || body.excerptAuto !== undefined || (automaticExcerpt && body.content !== undefined)) {
+      updates.push('excerpt = ?', 'excerpt_auto = ?');
+      args.push(automaticExcerpt ? plainText(body.content ?? exist.content).slice(0, 200) : (body.excerpt ?? exist.excerpt ?? ''), automaticExcerpt ? 1 : 0);
+    }
+    const status = body.status ?? exist.status;
+    if (body.publishedAt !== undefined || (status === 'published' && !exist.published_at)) {
+      updates.push('published_at = ?');
+      args.push(body.publishedAt || (status === 'published' ? (exist.published_at || nowPublishedAt()) : null));
+    }
     if (body.fields) updates.push('fields = ?'), args.push(JSON.stringify(body.fields));
-    if (updates.length) { args.push(params.id); db.prepare(`UPDATE posts SET ${updates.join(', ')} WHERE id = ?`).run(...args); }
-    if (body.tagNames !== undefined) withTransaction(db, () => {
-      const findTag = db.prepare('SELECT id FROM tags WHERE slug = ?');
-      const insertTag = db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)');
-      const linkTag = db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?, ?)');
-      db.prepare('DELETE FROM post_tags WHERE post_id = ?').run(params.id);
-      for (const name of body.tagNames) {
-        const ts = slugify(name) || 'tag-' + Date.now().toString(36);
-        let tag = findTag.get(ts);
-        if (!tag) { const tid = uid(); insertTag.run(tid, name, ts); tag = { id: tid }; }
-        linkTag.run(params.id, tag.id);
-      }
+    withTransaction(db, () => {
+      db.prepare('INSERT INTO post_versions (id, post_id, title, content, html_content, excerpt, status, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(uid(), exist.id, exist.title, exist.content, exist.html_content, exist.excerpt, exist.status, exist.author_id);
+      if (updates.length) { args.push(params.id); db.prepare(`UPDATE posts SET ${updates.join(', ')} WHERE id = ?`).run(...args); }
+      if (body.tagNames !== undefined) replaceTags(params.id, body.tagNames);
     });
     logAction(auth.id, 'post.update', '更新文章: ' + (body.title || exist.title), req);
     const updated = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id);
@@ -139,7 +192,7 @@ export function register(router, ctx, helpers) {
     let where = helpers.managesAll(auth) ? '' : ' AND p.author_id = ?';
     if (auth.role === 'contributor') where += " AND p.status = 'draft'";
     const args = helpers.managesAll(auth) ? [] : [auth.id];
-    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.status, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE p.type = ? ${where} ORDER BY p.created_at DESC LIMIT 5`).all('post', ...args);
+    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.status, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id WHERE p.type = ? ${where} ORDER BY p.created_at DESC LIMIT 5`).all('post', ...args);
     json(res, items);
   });
   route('POST', '/api/v1/admin/posts/batch', async (req, res) => {
@@ -159,8 +212,11 @@ export function register(router, ctx, helpers) {
         for (const id of body.ids) stmt.run(id);
       } else {
         const status = body.action === 'publish' ? 'published' : 'draft';
-        const stmt = db.prepare('UPDATE posts SET status = ? WHERE id = ?');
-        for (const id of body.ids) stmt.run(status, id);
+        const stmt = db.prepare(body.action === 'publish'
+          ? "UPDATE posts SET status = ?, published_at = COALESCE(NULLIF(published_at, ''), ?) WHERE id = ?"
+          : 'UPDATE posts SET status = ? WHERE id = ?');
+        const publishedAt = nowPublishedAt();
+        for (const id of body.ids) stmt.run(...(body.action === 'publish' ? [status, publishedAt, id] : [status, id]));
       }
     });
     json(res, { updated: body.ids.length });

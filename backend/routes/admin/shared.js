@@ -17,7 +17,7 @@ export function withTransaction(db, fn) {
   }
 }
 export function createAdminHelpers(ctx, router, options = {}) {
-  const { db, json, uid, slugify, authenticate, THEMES_DIR } = ctx;
+  const { db, json, uid, authenticate, THEMES_DIR } = ctx;
   const skipped = options.skip || new Set();
   const contentRoles = ['admin', 'editor', 'author', 'contributor'];
   const editorRoles = ['admin', 'editor'];
@@ -34,7 +34,7 @@ export function createAdminHelpers(ctx, router, options = {}) {
   const canManagePost = (auth, post) => managesAll(auth) || (post.author_id === auth.id && (auth.role !== 'contributor' || post.status === 'draft'));
   const validatePostWrite = (auth, body) => {
     if (auth.role === 'contributor' && body.status !== undefined && body.status !== 'draft') return '投稿者只能保存草稿';
-    if (!managesAll(auth) && Array.isArray(body.tagNames) && body.tagNames.some(name => !db.prepare('SELECT id FROM tags WHERE slug = ?').get(slugify(name)))) return '没有创建标签的权限';
+    if (!managesAll(auth) && Array.isArray(body.tagNames) && body.tagNames.some(name => !db.prepare('SELECT id FROM tags WHERE name = ?').get(name))) return '没有创建标签的权限';
     return null;
   };
   const logAction = (userId, action, detail, req) => {
@@ -66,7 +66,7 @@ export function createAdminHelpers(ctx, router, options = {}) {
     if (!managesAll(auth)) { where += ' AND p.author_id = ?'; params.push(auth.id); }
     if (auth.role === 'contributor') where += " AND p.status = 'draft'";
     const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
-    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.status, p.view_count, p.comment_count, p.sticky, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id ${where} ORDER BY p.sticky DESC, p.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize);
+    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.status, p.view_count, p.comment_count, p.sticky, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id ${where} ORDER BY p.sticky DESC, p.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize);
     json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
   };
   return { route, managesAll, canManagePost, validatePostWrite, logAction, activeThemeId, normalizePageTemplate, listPostsHandler, contentRoles, editorRoles };

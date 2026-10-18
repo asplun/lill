@@ -75,6 +75,8 @@ export function scanPlugins(pluginsDir) {
 
 /** 加载单个插件模块（缓存） */
 const moduleCache = new Map();
+// 注册项被后继路由引用时仍保留撤销标记；WeakMap 不会延长无引用路由的生命期。
+const routeRegistrations = new WeakMap();
 
 export async function loadPlugin(dir, pluginsDir) {
   const entry = join(pluginsDir, dir, 'index.js');
@@ -109,8 +111,12 @@ export function createPluginContext(ctx, pluginDir) {
   return {
     // 路由注册（记录以便停用时摘除）
     route: (method, path, fn, auth) => {
+      const previous = ctx.router?.routes?.get(method + ':' + path);
       ctx.route(method, path, fn, auth);
-      registeredRoutes.push({ method, path });
+      const registered = ctx.router?.routes?.get(method + ':' + path);
+      const registration = { method, path, previous, registered, removed: false };
+      registeredRoutes.push(registration);
+      if (registered) routeRegistrations.set(registered, registration);
     },
 
     // 内部：停用清理用
@@ -153,8 +159,8 @@ export function createPluginContext(ctx, pluginDir) {
     setConfig: (key, value) => {
       const k = `plugin_${pluginDir}_${key}`;
       try {
-        ctx.db.prepare('INSERT INTO options (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-          .run(k, JSON.stringify(value));
+        ctx.db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, 0) ON CONFLICT(key) DO UPDATE SET value = excluded.value, autoload = 0, updated_at = datetime('now')")
+          .run(crypto.randomUUID(), k, JSON.stringify(value));
       } catch { /* ignore */ }
     },
 
@@ -173,6 +179,7 @@ export function createPluginContext(ctx, pluginDir) {
  */
 export async function loadPlugins(pluginsDir, ctx) {
   const active = new Map();
+  ctx._activePlugins = active;
 
   // 只加载数据库中 active=1 的插件；磁盘上未登记或 active=0 的插件一律不加载
   let dirs = [];
@@ -180,20 +187,12 @@ export async function loadPlugins(pluginsDir, ctx) {
     dirs = ctx.db.prepare('SELECT dir FROM plugins WHERE active = 1').all().map(r => r.dir);
   } catch { /* 表可能不存在 */ }
 
-  const scanned = scanPlugins(pluginsDir);
-
   for (const dir of dirs) {
-    if (!scanned.has(dir)) continue;
-    const manifest = scanned.get(dir) || { dir, name: dir, version: '1.0.0' };
-    const mod = await loadPlugin(dir, pluginsDir);
-    if (!mod || typeof mod.activate !== 'function') continue;
-
-    const pluginCtx = createPluginContext(ctx, dir);
     try {
-      await mod.activate(pluginCtx);
-      active.set(dir, { manifest, ctx: pluginCtx, mod });
-      console.log(`  ✓ 插件已激活：${manifest.name || dir}`);
+      const entry = await activatePlugin(dir, pluginsDir, ctx);
+      console.log(`  ✓ 插件已激活：${entry.manifest.name || dir}`);
     } catch (e) {
+      ctx.db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run(dir);
       console.error(`  ✗ 插件激活失败：${dir} — ${e.message}`);
     }
   }
@@ -208,57 +207,68 @@ export async function activatePlugin(dir, pluginsDir, ctx) {
   const scanned = scanPlugins(pluginsDir);
   const manifest = scanned.get(dir) || { dir, name: dir, version: '1.0.0' };
   const mod = await loadPlugin(dir, pluginsDir);
-  if (!mod || typeof mod.activate !== 'function') return null;
+  if (!mod || typeof mod.activate !== 'function') {
+    unloadPlugin(dir);
+    throw new Error('插件未成功加载或未导出 activate');
+  }
   const pluginCtx = createPluginContext(ctx, dir);
-  await mod.activate(pluginCtx);
+  try {
+    await mod.activate(pluginCtx);
+  } catch (e) {
+    try { clearPluginRegistrations(dir, pluginCtx); }
+    finally { unloadPlugin(dir); }
+    throw e;
+  }
   const entry = { manifest, ctx: pluginCtx, mod };
   ctx._activePlugins.set(dir, entry);
   return entry;
 }
 
-/** 停用插件：调用 deactivate + 摘除该插件注册的路由 / hook / 后台菜单 */
-export function deactivatePlugin(dir, active) {
+/** 回收核心管理的注册项；逆序恢复被覆盖的路由，避免失败插件破坏原有入口。 */
+function clearPluginRegistrations(dir, pctx) {
+  const core = pctx.__core;
+  for (const r of [...(pctx.__routes || [])].reverse()) {
+    r.removed = true;
+    const routes = core?.router?.routes;
+    const key = r.method + ':' + r.path;
+    // 其他插件后来接管的入口不能被本次回收误删。
+    if (routes && r.registered && routes.get(key) !== r.registered) continue;
+    // 被覆盖的插件可能已停用；不能从旧 previous 快照复活其入口。
+    let previous = r.previous;
+    while (routeRegistrations.get(previous)?.removed) previous = routeRegistrations.get(previous).previous;
+    if (routes && previous) routes.set(key, previous);
+    else core?.router?.removeRoute?.(r.method, r.path);
+  }
+  pctx.__routes.length = 0;
+  if (core?._hooks) {
+    for (const [name, list] of core._hooks) {
+      const filtered = list.filter(h => h.plugin !== dir);
+      if (filtered.length) core._hooks.set(name, filtered);
+      else core._hooks.delete(name);
+    }
+  }
+  if (Array.isArray(core?._adminMenus)) {
+    const menus = core._adminMenus;
+    for (let i = menus.length - 1; i >= 0; i--) {
+      if (menus[i].plugin === dir) menus.splice(i, 1);
+    }
+  }
+}
+
+/** 激活/持久化失败时强制回收注册项，不执行可能再次失败的插件生命周期。 */
+export function rollbackPluginActivation(dir, active) {
+  const entry = active?.get(dir);
+  if (entry) clearPluginRegistrations(dir, entry.ctx);
+  unloadPlugin(dir);
+  active?.delete(dir);
+}
+
+/** 停用失败向调用方抛错，保持启用状态及注册项，允许管理员重试。 */
+export async function deactivatePlugin(dir, active) {
   const entry = active.get(dir);
   if (!entry) return;
-  const pctx = entry.ctx;
-  const core = pctx.__core;
-
-  try {
-    if (typeof entry.mod.deactivate === 'function') entry.mod.deactivate(pctx);
-  } catch (e) {
-    console.error(`  ✗ 插件停用失败：${dir} — ${e.message}`);
-  }
-
-  // 摘除路由
-  try {
-    for (const r of (pctx.__routes || [])) {
-      if (core && core.router && typeof core.router.removeRoute === 'function') {
-        core.router.removeRoute(r.method, r.path);
-      }
-    }
-  } catch (e) { console.error(`  ✗ 清理插件路由失败：${dir} — ${e.message}`); }
-
-  // 摘除 hook
-  try {
-    const hooks = core && core._hooks;
-    if (hooks) {
-      for (const [name, list] of [...hooks]) {
-        const filtered = list.filter(h => h.plugin !== dir);
-        if (filtered.length) hooks.set(name, filtered); else hooks.delete(name);
-      }
-    }
-  } catch (e) { console.error(`  ✗ 清理插件 hook 失败：${dir} — ${e.message}`); }
-
-  // 摘除后台菜单
-  try {
-    if (core && Array.isArray(core._adminMenus)) {
-      const arr = core._adminMenus;
-      for (let i = arr.length - 1; i >= 0; i--) if (arr[i].plugin === dir) arr.splice(i, 1);
-    }
-  } catch (e) { /* ignore */ }
-
-  unloadPlugin(dir);
-  active.delete(dir);
+  if (typeof entry.mod.deactivate === 'function') await entry.mod.deactivate(entry.ctx);
+  rollbackPluginActivation(dir, active);
 }
 
 /** 触发 hook（同步广播，忽略单个插件错误） */

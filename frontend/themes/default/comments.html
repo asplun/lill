@@ -1,5 +1,5 @@
 {if $theme.show_comment}
-<section class="comments" id="comments">
+<section class="comments" id="comments" data-comment-display="{$commentDisplay}">
   <h3 class="comments-title">评论 <span>{$commentMeta.total}</span></h3>
   <div class="comment-list">
     {if $comments}
@@ -8,11 +8,12 @@
         <div class="comment-avatar">{if $c.avatar}<img src="{$c.avatar}" alt="" loading="lazy">{else}{$c.author|truncate:1:''}{/if}</div>
         <div class="comment-body">
           <div class="comment-head"><strong>{$c.author}</strong><span>{$c.created_at|date}</span></div>
+          {if $commentDisplay == 'flat' && $c.parent_author}<blockquote class="comment-quote">回复 {$c.parent_author}：{$c.parent_text}</blockquote>{/if}
           <div class="comment-text">{$c.content|nl2br}</div>
           {if $commentAllowed}<div class="comment-actions"><button type="button" class="comment-reply-btn" data-comment-id="{$c.id}" data-comment-author="{$c.author}">回复</button></div>{/if}
         </div>
       </div>
-      {if $c.replies}
+      {if $c.replies && $c.replies.length && $commentDisplay != 'flat'}
       <div class="comment-replies">
         {loop $c.replies as $r}
         <div class="comment-item" id="comment-{$r.id}" data-created-at="{$r.created_at}">
@@ -31,6 +32,15 @@
       <p class="comment-empty">还没有评论</p>
     {/if}
   </div>
+  {if $commentMeta.totalPages > 1}
+  <nav class="pagination comment-pagination" aria-label="评论分页">
+    {if $commentMeta.hasPrev}<a rel="prev" data-comment-page="{$commentMeta.page - 1}" href="?commentPage={$commentMeta.page - 1}&amp;commentSort={$commentSort}#comments">上一页</a>{/if}
+    {loop $commentMeta.pages as $cp}
+      {if $cp == $commentMeta.page}<span aria-current="page">{$cp}</span>{else}<a data-comment-page="{$cp}" href="?commentPage={$cp}&amp;commentSort={$commentSort}#comments">{$cp}</a>{/if}
+    {/loop}
+    {if $commentMeta.hasNext}<a rel="next" data-comment-page="{$commentMeta.page + 1}" href="?commentPage={$commentMeta.page + 1}&amp;commentSort={$commentSort}#comments">下一页</a>{/if}
+  </nav>
+  {/if}
   {if $commentAllowed}
   <form class="comment-form lill-comment-form" data-post-id="{$post.id}">
     <h4>发表评论</h4>
