@@ -22,9 +22,9 @@ export function boundedPagination(searchParams, defaultPageSize = 20, maxPageSiz
     if (value === null || value === undefined || String(value).trim() === '') return fallback;
     const text = String(value).trim();
     if (!/^\d+$/.test(text)) return fallback;
-    const number = Number(text);
-    if (!Number.isSafeInteger(number)) throw inputError('分页参数过大');
-    return number > 0 ? number : fallback;
+    // Values beyond Number.MAX_SAFE_INTEGER are hostile or meaningless for SQLite paging.
+    const number = text.length > 16 ? Number.MAX_SAFE_INTEGER : Number(text);
+    return Number.isSafeInteger(number) && number > 0 ? number : fallback;
   };
   const page = positive(searchParams.get('page'), 1);
   const pageSize = Math.min(maxPageSize, positive(searchParams.get('pageSize'), defaultPageSize));

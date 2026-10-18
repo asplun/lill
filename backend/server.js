@@ -20,7 +20,7 @@ import { register as registerPublic } from './routes/public.js';
 import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin/index.js';
 import { loadThemeRuntime, registerThemeExtension, registerThemeExtensions, resolveActiveThemeId, runActiveThemeHook } from './lib/theme-runtime.js';
-import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook, ensureBuiltinPlugin } from './lib/plugin-ext.js';
+import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook, ensureBuiltinPlugin, cleanupPluginLoadCopies } from './lib/plugin-ext.js';
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
 import { createSecurity } from './lib/security.js';
@@ -435,6 +435,7 @@ registerThemeExtensions(router, ctx, themeExts, resolveActiveTheme, (res) => err
    插件报错不影响 core 运行。 */
 const activePlugins = await loadPlugins(PLUGINS_DIR, ctx);
 ctx._activePlugins = activePlugins;
+cleanupPluginLoadCopies(PLUGINS_DIR, activePlugins);
 const REQUEST_TIMEOUT = 20000; // 请求级超时兜底：避免个别慢请求让前端长时间转圈
 const server = http.createServer(async (req, res) => {
   const startTime = Date.now();
@@ -514,7 +515,7 @@ const server = http.createServer(async (req, res) => {
       if (!res.writableEnded && !res.destroyed) res.destroy();
       return;
     }
-    const status = (e.message === '未登录' || e.message === 'Token expired' || e.message === 'Invalid')
+    const status = (e.message === '未登录' || e.message === 'Token expired' || e.message === 'Expired' || e.message === 'Invalid')
       ? 401
       : (e?.name === 'SyntaxError' ? 400 : (e?.status >= 400 && e?.status < 500 ? e.status : 500));
     logRequest(req.method, path, status, Date.now() - startTime);

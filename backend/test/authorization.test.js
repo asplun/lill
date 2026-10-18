@@ -49,6 +49,16 @@ test('inactive and deleted accounts, malformed and expired tokens return 401', a
   assert.equal((await api.request('GET', '/api/v1/admin/posts', { headers: headers(admin) })).status, 401);
 });
 
+test('a correctly signed but expired token returns 401', async t => {
+  const { api, admin } = await setup(t);
+  const { createHmac } = await import('node:crypto');
+  const h = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const b = Buffer.from(JSON.stringify({ id: admin.user.id, exp: Date.now() - 1000 })).toString('base64url');
+  const sig = createHmac('sha256', 'test-only-secret-not-for-production').update(`${h}.${b}`).digest('base64url');
+  const response = await api.request('GET', '/api/v1/auth/me', { headers: { authorization: `Bearer ${h}.${b}.${sig}` } });
+  assert.equal(response.status, 401, JSON.stringify(response.payload));
+});
+
 test('role changes take effect for an existing token', async t => {
   const { api, admin } = await setup(t);
   const db = new DatabaseSync(api.dbPath);

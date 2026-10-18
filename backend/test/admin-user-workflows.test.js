@@ -204,6 +204,9 @@ test('admin list pagination rejects unlimited or unsafe page sizes', async t => 
 
   const unsafe = await api.request('GET', '/api/v1/admin/users?page=9007199254740991&pageSize=1000000', { headers });
   assert.equal(unsafe.status, 400);
+
+  const enormous = await api.request('GET', '/api/v1/admin/users?page=' + '9'.repeat(1000) + '&pageSize=1000000', { headers });
+  assert.equal(enormous.status, 400);
 });
 
 test('malformed JSON is a client error with a useful message', async t => {
@@ -215,4 +218,64 @@ test('malformed JSON is a client error with a useful message', async t => {
   });
   assert.equal(response.status, 400);
   assert.match((await response.json()).message, /JSON/);
+});
+
+test('startup does not recreate the welcome article after an administrator deletes all content', async t => {
+  const api = await startApiServer();
+  t.after(api.stop);
+  const installed = await api.request('POST', '/api/v1/install', { body: {
+    site_name: 'Restart test',
+    site_url: api.baseUrl,
+    admin_username: 'restart-admin',
+    admin_email: 'restart-admin@example.test',
+    admin_password: 'restart-password-123',
+  } });
+  assert.equal(installed.status, 200, JSON.stringify(installed.payload));
+  const session = installed.payload.data;
+  const headers = {
+    authorization: `Bearer ${session.token}`,
+    'x-csrf-token': session.csrfToken,
+  };
+  const db = new DatabaseSync(api.dbPath);
+  const posts = db.prepare('SELECT id FROM posts').all();
+  db.close();
+  for (const post of posts) {
+    const removed = await api.request('DELETE', `/api/v1/admin/posts/${post.id}`, { headers });
+    assert.equal(removed.status, 200, JSON.stringify(removed.payload));
+  }
+
+  const { spawn } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const { createServer } = await import('node:net');
+  const probe = createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: new URL('..', import.meta.url),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DB_PATH: api.dbPath,
+      UPLOAD_DIR: new URL('../uploads', import.meta.url).pathname,
+      THEMES_DIR: api.themesDir,
+      PLUGINS_DIR: new URL('../plugins', import.meta.url).pathname,
+      JWT_SECRET: 'restart-test-secret',
+    },
+    stdio: 'ignore',
+  });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/install/status`);
+      if (response.ok) break;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const restarted = new DatabaseSync(api.dbPath);
+  const count = restarted.prepare('SELECT COUNT(*) AS count FROM posts').get().count;
+  restarted.close();
+  assert.equal(count, 0);
 });
