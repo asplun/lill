@@ -182,6 +182,257 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
     assert.equal(result.payload.data.items.find(item => item.id === tag.id).name, 'Updated reader notes');
   });
 
+  await t.test('editor prerequisites start together instead of waiting behind categories', async subtest => {
+    const page = await openAdmin(subtest);
+    await page.evaluate(() => { delete window.__lillOptions; window.navigate('pages'); });
+    await page.locator('#content table').waitFor();
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const requested = new Set();
+    page.on('request', request => requested.add(new URL(request.url()).pathname));
+    await page.route('**/api/v1/admin/categories', async route => {
+      arrived.resolve();
+      await release.promise;
+      await route.continue().catch(() => {});
+    });
+    try {
+      const templates = page.waitForResponse(response => response.url().includes('/admin/page-templates'), { timeout: 1500 });
+      await page.getByRole('button', { name: '+ 新建页面', exact: true }).click();
+      await arrived.promise;
+      await templates;
+      assert.ok(requested.has('/api/v1/admin/options'), 'options must start while categories is still pending');
+    } finally { release.resolve(); }
+    await page.locator('#pe-content').waitFor();
+  });
+
+  await t.test('repeating the current destination keeps its in-flight request', async subtest => {
+    const page = await openAdmin(subtest);
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let requests = 0;
+    await page.route('**/api/v1/admin/tags*', async route => {
+      requests++;
+      arrived.resolve();
+      await release.promise;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await page.evaluate(() => { window.navigate('tags'); });
+      await arrived.promise;
+      await page.evaluate(() => { window.navigate('tags'); });
+      release.resolve();
+      await page.locator('#content table').waitFor();
+      assert.equal(requests, 1, 'reclicking the active menu must not cancel and restart loading');
+    } finally { release.resolve(); }
+  });
+
+  await t.test('a failed destination can be retried through its menu', async subtest => {
+    const page = await openAdmin(subtest);
+    const failOnce = route => route.fulfill({
+      status: 503, contentType: 'application/json',
+      body: JSON.stringify({ code: 1, message: 'Temporary outage' }),
+    });
+    await page.route('**/api/v1/admin/tags*', failOnce);
+    await page.evaluate(() => window.navigate('tags'));
+    await page.getByText('加载失败：Temporary outage', { exact: true }).waitFor();
+    await page.unroute('**/api/v1/admin/tags*', failOnce);
+    await page.locator('[data-page="tags"]').click();
+    await page.locator('#content table').waitFor();
+    assert.equal(await page.getByText('加载失败：Temporary outage', { exact: true }).count(), 0);
+  });
+
+  for (const [name, endpoint, open] of [
+    ['plugin settings', 'plugins/missing/config', () => { window.openPluginSettings('missing'); }],
+    ['category editor', 'categories', () => { window.openCatEditor(); }],
+    ['user editor', 'users*', () => { window.openUserEditor('missing'); }],
+  ]) {
+    await t.test('leaving ' + name + ' cancels without replacing the destination', async subtest => {
+      const page = await openAdmin(subtest);
+      const errors = [];
+      page.on('pageerror', error => errors.push(error.message));
+      const arrived = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      await page.route('**/api/v1/admin/' + endpoint, async route => {
+        arrived.resolve();
+        await release.promise;
+        await route.continue().catch(() => {});
+      });
+      try {
+        await page.evaluate(open);
+        await arrived.promise;
+        await page.evaluate(() => window.navigate('tags'));
+        release.resolve();
+        await page.waitForLoadState('networkidle');
+        assert.deepEqual(errors, []);
+        assert.equal(await page.locator('#page-title').innerText(), '标签');
+        assert.equal(await page.locator('#content table').count(), 1);
+        assert.equal(await page.locator('#content input').count(), 0);
+      } finally { release.resolve(); }
+    });
+  }
+
+  await t.test('leaving theme settings cancels quietly and preserves the destination', async subtest => {
+    const page = await openAdmin(subtest);
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.evaluate(() => window.navigate('themes'));
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    await page.route('**/api/v1/admin/themes/default/settings', async route => {
+      arrived.resolve();
+      await release.promise;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await page.locator('.theme-card.active').getByRole('button', { name: '设置', exact: true }).click();
+      await arrived.promise;
+      await page.evaluate(() => window.navigate('tags'));
+      release.resolve();
+      await page.waitForLoadState('networkidle');
+      assert.deepEqual(errors, []);
+      assert.equal(await page.locator('#page-title').innerText(), '标签');
+      assert.equal(await page.locator('.navigation-editor').count(), 0);
+    } finally { release.resolve(); }
+  });
+
+  await t.test('retrying theme settings repeats the failed view instead of returning to the list', async subtest => {
+    const page = await openAdmin(subtest);
+    await page.evaluate(() => window.navigate('themes'));
+    const fail = route => route.fulfill({
+      status: 503, contentType: 'application/json',
+      body: JSON.stringify({ code: 1, message: 'Temporary settings outage' }),
+    });
+    await page.route('**/api/v1/admin/themes/default/settings', fail);
+    await page.locator('.theme-card.active').getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByText('加载失败：Temporary settings outage', { exact: true }).waitFor();
+    await page.unroute('**/api/v1/admin/themes/default/settings', fail);
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await page.locator('.navigation-editor').waitFor();
+    assert.equal(await page.locator('.theme-grid').count(), 0);
+  });
+
+  await t.test('overlapping writes in the same destination each refresh its records', async subtest => {
+    const first = await write('/tags', { name: 'Parallel deletion first' });
+    const second = await write('/tags', { name: 'Parallel deletion second' });
+    const page = await openAdmin(subtest);
+    await page.evaluate(() => window.navigate('tags'));
+    page.on('dialog', dialog => dialog.accept());
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    await page.route('**/api/v1/admin/tags/' + second.id, async route => {
+      arrived.resolve();
+      await release.promise;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await page.evaluate(ids => { ids.forEach(id => window.delTag(id)); }, [first.id, second.id]);
+      await arrived.promise;
+      await page.getByText(first.name, { exact: true }).waitFor({ state: 'hidden' });
+      await page.getByText(second.name, { exact: true }).waitFor();
+      assert.equal(await page.getByText(second.name, { exact: true }).count(), 1);
+      release.resolve();
+      await page.getByText(second.name, { exact: true }).waitFor({ state: 'hidden' });
+      await page.locator('#content table').waitFor();
+      assert.equal(await page.getByText(second.name, { exact: true }).count(), 0);
+      const result = await api.request('GET', '/api/v1/admin/tags', { headers });
+      assert.ok(result.payload.data.items.every(item => ![first.id, second.id].includes(item.id)));
+    } finally { release.resolve(); }
+  });
+
+  await t.test('reopening an editor reads current permalink settings', async subtest => {
+    const page = await openAdmin(subtest);
+    await openEditor(page);
+    try {
+      const result = await api.request('PUT', '/api/v1/admin/options', {
+        headers, body: [{ key: 'permalink', value: '/entries/{slug}/' }],
+      });
+      assert.equal(result.status, 200);
+      await openEditor(page);
+      assert.match(await page.locator('#pe-slug-hint').innerText(), /\/entries\//);
+    } finally {
+      await api.request('PUT', '/api/v1/admin/options', {
+        headers, body: [{ key: 'permalink', value: '/archives/{cid}/' }],
+      });
+    }
+  });
+
+  await t.test('comment selection updates locally without refetching or replacing the table', async subtest => {
+    const post = await write('/posts', { title: 'Selection test', status: 'published', content: 'Test' });
+    for (const content of ['First comment', 'Second comment']) {
+      const response = await api.request('POST', '/api/v1/comments', { headers, body: { postId: post.id, content } });
+      assert.equal(response.status, 201);
+    }
+    const page = await openAdmin(subtest);
+    await page.evaluate(() => window.navigate('comments'));
+    await page.locator('.cmt-check').first().waitFor();
+    let requests = 0;
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/v1/admin/comments') requests++; });
+    await page.evaluate(() => { window.__selectionTable = document.querySelector('#content table'); });
+    await page.locator('.cmt-check').first().check();
+    await page.getByRole('button', { name: '批量通过', exact: true }).waitFor();
+    await page.locator('[data-page="comments"]').click();
+    assert.equal(await page.locator('.cmt-check:checked').count(), 1, 'repeating the active menu must preserve selection');
+    await page.getByRole('checkbox', { name: '选择本页评论', exact: true }).check();
+    assert.equal(await page.locator('.cmt-check:checked').count(), 2);
+    await page.getByRole('button', { name: '取消选择', exact: true }).click();
+    assert.equal(await page.locator('.cmt-check:checked').count(), 0);
+    await page.waitForLoadState('networkidle');
+    assert.equal(requests, 0, 'selection is UI state and must not send GETs');
+    assert.equal(await page.evaluate(() => window.__selectionTable === document.querySelector('#content table')), true);
+  });
+
+  await t.test('saving a post does not take over navigation completed while saving', async subtest => {
+    const page = await openAdmin(subtest);
+    await openEditor(page);
+    await page.locator('#pe-title').fill('Save in background');
+    const arrived = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    await page.route('**/api/v1/admin/posts', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      arrived.resolve();
+      await release.promise;
+      await route.continue().catch(() => {});
+    });
+    try {
+      await page.locator('#pe-editor-card').getByRole('button', { name: '保存', exact: true }).click();
+      await arrived.promise;
+      await page.evaluate(() => window.navigate('tags'));
+      await page.locator('#content table').waitFor();
+      release.resolve();
+      await page.waitForLoadState('networkidle');
+      assert.equal(await page.locator('#page-title').innerText(), '标签');
+      assert.equal(await page.locator('.filter-tabs').count(), 0);
+      const result = await api.request('GET', '/api/v1/admin/posts', { headers });
+      assert.ok(result.payload.data.items.some(item => item.title === 'Save in background'), 'the write itself must complete');
+    } finally { release.resolve(); }
+  });
+
+  for (const action of ['replyCmt', 'editCmt']) {
+    await t.test('leaving while ' + action + ' reads a comment cancels quietly', async subtest => {
+      const page = await openAdmin(subtest);
+      await page.evaluate(() => window.navigate('comments'));
+      const errors = [];
+      page.on('pageerror', error => errors.push(error.message));
+      const arrived = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      await page.route('**/api/v1/admin/comments*', async route => {
+        arrived.resolve();
+        await release.promise;
+        await route.continue().catch(() => {});
+      });
+      try {
+        await page.evaluate(name => { window[name]('missing'); }, action);
+        await arrived.promise;
+        await page.evaluate(() => window.navigate('tags'));
+        release.resolve();
+        await page.waitForLoadState('networkidle');
+        assert.deepEqual(errors, []);
+        assert.equal(await page.locator('#page-title').innerText(), '标签');
+        assert.equal(await page.locator('#content table').count(), 1);
+      } finally { release.resolve(); }
+    });
+  }
+
   await t.test('theme navigation can be selected, reordered, saved and emptied on mobile', async subtest => {
     const title = '关于 "lill" ' + '很长的页面名称'.repeat(12);
     const post = await write('/posts', { title, slug: 'navigation-about', type: 'page', status: 'published', content: 'About' });

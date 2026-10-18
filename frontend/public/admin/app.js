@@ -43,14 +43,33 @@ function paginate(meta) {
 }
 
 // ═══ 路由 ═══
-async function render() {
-  // 切换页面时取消上一页未完成的 GET 请求，避免竞态与"永久转圈"
-  window.lillAPI.newRenderScope();
-  document.getElementById('page-title').textContent = TITLES[page] || '';
+let activeView = null;
+function showView(key, load, reuse = false, navigation = {}) {
+  if (reuse && activeView?.key === key && !activeView.signal.aborted && !activeView.failed) return activeView.promise;
+  const view = { key, load, navigation, signal: window.lillAPI.newRenderScope() };
+  activeView = view;
   setTopbar('');
   const c = document.getElementById('content');
   c.innerHTML = '<div class="loading" role="status"><div class="spinner"></div><span class="sr-only">正在加载</span></div>';
-  try {
+  view.promise = (async () => {
+    try { await load(view.signal); }
+    catch (e) {
+      if (view.signal.aborted) return;
+      view.failed = true;
+      c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="retryView()">重试</button></div>';
+    } finally { if (!view.signal.aborted) labelTableRows(); }
+  })();
+  return view.promise;
+}
+function refreshView(view) {
+  // 同页写入可先后完成；刷新继承导航身份，真正切页才使旧操作失效。
+  if (activeView?.navigation === view.navigation) return render(false, view.navigation);
+}
+window.retryView = () => showView(activeView.key, activeView.load);
+function render(reuse = false, navigation) {
+  const key = [page, pageNum, page === 'posts' ? postStatus : page === 'comments' ? commentStatus : ''].join(':');
+  return showView(key, async () => {
+    document.getElementById('page-title').textContent = TITLES[page] || '';
     switch (page) {
       case 'dashboard': return await renderDashboard();
       case 'posts': return await renderPosts();
@@ -66,15 +85,11 @@ async function render() {
       case 'backup': return await renderBackup();
       case 'plugins': return await renderPlugins();
       default:
-        if (page.startsWith('plugin-settings:')) return await openPluginSettings(page.slice(16));
+        if (page.startsWith('plugin-settings:')) return await renderPluginSettings(page.slice(16));
         if (page.startsWith('plugin:')) return await renderPluginMenuPanel(page.slice(7));
-        c.innerHTML = '<div class="empty">页面不存在</div>';
+        document.getElementById('content').innerHTML = '<div class="empty">页面不存在</div>';
     }
-  } catch (e) {
-    // 被新页面取代而取消的请求：静默忽略，交给新页面渲染
-    if (e && e.message === '请求已取消') return;
-    c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="render()">重试</button></div>';
-  } finally { labelTableRows(); }
+  }, reuse, navigation);
 }
 
 // 小屏仍保留每个字段的名称，不依赖列在桌面上的位置。
@@ -290,28 +305,21 @@ window.mdToggleFullscreen = () => {
   const card = mdEl('pe-editor-card'); if (!card) return;
   card.classList.toggle('editor-fs');
 };
-window.openPostEditor = async (type, id) => {
-  const signal = window.lillAPI.newRenderScope();
+window.openPostEditor = (type = 'post', id) => showView('editor:' + type + ':' + (id || 'new'), signal => loadPostEditor(type, id, signal), true);
+async function loadPostEditor(type, id, signal) {
   type = type || 'post';
   const isPage = type === 'page';
-  let post = null;
-  if (id) { try { post = await api('/admin/posts/' + id, { signal }); } catch (e) { if (!signal.aborted) toast(e.message, 'error'); return; } }
-  let cats = [];
-  try { cats = await api('/admin/categories', { signal }); } catch (e) { cats = []; }
-  // 独立页面模板（对标 Typecho 页面编辑里的「自定义模板」下拉）
-  let pageTpls = [];
-  if (isPage) {
-    try { const r = await api('/admin/page-templates', { signal }); pageTpls = (r && r.templates) || []; } catch (e) { pageTpls = []; }
-  }
-  // 永久链接模板：用于「别名」下方的地址预览（设置接口只取一次并缓存）
-  let permalinkTpl = '/archives/{cid}/';
-  try {
-    if (!window.__lillOptions) window.__lillOptions = await api('/admin/options', { signal });
-    const found = (window.__lillOptions || []).find(o => o.key === 'permalink');
-    if (found && found.value) permalinkTpl = found.value;
-  } catch (e) { /* 设置读取失败不影响写作 */ }
+  // 四项互不依赖，同时读取；可选信息失败不阻止写作。
+  const [post, cats, templates, options] = await Promise.all([
+    id ? api('/admin/posts/' + id, { signal }) : null,
+    api('/admin/categories', { signal }).catch(() => []),
+    isPage ? api('/admin/page-templates', { signal }).catch(() => null) : null,
+    api('/admin/options', { signal }).catch(() => null),
+  ]);
   // 请求被切页或另一个编辑器取消后，不再覆盖当前页面。
   if (signal.aborted) return;
+  const pageTpls = templates?.templates || [];
+  const permalinkTpl = (options || []).find(o => o.key === 'permalink')?.value || '/archives/{cid}/';
   const curTpl = post ? (post.template || '') : '';
   const tplOpts = ['<option value=""' + (curTpl ? '' : ' selected') + '>默认模板（page.html）</option>']
     .concat(pageTpls.map(t => '<option value="' + escape(t.key) + '"' + (curTpl === t.key ? ' selected' : '') + '>' + escape(t.name) + '（' + escape(t.file) + '）</option>'))
@@ -451,9 +459,10 @@ window.openPostEditor = async (type, id) => {
   } catch (e) {}
   mdSync();
   renderSlugHint();
-};
+}
 
 window.savePost = async (type, id) => {
+  const view = activeView;
   const titleEl = document.getElementById('pe-title');
   if (!titleEl) return;
   const title = titleEl.value.trim();
@@ -480,11 +489,11 @@ window.savePost = async (type, id) => {
     else await api('/admin/posts', { method: 'POST', body });
     try { localStorage.removeItem('lill:draft:' + type + ':' + (id || 'new')); } catch (e) {}
     toast(id ? '已更新' : '已保存');
-    page = type === 'page' ? 'pages' : 'posts'; pageNum = 1; render();
+    if (activeView === view) return window.navigate(type === 'page' ? 'pages' : 'posts');
   } catch (e) { toast(e.message, 'error'); }
 };
 
-window.delPost = async (id) => { if (!confirm('确定删除？')) return; try { await api('/admin/posts/' + id, { method: 'DELETE' }); toast('已删除'); render(); } catch (e) { toast(e.message, 'error'); } };
+window.delPost = async (id) => { if (!confirm('确定删除？')) return; const view = activeView; try { await api('/admin/posts/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 文章列表 ═══
 async function renderPosts() {
@@ -500,12 +509,13 @@ async function renderPosts() {
 window.filterPosts = status => { postStatus = ['', 'published', 'draft', 'pending', 'trash'].includes(status) ? status : ''; pageNum = 1; return render(); };
 window.toggleAllPosts = (checked) => { document.querySelectorAll('.post-check').forEach(c => c.checked = checked); };
 window.batchPosts = async (action) => {
+  const view = activeView;
   const ids = Array.from(document.querySelectorAll('.post-check:checked')).map(c => c.value);
   if (!ids.length) return toast('请先选择文章', 'error');
   if (action === 'delete' && !confirm('确定删除选中的文章？')) return;
   try {
     await api('/admin/posts/batch', { method: 'POST', body: { ids, action } });
-    toast('操作完成'); renderPosts();
+    toast('操作完成'); refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
 
@@ -529,7 +539,8 @@ async function renderLogs() {
 
 window.clearLogs = async () => {
   if (!confirm('确定清空所有日志？')) return;
-  try { await api('/admin/logs', { method: 'DELETE' }); toast('已清空'); renderLogs(); } catch (e) { toast(e.message, 'error'); }
+  const view = activeView;
+  try { await api('/admin/logs', { method: 'DELETE' }); toast('已清空'); refreshView(view); } catch (e) { toast(e.message, 'error'); }
 };
 
 // ═══ 备份 ═══
@@ -554,9 +565,11 @@ async function renderCategories() {
   labelTableRows();
 }
 
-window.openCatEditor = async (id) => {
+window.openCatEditor = id => showView('category-editor:' + (id || 'new'), signal => loadCatEditor(id, signal), true);
+async function loadCatEditor(id, signal) {
   let cat = null, cats = [];
-  try { cats = await api('/admin/categories'); } catch (e) {}
+  cats = await api('/admin/categories', { signal });
+  if (signal.aborted) return;
   if (id) cat = (cats || []).find(c => c.id === id);
   const parentOpts = ['<option value="">无父级</option>'].concat((cats || []).filter(c => c.id !== id).map(c => '<option value="' + c.id + '"' + (cat && cat.parent_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
   document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">' + (id ? '编辑分类' : '新建分类') + '</h3>' +
@@ -565,21 +578,22 @@ window.openCatEditor = async (id) => {
     '<div class="form-group"><label>描述</label><textarea id="ce-desc" rows="2">' + escape(cat ? cat.description : '') + '</textarea></div>' +
     '<div class="form-group"><label>父级分类</label><select id="ce-parent">' + parentOpts + '</select></div>' +
     '<div class="form-group"><label>排序</label><input id="ce-sort" type="number" value="' + (cat ? cat.sort_order : 0) + '"></div>' +
-    '<button class="btn btn-primary" onclick="saveCat(' + (id ? '\'' + id + '\'' : 'null') + ')">保存</button> <button class="btn btn-outline" onclick="renderCategories()">取消</button></div>';
-};
+    '<button class="btn btn-primary" onclick="saveCat(' + (id ? '\'' + id + '\'' : 'null') + ')">保存</button> <button class="btn btn-outline" onclick="navigate(\'categories\')">取消</button></div>';
+}
 
 window.saveCat = async (id) => {
+  const view = activeView;
   const name = document.getElementById('ce-name').value.trim();
   if (!name) return toast('请填写名称', 'error');
   const body = { name, slug: document.getElementById('ce-slug').value.trim() || undefined, description: document.getElementById('ce-desc').value, parentId: document.getElementById('ce-parent').value || null, sortOrder: parseInt(document.getElementById('ce-sort').value) || 0 };
   try {
     if (id) await api('/admin/categories/' + id, { method: 'PUT', body });
     else await api('/admin/categories', { method: 'POST', body });
-    toast('已保存'); renderCategories();
+    toast('已保存'); refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
 
-window.delCat = async (id) => { if (!confirm('确定删除？该分类下的文章将变为未分类')) return; try { await api('/admin/categories/' + id, { method: 'DELETE' }); toast('已删除'); renderCategories(); } catch (e) { toast(e.message, 'error'); } };
+window.delCat = async (id) => { if (!confirm('确定删除？该分类下的文章将变为未分类')) return; const view = activeView; try { await api('/admin/categories/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 标签 ═══
 async function renderTags() {
@@ -590,17 +604,18 @@ async function renderTags() {
   labelTableRows();
 }
 window.openTagEditor = (id, name) => {
+  const view = activeView;
   const n = prompt('标签名称：', name || '');
   if (!n) return;
   (async () => {
     try {
       if (id) await api('/admin/tags/' + id, { method: 'PUT', body: { name: n } });
       else await api('/admin/tags', { method: 'POST', body: { name: n } });
-      toast('已保存'); renderTags();
+      toast('已保存'); refreshView(view);
     } catch (e) { toast(e.message, 'error'); }
   })();
 };
-window.delTag = async (id) => { if (!confirm('确定删除？')) return; try { await api('/admin/tags/' + id, { method: 'DELETE' }); toast('已删除'); renderTags(); } catch (e) { toast(e.message, 'error'); } };
+window.delTag = async (id) => { if (!confirm('确定删除？')) return; const view = activeView; try { await api('/admin/tags/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 评论 ═══
 let selectedComments = new Set();
@@ -615,61 +630,80 @@ async function renderComments() {
     '<button class="btn btn-sm btn-outline" onclick="editCmt(\'' + c.id + '\')">编辑</button> ' +
     '<button class="btn btn-sm btn-danger" onclick="delCmt(\'' + c.id + '\')">删除</button></td></tr>').join('');
   
-  const batchBar = selectedComments.size > 0 ? '<div class="batch-bar"><span>已选 ' + selectedComments.size + ' 项</span><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'approved\')">批量通过</button><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'spam\')">批量垃圾</button><button class="btn btn-sm btn-danger" onclick="batchCmtDelete()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearCmtSelection()">取消选择</button></div>' : '';
-  
   setTopbar('');
   document.getElementById('content').innerHTML =
     '<div class="toolbar"><label for="cf-status">评论状态</label><select id="cf-status" onchange="filterComments(this.value)">' +
     ['', 'pending', 'approved', 'spam'].map(v => '<option value="' + v + '"' + (status === v ? ' selected' : '') + '>' + ({ '': '所有状态', pending: '待审核', approved: '已通过', spam: '垃圾' }[v]) + '</option>').join('') +
     '</select><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllCmts(this.checked)"' +
-    ((r.items || []).length && r.items.every(c => selectedComments.has(c.id)) ? ' checked' : '') + '> 选择本页评论</label></div>' + batchBar +
+    ((r.items || []).length && r.items.every(c => selectedComments.has(c.id)) ? ' checked' : '') + '> 选择本页评论</label></div><div id="comment-selection"></div>' +
     '<div class="table-container"><table><thead><tr><th><input aria-label="选择本页评论" type="checkbox" onchange="toggleAllCmts(this.checked)"></th><th>内容</th><th>文章</th><th>作者</th><th>状态</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">该状态下暂无评论</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
+  updateCommentSelection();
+}
+function updateCommentSelection() {
+  const bar = document.getElementById('comment-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.cmt-check')];
+  checks.forEach(el => { el.checked = selectedComments.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllCmts(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedComments.size ? '<div class="batch-bar"><span>已选 ' + selectedComments.size + ' 项</span><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'approved\')">批量通过</button><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'spam\')">批量垃圾</button><button class="btn btn-sm btn-danger" onclick="batchCmtDelete()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearCmtSelection()">取消选择</button></div>' : '';
 }
 window.filterComments = status => { commentStatus = ['', 'pending', 'approved', 'spam'].includes(status) ? status : ''; selectedComments.clear(); pageNum = 1; return render(); };
-window.setCmt = async (id, status) => { try { await api('/admin/comments/' + id + '/status', { method: 'PATCH', body: { status } }); toast('已更新'); renderComments(); } catch (e) { toast(e.message, 'error'); } };
-window.delCmt = async (id) => { if (!confirm('确定删除？')) return; try { await api('/admin/comments/' + id, { method: 'DELETE' }); toast('已删除'); renderComments(); } catch (e) { toast(e.message, 'error'); } };
-window.toggleCmtCheck = (id, checked) => { if (checked) selectedComments.add(id); else selectedComments.delete(id); renderComments(); };
+window.setCmt = async (id, status) => { const view = activeView; try { await api('/admin/comments/' + id + '/status', { method: 'PATCH', body: { status } }); toast('已更新'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
+window.delCmt = async (id) => { if (!confirm('确定删除？')) return; const view = activeView; try { await api('/admin/comments/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
+window.toggleCmtCheck = (id, checked) => { if (checked) selectedComments.add(id); else selectedComments.delete(id); updateCommentSelection(); };
 window.toggleAllCmts = (checked) => { 
   if (checked) { document.querySelectorAll('.cmt-check').forEach(el => selectedComments.add(el.value)); }
   else { selectedComments.clear(); }
-  renderComments();
+  updateCommentSelection();
 };
-window.clearCmtSelection = () => { selectedComments.clear(); renderComments(); };
+window.clearCmtSelection = () => { selectedComments.clear(); updateCommentSelection(); };
 window.batchCmtStatus = async (status) => {
   if (!selectedComments.size) return;
+  const view = activeView;
+  const ids = Array.from(selectedComments);
   try {
-    await api('/admin/comments/batch-status', { method: 'PATCH', body: { ids: Array.from(selectedComments), status } });
-    toast('操作完成'); selectedComments.clear(); renderComments();
+    await api('/admin/comments/batch-status', { method: 'PATCH', body: { ids, status } });
+    toast('操作完成');
+    if (activeView?.navigation === view.navigation) { selectedComments.clear(); refreshView(view); }
   } catch (e) { toast(e.message, 'error'); }
 };
 window.batchCmtDelete = async () => {
   if (!selectedComments.size) return;
   if (!confirm('确定删除选中的 ' + selectedComments.size + ' 条评论？')) return;
+  const view = activeView;
+  const ids = Array.from(selectedComments);
   try {
-    for (const id of selectedComments) { await api('/admin/comments/' + id, { method: 'DELETE' }); }
-    toast('已删除'); selectedComments.clear(); renderComments();
+    for (const id of ids) { await api('/admin/comments/' + id, { method: 'DELETE' }); }
+    toast('已删除');
+    if (activeView?.navigation === view.navigation) { selectedComments.clear(); refreshView(view); }
   } catch (e) { toast(e.message, 'error'); }
 };
 window.replyCmt = async (id) => {
-  const c = (await api('/admin/comments?pageSize=100')).items.find(x => x.id === id);
-  if (!c) return toast('评论不存在', 'error');
-  const content = prompt('回复 ' + (c.author_name || '匿名') + '：', '');
-  if (!content) return;
+  const view = activeView;
   try {
+    const c = (await api('/admin/comments?pageSize=100')).items.find(x => x.id === id);
+    if (!c) return toast('评论不存在', 'error');
+    const content = prompt('回复 ' + (c.author_name || '匿名') + '：', '');
+    if (!content) return;
     await api('/admin/comments/' + id + '/reply', { method: 'POST', body: { content } });
-    toast('已回复'); renderComments();
-  } catch (e) { toast(e.message, 'error'); }
+    toast('已回复'); refreshView(view);
+  } catch (e) { if (e.message !== '请求已取消') toast(e.message, 'error'); }
 };
 window.editCmt = async (id) => {
-  const c = (await api('/admin/comments?pageSize=100')).items.find(x => x.id === id);
-  if (!c) return toast('评论不存在', 'error');
-  const content = prompt('编辑评论：', c.content || '');
-  if (!content) return;
+  const view = activeView;
   try {
+    const c = (await api('/admin/comments?pageSize=100')).items.find(x => x.id === id);
+    if (!c) return toast('评论不存在', 'error');
+    const content = prompt('编辑评论：', c.content || '');
+    if (!content) return;
     await api('/admin/comments/' + id, { method: 'PUT', body: { content } });
-    toast('已更新'); renderComments();
-  } catch (e) { toast(e.message, 'error'); }
+    toast('已更新'); refreshView(view);
+  } catch (e) { if (e.message !== '请求已取消') toast(e.message, 'error'); }
 };
 
 // ═══ 附件 ═══
@@ -682,6 +716,7 @@ async function renderMedia() {
   if (fi) fi.onchange = handleMediaFile;
 }
 async function handleMediaFile(ev) {
+  const view = activeView;
   const file = ev.target.files && ev.target.files[0];
   if (!file) return;
   if (file.size > 10 * 1024 * 1024) return toast('文件不能超过 10MB', 'error');
@@ -694,14 +729,14 @@ async function handleMediaFile(ev) {
   try {
     await api('/admin/media/upload', { method: 'POST', body: { name: file.name, data: base64, mime: file.type || 'application/octet-stream' }, timeout: 120000 });
     toast('上传成功');
-    renderMedia();
+    refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 }
 window.uploadMedia = () => {
   const el = document.getElementById('media-file-input');
   if (el) el.click();
 };
-window.delMedia = async (id) => { if (!confirm('确定删除？')) return; try { await api('/admin/media/' + id, { method: 'DELETE' }); toast('已删除'); renderMedia(); } catch (e) { toast(e.message, 'error'); } };
+window.delMedia = async (id) => { if (!confirm('确定删除？')) return; const view = activeView; try { await api('/admin/media/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 外观（Typecho 模式：主题列表 → 选主题 → 专属设置页） ═══
 let currentThemeId = null;
@@ -736,6 +771,7 @@ async function renderThemes() {
 window.renderThemes = renderThemes;
 
 window.uploadTheme = async (input) => {
+  const view = activeView;
   const file = input.files && input.files[0];
   if (!file) return;
   const msg = document.getElementById('themeInstallMsg');
@@ -751,7 +787,7 @@ window.uploadTheme = async (input) => {
     });
     const r = await api('/admin/themes/install', { method: 'POST', body: { name: file.name, data } });
     toast('主题「' + (r.name || r.themeId) + '」安装成功');
-    renderThemes();
+    refreshView(view);
   } catch (e) {
     if (msg) msg.textContent = '';
     toast(e.message || '安装失败', 'error');
@@ -759,7 +795,7 @@ window.uploadTheme = async (input) => {
   }
 };
 
-window.activateTheme = async (themeId) => { try { await api('/admin/themes/' + encodeURIComponent(themeId) + '/activate', { method: 'POST' }); toast('已切换主题'); renderThemes(); } catch (e) { toast(e.message, 'error'); } };
+window.activateTheme = async (themeId) => { const view = activeView; try { await api('/admin/themes/' + encodeURIComponent(themeId) + '/activate', { method: 'POST' }); toast('已切换主题'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 通用设置表单（主题设置 / 插件设置共用）═══
 // schema 来自 theme.json 的 settings 或 plugin.json 的 settings，结构一致
@@ -862,9 +898,10 @@ function readSettingsForm(keyAttr) {
   return body;
 }
 
-window.openThemeSettings = async (themeId) => {
+window.openThemeSettings = themeId => showView('theme-settings:' + themeId, signal => loadThemeSettings(themeId, signal), true);
+async function loadThemeSettings(themeId, signal) {
   currentThemeId = themeId;
-  const r = await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings');
+  const r = await api('/admin/themes/' + encodeURIComponent(themeId) + '/settings', { signal });
   const theme = r.theme || {};
   const schema = r.schema || [];
   const values = r.values || {};
@@ -877,10 +914,10 @@ window.openThemeSettings = async (themeId) => {
     html += settingsFormHTML(schema, values, 'data-ts-key');
     html += '<button class="btn btn-primary" onclick="saveThemeSettings(\'' + escape(themeId) + '\')">保存设置</button>';
   }
-  html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="renderThemes()">← 返回主题列表</button></div></div>';
+  html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="navigate(\'themes\')">← 返回主题列表</button></div></div>';
   setTopbar('');
   document.getElementById('content').innerHTML = html;
-};
+}
 
 window.saveThemeSettings = async (themeId) => {
   // 直接从 DOM 读取已渲染的字段（避免重复 GET 请求）
@@ -899,12 +936,14 @@ async function renderUsers() {
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>用户名</th><th>昵称</th><th>邮箱</th><th>角色</th><th>状态</th><th>文章</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">暂无用户</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
 }
-window.openUserEditor = async (id) => {
+window.openUserEditor = id => showView('user-editor:' + (id || 'new'), signal => loadUserEditor(id, signal), true);
+async function loadUserEditor(id, signal) {
   let u = null;
-  if (id) { try { const r = await api('/admin/users?pageSize=100'); u = (r.items || []).find(x => x.id === id); } catch (e) {} }
+  if (id) { const r = await api('/admin/users?pageSize=100', { signal }); u = (r.items || []).find(x => x.id === id); }
+  if (signal.aborted) return;
   const roleOpts = [['admin', '管理员'], ['editor', '编辑'], ['author', '作者'], ['contributor', '投稿者'], ['subscriber', '订阅者']].map(x => '<option value="' + x[0] + '"' + (u && u.role === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
   const statusOpts = [['active', '正常'], ['banned', '禁用']].map(x => '<option value="' + x[0] + '"' + (u && u.status === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
-  setTopbar('<button class="btn btn-outline" onclick="renderUsers()">← 返回</button>');
+  setTopbar('<button class="btn btn-outline" onclick="navigate(\'users\')">← 返回</button>');
   document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">' + (id ? '编辑用户' : '新建用户') + '</h3>' +
     '<div class="form-group"><label>用户名</label><input id="ue-name" value="' + escape(u ? u.username : '') + '"' + (id ? ' disabled' : '') + '></div>' +
     '<div class="form-group"><label>昵称</label><input id="ue-nick" value="' + escape(u ? u.nickname : '') + '"></div>' +
@@ -913,8 +952,9 @@ window.openUserEditor = async (id) => {
     '<div class="form-group"><label>角色</label><select id="ue-role">' + roleOpts + '</select></div>' +
     '<div class="form-group"><label>状态</label><select id="ue-status">' + statusOpts + '</select></div>' +
     '<button class="btn btn-primary" onclick="saveUser(' + (id ? '\'' + id + '\'' : 'null') + ')">保存</button></div>';
-};
+}
 window.saveUser = async (id) => {
+  const view = activeView;
   const body = { username: document.getElementById('ue-name').value.trim(), nickname: document.getElementById('ue-nick').value.trim(), email: document.getElementById('ue-email').value.trim(), role: document.getElementById('ue-role').value, status: document.getElementById('ue-status').value };
   const pass = document.getElementById('ue-pass').value;
   if (pass) body.password = pass;
@@ -922,10 +962,10 @@ window.saveUser = async (id) => {
   try {
     if (id) await api('/admin/users/' + id, { method: 'PUT', body });
     else await api('/admin/users', { method: 'POST', body });
-    toast('已保存'); pageNum = 1; renderUsers();
+    toast('已保存'); if (activeView?.navigation === view.navigation) { pageNum = 1; refreshView(view); }
   } catch (e) { toast(e.message, 'error'); }
 };
-window.delUser = async (id) => { if (!confirm('确定删除该用户？')) return; try { await api('/admin/users/' + id, { method: 'DELETE' }); toast('已删除'); renderUsers(); } catch (e) { toast(e.message, 'error'); } };
+window.delUser = async (id) => { if (!confirm('确定删除该用户？')) return; const view = activeView; try { await api('/admin/users/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 设置 ═══
 async function renderSettings() {
@@ -1088,6 +1128,8 @@ function mdToHtml(md) {
 // ═══ 导航（事件委托，兼容插件动态注入的菜单项）═══
 window.gotoPage = (p) => { pageNum = p; render(); };
 window.navigate = (next, status = '') => {
+  const key = [next, 1, next === 'posts' || next === 'comments' ? status : ''].join(':');
+  if (activeView?.key === key && !activeView.signal.aborted && !activeView.failed) return activeView.promise;
   page = next; pageNum = 1;
   if (next === 'posts') postStatus = status;
   if (next === 'comments') { commentStatus = status; selectedComments.clear(); }
@@ -1097,7 +1139,7 @@ window.navigate = (next, status = '') => {
     if (active) el.setAttribute('aria-current', 'page');
     else el.removeAttribute('aria-current');
   });
-  return render();
+  return render(true);
 };
 document.querySelector('.sidebar-menu').addEventListener('click', (ev) => {
   const el = ev.target.closest('.menu-item');
@@ -1210,9 +1252,9 @@ async function renderPluginMenuPanel(id) {
   const c = document.getElementById('content');
   c.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   let plugins = [];
-  try { plugins = (await api('/admin/plugins')) || []; } catch (e) { plugins = []; }
+  plugins = (await api('/admin/plugins')) || [];
   const p = plugins.find(x => x.dir === id);
-  if (p && p.hasSettings) return openPluginSettings(id);
+  if (p && p.hasSettings) return renderPluginSettings(id);
   c.innerHTML = '<div class="card"><h3 class="card-title">插件页面</h3>'
     + '<p style="color:#64748b">插件「' + escape(p ? (p.name || id) : id) + '」注册了后台菜单，但没有可打开的后台页面。</p>'
     + '<p style="color:#64748b">插件可以：① 在 <code>plugin.json</code> 里写 <code>settings</code>，后台会自动生成设置页；'
@@ -1222,13 +1264,11 @@ async function renderPluginMenuPanel(id) {
 }
 
 // ═══ 插件设置页（对标 Typecho 插件配置面板 / WP 插件设置页）═══
-async function openPluginSettings(dir) {
+async function renderPluginSettings(dir) {
   setTopbar('');
   const c = document.getElementById('content');
   c.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-  let r;
-  try { r = await api('/admin/plugins/' + encodeURIComponent(dir) + '/config'); }
-  catch (e) { c.innerHTML = '<div class="card"><p style="color:#ef4444">加载失败：' + escape(e.message) + '</p><button class="btn btn-outline" onclick="navigate(\'plugins\')">← 返回插件列表</button></div>'; return; }
+  const r = await api('/admin/plugins/' + encodeURIComponent(dir) + '/config');
 
   const schema = r.schema || [];
   const values = r.values || {};
@@ -1243,7 +1283,7 @@ async function openPluginSettings(dir) {
   html += '<div style="margin-top:12px"><button class="btn btn-outline" onclick="navigate(\'plugins\')">← 返回插件列表</button></div></div>';
   c.innerHTML = html;
 }
-window.openPluginSettings = openPluginSettings;
+window.openPluginSettings = dir => showView('plugin-settings:' + dir, () => renderPluginSettings(dir), true);
 
 window.savePluginSettings = async (dir) => {
   const body = readSettingsForm('data-ps-key');
@@ -1254,24 +1294,27 @@ window.savePluginSettings = async (dir) => {
 };
 
 window.togglePlugin = async (dir) => {
+  const view = activeView;
   try {
     const r = await api('/admin/plugins/toggle', { method: 'POST', body: { dir } });
     if (r && r.hot && r.hot !== 'ok') toast('状态已保存，但热加载失败：' + r.hot, 'error');
     else toast(r && r.active ? '插件已启用' : '插件已禁用');
-    renderPlugins();
+    refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
 
 window.uninstallPlugin = async (dir, name) => {
   if (!confirm('确定卸载插件「' + name + '」？目录会移动到回收区，可手动恢复。')) return;
+  const view = activeView;
   try {
     await api('/admin/plugins/' + encodeURIComponent(dir), { method: 'DELETE' });
     toast('插件已卸载');
-    renderPlugins();
+    refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
 
 window.uploadPlugin = async (input) => {
+  const view = activeView;
   const file = input.files && input.files[0];
   if (!file) return;
   if (!/\.zip$/i.test(file.name)) { toast('请选择 .zip 插件包', 'error'); input.value = ''; return; }
@@ -1285,7 +1328,7 @@ window.uploadPlugin = async (input) => {
     });
     const r = await api('/admin/plugins/install', { method: 'POST', body: { name: file.name, data }, timeout: 120000 });
     toast('插件「' + (r.name || r.dir) + '」安装成功，请在列表中启用');
-    renderPlugins();
+    refreshView(view);
   } catch (e) {
     toast(e.message || '安装失败', 'error');
     input.value = '';
