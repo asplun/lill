@@ -1,6 +1,6 @@
 # lill API 文档
 
-> 版本：v2.0.0 ｜ 后端：Node.js 原生 HTTP + SQLite ｜ 前端：Astro 静态站点
+> 版本：v1.3.0 ｜ 后端：Node.js 原生 HTTP + SQLite ｜ 前端：Astro 静态站点
 >
 > 前后端分离：后端只暴露 `/api/*`，前端静态文件由 Nginx 直接服务。
 

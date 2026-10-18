@@ -11,7 +11,7 @@
 #   后端按 THEMES_DIR = <项目根>/frontend/themes 读取主题模板，前端也通过
 #   /themes/<id>/... 请求主题资源。二者必须指向同一棵树，否则会出现
 #   “后台切了主题、前台还是旧样式”。
-#   构建产物由 deploy.sh 同步进 frontend/（或你手动 cp -r frontend/dist/* frontend/）。
+#   安装包已包含静态文件；源码构建后用 rsync -a --exclude='/themes/' dist/ ./ 同步。
 
 server {
     listen 80;
@@ -61,6 +61,10 @@ server {
     # ── 主题与构建产物：缺失即 404，禁止回退到 index.html ──
     # 这条很容易被忽略：一旦回退成首页，主题样式/脚本 404 时会返回一段 HTML，
     # 浏览器报 "Unexpected token '<'"、CSS 静默失效，排查起来非常费劲。
+    # 主题服务端扩展与依赖不允许作为静态文件下载。
+    location ~ ^/themes/[^/]+/(backend|node_modules)(/|$) {
+        return 404;
+    }
     location /themes/ {
         # 主题会被手工修改，强制带 ETag 回源校验，否则改了看不到效果
         add_header Cache-Control "no-cache";
@@ -71,6 +75,14 @@ server {
         expires 30d;
         add_header Cache-Control "public, immutable";
     }
+    location ~ ^/admin/.+\.(css|js|map|svg|png|ico|woff2?)$ {
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+    # 源码和依赖文件保留在磁盘，但不作为站点资源提供。
+    location ~ ^/(src|public|dist|node_modules)(/|$) { return 404; }
+    location ~ ^/(package(-lock)?\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|astro\.config\.mjs)$ { return 404; }
+    location ~ (^|/)\.(?!well-known(/|$)) { return 404; }
 
     # ── 动态路由回退到各自的静态壳 ──
     location /post/     { try_files $uri $uri/ /post/index.html; }

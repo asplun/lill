@@ -4,6 +4,7 @@
  * 只负责：<html>/<head>/<body> 骨架 + 把页面类型告诉主题引擎
  * 具体长什么样，100% 由 themes/<激活主题>/<type>.html 决定
  */
+import pkg from '../../package.json';
 export interface Props {
   page?: string;   // index | post | page | archive | category | tag | search | 404
   title?: string;
@@ -22,7 +23,7 @@ const fullTitle = title ? `${title} - ${siteTitle}` : siteTitle;
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content={description || '一个轻量、可扩展、前后端分离的博客系统'} />
-  <meta name="generator" content="lill v2.0" />
+  <meta name="generator" content={'lill v' + pkg.version} />
   
   <!-- Open Graph -->
   <meta property="og:site_name" content={siteTitle} />

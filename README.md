@@ -1,59 +1,35 @@
-# lill 博客系统
+# lill 博客系统 v1.3.0
 
-> 轻量、可扩展、前后端分离的博客系统  
-> 后端 Node.js + SQLite 纯 REST API，前端 Astro 静态站点，主题即模板。
+轻量、可扩展、前后端分离的博客系统。后端使用 Node.js 原生 `node:http` + `node:sqlite` 提供 REST API，前端使用 Astro 4 构建静态外壳，后台由原生 JavaScript 驱动。
 
-与 Typecho 1.3 对照的已知缺陷、尚未闭环的功能及实现边界见 **[功能对照与缺陷清单](docs/Typecho1.3功能对照.md)**。以下能力说明不表示已全面对齐 Typecho。
+[发布说明](docs/发布说明.md) · [更新日志](CHANGELOG.md) · [部署指南](docs/部署指南.md) · [API 文档](docs/API文档.md)
 
-## 特性
+## 当前能力
 
-### 核心功能
-- **前后端分离**：后端只处理 `/api/*`，前端静态文件由 Nginx 直接服务
-- **主题系统**：主题放在 `frontend/themes/` 下，`theme.json` 声明元数据与设置项
-- **主题后端扩展**：主题自带 `backend/index.js`（对标 Typecho 的 `functions.php`），可注册私有接口、短代码、页面模板数据；core 不含任何具体主题实现，换主题零改动
-- **插件系统**：`backend/plugins/<dir>/{plugin.json,index.js}`，插件可注册 REST 路由、监听系统钩子、注册后台菜单、读写独立配置；`plugin.json` 声明 `settings` 后后台**自动生成插件设置页**；上传 ZIP 即装，启用/禁用**热加载无需重启**（对标 Typecho 的 `Plugin::activate()` / WordPress 的 `add_action`）
-- **默认插件**：自带「Hello World 公告栏」，首次启动自动启用——后台可配置公告文字/位置/配色，默认主题会直接显示，其他主题可通过 `GET /api/v1/hello` 读取
-- **多用户**：支持多用户角色（管理员、编辑、作者）
-- **评论管理**：支持状态筛选、审核、回复和批量操作；按文章筛选已有 API，后台入口待补
-- **永久链接**：自定义 URL 结构（`/archives/{cid}/`、`/category/{slug}/` 等）
-- **REST API**：完整的 RESTful API，支持第三方客户端
-- **文章历史快照**：更新时保存历史记录；版本查看、回滚与服务端修订草稿界面待补
-- **媒体管理**：上传时自动生成缩略图
-- **小工具系统**：自定义 HTML 小工具，支持侧边栏位置
+- **内容写作**：Markdown 文章、独立页面、分类、标签、发布时间、单篇评论开关和页面顺序。摘要可自动生成或手填；自动模式遵循长度设置与 `<!--more-->`，HTML 摘要仅保留安全行内标签。
+- **角色权限**：管理员、编辑、作者、投稿者、订阅者五种角色；后台菜单与默认入口按角色显示，接口独立检查权限。作者管理自己的内容，投稿者仅管理自己的草稿，订阅者无内容管理权限。
+- **阅读与评论**：文章排序、分页、摘要、评论平铺/嵌套和分页设置接入公共读取；文章条数仅在主题显式保存覆盖值时优先使用主题配置。评论支持审核、回复、状态筛选和批量操作，按文章筛选已有 API，后台入口待补。
+- **永久链接**：文章、分类和标签的地址生成与访问解析共用规则，列表、上下篇和 RSS 使用一致地址；Nginx 需将自定义路径回退到前台外壳。
+- **主题与插件**：主题安装、切换、独立配置、声明式设置表单和主题后端扩展；插件 ZIP 安装、启停、设置表单、路由、钩子和后台菜单。启用失败会回滚运行时注册；内置 Hello World 公告栏插件。
+- **附件与备份**：附件上传、列表、删除；图片缩略图为引用原图的 SVG，并非压缩或裁剪图片。后台可创建、列出并分别下载 SQLite 一致性快照和附件 ZIP，支持 WAL 数据，尚无恢复流程。
+- **后台交互**：请求超时提示、失败重试、切页取消和浏览器本地草稿恢复；登录限流、接口角色校验，以及受保护写接口的 CSRF 请求头检查。
 
-### 安全特性
-- **CSRF 防护**：所有写操作自动携带 CSRF Token
-- **登录验证码**：SVG 验证码，防止暴力破解
-- **多因素认证**：已内置标准 TOTP（RFC 6238）校验与密钥生成，供后续接入登录流程；当前登录默认不强制二次验证
-- **速率限制**：API 请求频率限制
-- **安全响应头**：X-Content-Type-Options、X-Frame-Options 等
+v1.3.0 修复了 Typecho 1.3 对照清单中的 B01–B15，但不代表全面功能对齐。多分类、页面层级、完整私密/密码阅读、服务端修订草稿、附件编辑替换及备份恢复仍未闭环，详见[功能对照与实现边界](docs/Typecho1.3功能对照.md)。
 
-### 性能优化
-- **请求去重**：相同请求自动复用 Promise
-- **加载恢复**：请求超时提示、手动重试和切页取消，避免旧请求覆盖当前页面
-- **离线支持**：Service Worker 缓存
-- **CDN 支持**：静态资源 CDN 加速
-- **缓存策略**：智能缓存，减少服务器压力
-
-### 开发体验
-- **API 文档**：完整的 API 文档（`docs/API文档.md`）
-- **多语言支持**：i18n 接口，支持多语言
-- **主题在线编辑器**：后台直接编辑主题文件
-- **安装日志**：安装过程日志记录
-- **系统监控**：实时监控、日志分析
+当前未默认注册 Service Worker，不承诺离线使用；多语言、CDN 和主题在线编辑器也不作为已完成能力。主题文件读写 API 已存在，界面流程需另行验证。
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|------|
 | 后端 | Node.js（`node:http` + `node:sqlite`） |
-| 前端 | Astro（静态站点） |
-| 数据库 | SQLite |
-| 部署 | Nginx + PM2 |
+| 前台与后台 | Astro 4 静态外壳 + 原生 JavaScript |
+| 数据库 | Node 内置 SQLite，无需外部数据库服务 |
+| 部署 | Nginx / OpenResty + Node 进程管理（面板或 PM2） |
 
 ## 界面预览
 
-默认主题与独立后台采用冷灰蓝背景、哑光面板和深色操作按钮。后台支持手机菜单、按记录排列的列表和可见的批量选择入口；默认主题保留布局、侧栏组件、深色模式和独立页面模板设置。以下为本地验收环境的实际截图，内容为演示数据；第三方主题自行控制前台样式。
+以下截图使用演示数据，展示默认主题与独立后台；第三方主题自行控制前台样式。
 
 **前台（默认主题）**
 
@@ -101,64 +77,54 @@
 
 ## 快速开始
 
-### 1. 环境要求
+### 环境要求
 
-- **Node.js >= 22**（推荐 24 LTS，后端使用 `node:sqlite`，18/20 不支持）
-- SQLite 3（Node.js 内置 `node:sqlite`，无需单独安装）
-- Nginx / OpenResty（生产环境）
+推荐 **Node.js 24 LTS**，最低 **22.13.0**，无需 `--experimental-sqlite`。生产环境使用 Nginx / OpenResty；附件备份需要系统 `zip` 命令，源码构建同步需要 `rsync`。
 
-### 2. 安装
+### 方式一：发布包部署
+
+从 [GitHub Releases](https://github.com/asplun/lill/releases) 下载 `lill-v1.3.0.zip` 或 `lill-v1.3.0.tar.gz`。两者顶层目录均为 `lill/`，包含仓库跟踪的源码和直接位于 `frontend/` 的预构建静态文件，包内没有 `frontend/dist/`。
 
 ```bash
-# 克隆仓库
+# 在空目录解压，勿覆盖运行中的站点
+tar -xzf lill-v1.3.0.tar.gz
+cd lill/backend
+npm install --omit=dev
+# 使用 pnpm 时改为：pnpm install --prod --frozen-lockfile
+```
+
+发布包无需安装前端依赖或执行 Astro 构建。仅附带 `themes/default`（含其后端扩展）和内置插件，不包含数据库、上传文件、依赖目录、密钥或第三方主题。
+
+GitHub 自动生成的 `Source code` 归档是源码快照，需按下方源码流程安装依赖和构建。
+
+### 方式二：源码部署
+
+```bash
 git clone https://github.com/asplun/lill.git
 cd lill
-
-# 安装依赖
-cd frontend && pnpm install
-
-# 构建前端
+git checkout v1.3.0
+cd backend
+npm install --omit=dev
+# 后端也可使用：pnpm install --prod --frozen-lockfile
+cd ../frontend
+pnpm install --frozen-lockfile
 pnpm run build
-
-# 启动后端（开发）
-cd ../backend
-node server.js
+rsync -a --exclude='/themes/' dist/ ./
 ```
 
-### 3. 生产部署
+源码部署必须安装后端和前端两端依赖。构建后将 `dist/` 内容同步到 `frontend/`，保留原有 `themes/`，不要用构建副本覆盖主题后端扩展或已安装的第三方主题。
 
-详细步骤见 **[docs/部署指南.md](docs/部署指南.md)**，含：
+两种方式接下来均按[部署指南](docs/部署指南.md)设置固定 `JWT_SECRET`，启动 `backend/server.js`，并将 Nginx 的根目录指向 `frontend/`，代理 `/api/` 到后端。首次访问 `/admin/`，按向导填写站点地址和管理员账号。
 
-- 🟢 **宝塔面板**部署（软件安装 → 建站 → Nginx 配置 → PM2 → SSL）
-- 🟢 **1Panel 面板**部署（OpenResty → 反向代理 → Node 环境 → SSL）
-- ⚙️ **裸机手动部署**
-- 🔧 升级维护与常见问题排查
+### 生成发布包
 
-**快速版：**
+维护者可在源码根目录使用[发布打包脚本](scripts/package-release.py)：
 
 ```bash
-# 1. 构建前端
-cd frontend && pnpm install && pnpm run build
-rsync -a --exclude='/themes/' dist/ ./
-
-# 2. 启动后端（PM2）
-cd ../backend
-openssl rand -hex 32          # 生成的密钥填入 ecosystem.config.cjs 的 JWT_SECRET
-pm2 start ecosystem.config.cjs && pm2 save
-
-# 3. Nginx：root 指向 frontend/，/api/ 反代到 127.0.0.1:3000
-#    /theme.js 返回通用引擎，不能 alias 到某个主题脚本
-#    完整配置模板见 docs/部署指南.md
+python3 scripts/package-release.py --ref v1.3.0 --output /tmp/lill-release
 ```
 
-### 4. 安装向导
-
-首次访问后台 `/admin/` 会自动跳转到安装向导：
-
-1. 环境检查
-2. 站点信息（名称、描述、URL）
-3. 管理员账号（用户名、密码、邮箱）
-4. 数据库初始化（默认主题、Hello World 文章）
+脚本从指定 Git 引用导出干净源码，仅构建默认主题，将静态产物合并到包内 `frontend/`，输出 ZIP、tar.gz 和 `SHA256SUMS`；运行脚本需要 Python 3、Node.js 和 pnpm，安装生成的发布包不需要构建。发布流程见[发布说明](docs/发布说明.md)。
 
 ## 目录结构
 
@@ -167,18 +133,22 @@ lill/
 ├── backend/           # Node.js 后端
 │   ├── server.js      # 主服务
 │   ├── ecosystem.config.cjs  # PM2 配置
-│   └── data/          # SQLite 数据库
 │   ├── routes/        # 路由：public / auth / install，后台拆分在 routes/admin/
 │   ├── lib/           # 核心库：认证、路由、主题、插件、安全…
 │   ├── plugins/       # 插件目录（plugin.json + index.js）
 │   ├── test/          # node:test 用例（架构/权限/安全/回归）
-│   └── data/          # SQLite 数据库（不提交）
+│   ├── data/          # 运行时数据库与备份，不随发布包分发
+│   └── uploads/       # 运行时上传文件，不随发布包分发
 ├── frontend/          # Astro 前端
 │   ├── src/           # 源码
 │   ├── public/        # 静态资源
 │   ├── themes/        # 主题目录
-│   └── dist/          # 构建输出
+│   ├── index.html     # 发布包直接提供；源码需构建后同步
+│   └── dist/          # 仅源码构建时产生，不进入发布包
+├── scripts/           # 发布打包等维护工具
 ├── docs/              # 文档（部署/主题/插件/API）
+├── CHANGELOG.md        # 更新日志
+├── LICENSE            # MIT 许可证
 └── README.md
 ```
 
@@ -186,12 +156,15 @@ lill/
 
 | 文档 | 内容 |
 |---|---|
+| [发布说明](docs/发布说明.md) | v1.3.0 变更、发布包与升级说明 |
+| [更新日志](CHANGELOG.md) | 版本变更记录 |
 | [部署指南](docs/部署指南.md) | 宝塔面板 / 1Panel 面板 / 裸机部署、升级维护、问题排查 |
 | [主题开发指南](docs/主题开发指南.md) | 主题目录结构、`theme.json` 规范、模板标签、设置控件 |
-| [主题后端扩展开发指南](docs/主题后端扩展开发指南.md) | `backend/index.js` 契约：私有接口、短代码、页面模板数据、小组件定义 |
+| [主题后端扩展开发指南](docs/主题后端扩展开发指南.md) | `theme.json.backend.entry` 与扩展契约：私有接口、短代码、页面模板数据、小组件定义 |
 | [API 文档](docs/API文档.md) | 公开 / 认证 / 安装 / 管理接口完整参考 |
 | [插件开发指南](docs/插件开发指南.md) | 插件目录结构、`plugin.json` 规范、`ctx` API、系统钩子、打包安装 |
+| [Typecho 1.3 功能对照](docs/Typecho1.3功能对照.md) | 已修复问题、功能差距与实现边界 |
 
 ## License
 
-MIT
+采用 [MIT 许可证](LICENSE)。

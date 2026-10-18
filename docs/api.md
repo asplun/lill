@@ -1,103 +1,33 @@
-# lill API 文档
+# lill API 入口
 
-## 基础信息
+本文是 v1.3.0 的简短入口，接口约定、权限、参数及响应请以 [API 文档](API文档.md)为准。发行版本为 v1.3.0，API 基础路径仍是 `/api/v1`。
 
-- 基础 URL: `https://test.abohe.cn/api/v1`
-- 认证方式: Bearer Token (JWT)
-- 所有写操作需要 CSRF Token
+以下示例假设已按[部署指南](部署指南.md)完成安装，站点地址为 `https://blog.example.com`。公开路由没有 `/public` 前缀。
 
-## 认证
+## 站点引导数据
 
-### POST /auth/login
-登录
-```json
-{ "username": "admin", "password": "admin123", "rememberMe": false }
+```bash
+curl 'https://blog.example.com/api/v1/site/bootstrap?path=%2F'
 ```
 
-### GET /auth/me
-获取当前用户信息
+实际路由为 `GET /api/v1/site/bootstrap`。`path` 传前台实际路径，用于解析自定义永久链接；也可使用 `type`、`slug`、`page` 等参数，详见权威文档。
 
-## 公开 API
+## 文章列表
 
-### GET /public/bootstrap
-获取站点初始化数据
+```bash
+curl 'https://blog.example.com/api/v1/posts?page=1&pageSize=10'
+```
 
-### GET /public/posts
-文章列表
-- 参数: page, pageSize, categoryId, tagId, status
+`GET /api/v1/posts` 仅返回当前可公开阅读的内容，支持 `categoryId`、`categorySlug`、`tag`、`keyword` 等筛选；详情路由为 `GET /api/v1/posts/:slug`。
 
-### GET /public/posts/:id
-文章详情
+## 登录
 
-### GET /public/categories
-分类列表
+```bash
+curl 'https://blog.example.com/api/v1/auth/login' \
+  -H 'Content-Type: application/json' \
+  --data '{"username":"your-admin","password":"your-password","rememberMe":false}'
+```
 
-### GET /public/tags
-标签列表
+请替换为安装时创建的账号。成功响应中的 `data` 含 `token`、`csrfToken` 和 `user`；登录接口本身无需 Bearer 或 CSRF 请求头。
 
-### GET /public/comments
-评论列表
-
-### POST /public/comments
-发表评论
-
-### GET /public/search
-搜索
-- 参数: q
-
-## 后台 API (需要认证)
-
-### 文章管理
-- GET /admin/posts - 文章列表
-- POST /admin/posts - 创建文章
-- PUT /admin/posts/:id - 更新文章
-- DELETE /admin/posts/:id - 删除文章
-
-### 页面管理
-- GET /admin/pages - 页面列表
-- POST /admin/pages - 创建页面
-- PUT /admin/pages/:id - 更新页面
-- DELETE /admin/pages/:id - 删除页面
-
-### 分类管理
-- GET /admin/categories - 分类列表
-- POST /admin/categories - 创建分类
-- PUT /admin/categories/:id - 更新分类
-- DELETE /admin/categories/:id - 删除分类
-
-### 标签管理
-- GET /admin/tags - 标签列表
-- POST /admin/tags - 创建标签
-- PUT /admin/tags/:id - 更新标签
-- DELETE /admin/tags/:id - 删除标签
-
-### 评论管理
-- GET /admin/comments - 评论列表
-- PUT /admin/comments/:id - 更新评论
-- DELETE /admin/comments/:id - 删除评论
-
-### 媒体管理
-- GET /admin/media - 媒体列表
-- POST /admin/media/upload - 上传文件
-- DELETE /admin/media/:id - 删除文件
-
-### 用户管理
-- GET /admin/users - 用户列表
-- POST /admin/users - 创建用户
-- PUT /admin/users/:id - 更新用户
-- DELETE /admin/users/:id - 删除用户
-
-### 主题管理
-- GET /admin/themes - 主题列表
-- POST /admin/themes/install - 安装主题
-- PUT /admin/themes/:id/activate - 激活主题
-- GET /admin/themes/settings - 主题设置
-- PUT /admin/themes/settings - 保存主题设置
-
-### 系统设置
-- GET /admin/options - 获取设置
-- PUT /admin/options - 保存设置
-
-### 备份
-- POST /admin/backup - 创建备份
-- GET /admin/backup/:id/download - 下载备份
+受保护接口携带 `Authorization: Bearer <token>`，其中写操作还需 `X-CSRF-Token: <csrfToken>`。权限由服务端按当前账号角色检查，完整管理接口见 [API 文档](API文档.md)。

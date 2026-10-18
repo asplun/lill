@@ -5,9 +5,11 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
+import { fileURLToPath } from 'node:url';
 import * as sqlite from 'node:sqlite';
 
 const BACKUP_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const backendDir = fileURLToPath(new URL('../../', import.meta.url));
 const runFile = promisify(execFile);
 const isBackupName = name => /^lill-(?:backup-[\w-]+\.db|uploads-[\w-]+\.zip)$/.test(name);
 
@@ -36,7 +38,6 @@ async function snapshotDatabase(sourcePath, targetPath) {
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, authenticate } = ctx;
   const { route, logAction } = helpers;
-  const backendDir = dirname(dirname(ctx.THEMES_DIR));
   // Resolve lazily so registration remains usable with lightweight route contexts.
   const getBackupDir = () => {
     if (!ctx.DB_PATH) throw new Error('备份缺少运行上下文 DB_PATH');

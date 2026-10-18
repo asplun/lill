@@ -1,5 +1,5 @@
 // PM2 配置 — 宝塔 / 1Panel / 裸机通用
-// 用法：在 backend 目录下执行 `pm2 start ecosystem.config.js`
+// 用法：在 backend 目录下执行 `pm2 start ecosystem.config.cjs`
 module.exports = {
   apps: [{
     name: 'lill-backend',
