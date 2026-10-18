@@ -1,5 +1,5 @@
 /** 通用主题与站点设置服务。 */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { mergeThemeConfig } from './theme-runtime.js';
 
@@ -14,13 +14,16 @@ export function createSettings(db, { themesDir }) {
 
   function manifestOf(themeId) {
     if (!themeId) return null;
-    if (manifestCache.has(themeId)) return manifestCache.get(themeId);
+    const path = join(themesDir, themeId, 'theme.json');
+    let modified = 0;
+    try { modified = existsSync(path) ? statSync(path).mtimeMs : 0; } catch { modified = 0; }
+    const hit = manifestCache.get(themeId);
+    if (hit && hit.modified === modified) return hit.manifest;
     let manifest = null;
     try {
-      const path = join(themesDir, themeId, 'theme.json');
       if (existsSync(path)) manifest = JSON.parse(readFileSync(path, 'utf8'));
     } catch { manifest = null; }
-    manifestCache.set(themeId, manifest);
+    manifestCache.set(themeId, { modified, manifest });
     return manifest;
   }
 
@@ -96,7 +99,7 @@ export function createSettings(db, { themesDir }) {
     } catch { return []; }
   }
 
-  function invalidate() { cfgCache = null; cfgAt = 0; }
+  function invalidate() { cfgCache = null; cfgAt = 0; manifestCache.clear(); }
 
   return { activeThemeRow, themeConfig, opt, switchOpt, checked, option, siteUrl, siteName, adminMail, widgetList, manifestOf, invalidate };
 }

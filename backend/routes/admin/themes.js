@@ -105,6 +105,7 @@ export function register(router, ctx, helpers) {
         try { db.exec('ROLLBACK'); } catch {}
         throw activationError;
       }
+      try { ctx.settings?.invalidate?.(); } catch {}
     } catch (migrationError) {
       try { migrationDb?.exec('ROLLBACK'); } catch {}
       try { migrationDb?.close(); } catch {}
@@ -159,6 +160,7 @@ export function register(router, ctx, helpers) {
       ? themeRuntime.updateConfig(params.themeId, config, body)
       : { ...config, ...body };
     db.prepare('UPDATE themes SET config = ? WHERE theme_id = ?').run(JSON.stringify(merged), params.themeId);
+    try { ctx.settings?.invalidate?.(); } catch {}
     json(res, merged);
   });
 
@@ -238,6 +240,7 @@ export function register(router, ctx, helpers) {
     } else {
       db.prepare('UPDATE themes SET name = ?, version = ? WHERE theme_id = ?').run(manifest.name, manifest.version || '1.0.0', themeId);
     }
+    try { ctx.settings?.invalidate?.(); } catch {}
     logAction(auth.id, 'theme.install', themeId + ' (' + written + ' files, ' + skipped + ' skipped)', req);
     json(res, { themeId, name: manifest.name, version: manifest.version || '1.0.0', files: written, skipped }, 201);
   });
