@@ -1,0 +1,58 @@
+{if $theme.show_comment}
+<section class="comments" id="comments">
+  <h3 class="comments-title">评论 <span>{$commentMeta.total}</span></h3>
+  <div class="comment-list">
+    {if $comments}
+      {loop $comments as $c}
+      <div class="comment-item" id="comment-{$c.id}" data-created-at="{$c.created_at}">
+        <div class="comment-avatar">{if $c.avatar}<img src="{$c.avatar}" alt="" loading="lazy">{else}{$c.author|truncate:1:''}{/if}</div>
+        <div class="comment-body">
+          <div class="comment-head"><strong>{$c.author}</strong><span>{$c.created_at|date}</span></div>
+          <div class="comment-text">{$c.content|nl2br}</div>
+          {if $commentAllowed}<div class="comment-actions"><button type="button" class="comment-reply-btn" data-comment-id="{$c.id}" data-comment-author="{$c.author}">回复</button></div>{/if}
+        </div>
+      </div>
+      {if $c.replies}
+      <div class="comment-replies">
+        {loop $c.replies as $r}
+        <div class="comment-item" id="comment-{$r.id}" data-created-at="{$r.created_at}">
+          <div class="comment-avatar">{if $r.avatar}<img src="{$r.avatar}" alt="" loading="lazy">{else}{$r.author|truncate:1:''}{/if}</div>
+          <div class="comment-body">
+            <div class="comment-head"><strong>{$r.author}</strong><span>{$r.created_at|date}</span></div>
+            <div class="comment-text">{$r.content|nl2br}</div>
+            {if $commentAllowed}<div class="comment-actions"><button type="button" class="comment-reply-btn" data-comment-id="{$r.id}" data-comment-author="{$r.author}">回复</button></div>{/if}
+          </div>
+        </div>
+        {/loop}
+      </div>
+      {/if}
+      {/loop}
+    {else}
+      <p class="comment-empty">还没有评论</p>
+    {/if}
+  </div>
+  {if $commentAllowed}
+  <form class="comment-form lill-comment-form" data-post-id="{$post.id}">
+    <h4>发表评论</h4>
+    <input type="hidden" name="parentId" value="">
+    <div class="comment-reply-target" hidden>
+      <span aria-live="polite"></span>
+      <button type="button" class="comment-cancel-reply">取消回复</button>
+    </div>
+    <div class="comment-form-row">
+      <input type="text" name="authorName" placeholder="昵称 *" aria-label="昵称（必填）" autocomplete="nickname" required maxlength="50">
+      <input type="email" name="authorEmail" placeholder="邮箱（不会公开）" aria-label="邮箱（不会公开）" autocomplete="email">
+      <input type="url" name="authorUrl" placeholder="网站（可选）" aria-label="网站（可选）" autocomplete="url">
+    </div>
+    <textarea name="content" rows="4" placeholder="写下你的评论" aria-label="评论内容（必填）" required maxlength="2000"></textarea>
+    <div class="comment-form-footer">
+      <span class="lill-comment-msg" role="status" aria-live="polite"></span>
+      <span class="comment-char-count">0 / 2000</span>
+      <button type="submit" class="comment-submit">发表评论</button>
+    </div>
+  </form>
+  {else}
+  <p class="comment-closed">评论已关闭</p>
+  {/if}
+</section>
+{/if}

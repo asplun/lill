@@ -217,13 +217,37 @@ window.mdImage = () => {
 };
 window.mdPickMedia = async () => {
   const ta = mdTextarea(); if (!ta) return;
+  const opener = document.activeElement;
   const overlay = document.createElement('div');
   overlay.className = 'media-modal';
-  overlay.innerHTML = '<div class="media-modal-box"><div class="media-modal-head"><strong>从附件库选择图片</strong><span class="mm-actions"><label class="btn btn-sm btn-outline">上传图片<input type="file" id="mm-upload" accept="image/*" style="display:none"></label><button type="button" class="tb" id="mm-close">✕</button></span></div><div class="media-modal-body" id="mm-body"><div class="loading"><div class="spinner"></div></div></div></div>';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'mm-title');
+  overlay.innerHTML = '<div class="media-modal-box"><div class="media-modal-head"><strong id="mm-title">从附件库选择图片</strong><span class="mm-actions"><label class="btn btn-sm btn-outline">上传图片<input type="file" id="mm-upload" accept="image/*" style="display:none"></label><button type="button" class="tb" id="mm-close" aria-label="关闭图片选择">✕</button></span></div><div class="media-modal-body" id="mm-body"><div class="loading"><div class="spinner"></div></div></div></div>';
   document.body.appendChild(overlay);
-  const close = () => overlay.remove();
+  const close = () => {
+    overlay.remove();
+    if (opener && opener.isConnected) opener.focus();
+  };
   overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+  overlay.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    } else if (ev.key === 'Tab') {
+      const focusable = [...overlay.querySelectorAll('button:not([disabled]), input:not([disabled])')]
+        .filter(element => element.getClientRects().length > 0);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault(); last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault(); first.focus();
+      }
+    }
+  });
   overlay.querySelector('#mm-close').onclick = close;
+  overlay.querySelector('#mm-close').focus();
   const body = overlay.querySelector('#mm-body');
   const insert = (url) => { close(); ta.focus(); window.mdWrap('![', '](' + url + ')', '图片描述'); };
   const load = async () => {
@@ -267,24 +291,27 @@ window.mdToggleFullscreen = () => {
   card.classList.toggle('editor-fs');
 };
 window.openPostEditor = async (type, id) => {
+  const signal = window.lillAPI.newRenderScope();
   type = type || 'post';
   const isPage = type === 'page';
   let post = null;
-  if (id) { try { post = await api('/admin/posts/' + id); } catch (e) { return toast(e.message, 'error'); } }
+  if (id) { try { post = await api('/admin/posts/' + id, { signal }); } catch (e) { if (!signal.aborted) toast(e.message, 'error'); return; } }
   let cats = [];
-  try { cats = await api('/admin/categories'); } catch (e) { cats = []; }
+  try { cats = await api('/admin/categories', { signal }); } catch (e) { cats = []; }
   // 独立页面模板（对标 Typecho 页面编辑里的「自定义模板」下拉）
   let pageTpls = [];
   if (isPage) {
-    try { const r = await api('/admin/page-templates'); pageTpls = (r && r.templates) || []; } catch (e) { pageTpls = []; }
+    try { const r = await api('/admin/page-templates', { signal }); pageTpls = (r && r.templates) || []; } catch (e) { pageTpls = []; }
   }
   // 永久链接模板：用于「别名」下方的地址预览（设置接口只取一次并缓存）
   let permalinkTpl = '/archives/{cid}/';
   try {
-    if (!window.__lillOptions) window.__lillOptions = await api('/admin/options');
+    if (!window.__lillOptions) window.__lillOptions = await api('/admin/options', { signal });
     const found = (window.__lillOptions || []).find(o => o.key === 'permalink');
     if (found && found.value) permalinkTpl = found.value;
   } catch (e) { /* 设置读取失败不影响写作 */ }
+  // 请求被切页或另一个编辑器取消后，不再覆盖当前页面。
+  if (signal.aborted) return;
   const curTpl = post ? (post.template || '') : '';
   const tplOpts = ['<option value=""' + (curTpl ? '' : ' selected') + '>默认模板（page.html）</option>']
     .concat(pageTpls.map(t => '<option value="' + escape(t.key) + '"' + (curTpl === t.key ? ' selected' : '') + '>' + escape(t.name) + '（' + escape(t.file) + '）</option>'))
@@ -557,7 +584,7 @@ window.delCat = async (id) => { if (!confirm('确定删除？该分类下的文�
 // ═══ 标签 ═══
 async function renderTags() {
   const r = await api('/admin/tags?pageSize=100&page=' + pageNum);
-  const rows = (r.items || []).map(t => '<tr><td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openTagEditor(\'' + t.id + '\',\'' + escape(t.name) + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button></td></tr>').join('');
+  const rows = (r.items || []).map(t => '<tr><td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openTagEditor(' + jsArg(t.id) + ',' + jsArg(t.name) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openTagEditor()">+ 新建标签</button>');
   document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty">暂无标签</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();

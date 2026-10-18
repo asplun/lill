@@ -100,6 +100,7 @@ async function createAdminApp(options = {}) {
     ...(options.responses || {}),
   };
   const lillAPI = {
+    newRenderScope: () => new AbortController().signal,
     request: async (path, opts = {}) => {
       apiCalls.push({ path, opts });
       if (path in responses) return responses[path];
@@ -282,4 +283,24 @@ test('评论状态筛选在重建页面容器后保留', async () => {
   elements.get('content').innerHTML = '<div class="loading"></div>';
   await sandbox.renderComments();
   assert.ok(apiCalls.some(call => call.path === '/admin/comments?page=1&pageSize=20&status=pending'));
+});
+
+test('标签编辑按钮保留名称中的引号和反斜杠，并保存修改', async () => {
+  const name = 'Reader\'s "notes" \\ archive';
+  let promptDefault;
+  const { sandbox, elements, ctx, apiCalls } = await createAdminApp({
+    prompt: (_message, value) => { promptDefault = value; return 'Renamed notes'; },
+    responses: {
+      '/admin/tags?pageSize=100&page=1': { items: [{ id: 'tag-1', name, slug: 'notes' }], meta: {} },
+    },
+  });
+  await sandbox.renderTags();
+  const onclick = [...elements.get('content').innerHTML.matchAll(/onclick="([^"]*)"/g)]
+    .map(match => decodeEntities(match[1])).find(code => code.startsWith('openTagEditor('));
+  assert.ok(onclick, '缺少标签编辑按钮');
+  vm.runInContext(onclick, ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(promptDefault, name);
+  const update = apiCalls.find(call => call.path === '/admin/tags/tag-1' && call.opts.method === 'PUT');
+  assert.equal(update?.opts.body.name, 'Renamed notes');
 });

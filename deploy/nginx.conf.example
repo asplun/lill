@@ -31,6 +31,13 @@ server {
     root /www/wwwroot/lill/frontend;
     index index.html;
 
+    # 固定的是通用引擎入口；活动主题脚本由引擎按 bootstrap.themeId 加载。
+    # 升级旧站时请移除指向 themes/<某主题>/theme.js 的历史 alias。
+    location = /theme.js {
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+
     # ── 后端 API 反向代理 ──
     location /api/ {
         proxy_pass http://127.0.0.1:3000;
@@ -70,7 +77,10 @@ server {
     location /tag/      { try_files $uri $uri/ /tag/index.html; }
     location /page/     { try_files $uri $uri/ /page/index.html; }
     location /search/   { try_files $uri $uri/ /search/index.html; }
-    location /admin/    { try_files $uri $uri/ /admin/index.html; }
+    location /admin/    {
+        add_header Cache-Control "no-cache";
+        try_files $uri $uri/ /admin/index.html;
+    }
 
     # ── RSS Feed ──
     location = /feed.xml {

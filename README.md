@@ -137,13 +137,15 @@ node server.js
 ```bash
 # 1. 构建前端
 cd frontend && pnpm install && pnpm run build
+rsync -a --exclude='/themes/' dist/ ./
 
 # 2. 启动后端（PM2）
 cd ../backend
 openssl rand -hex 32          # 生成的密钥填入 ecosystem.config.cjs 的 JWT_SECRET
 pm2 start ecosystem.config.cjs && pm2 save
 
-# 3. Nginx：root 指向 frontend/dist，/api/ 反代到 127.0.0.1:3000
+# 3. Nginx：root 指向 frontend/，/api/ 反代到 127.0.0.1:3000
+#    /theme.js 返回通用引擎，不能 alias 到某个主题脚本
 #    完整配置模板见 docs/部署指南.md
 ```
 

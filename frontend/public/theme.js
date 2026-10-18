@@ -406,12 +406,16 @@
         var msg = form.querySelector('.lill-comment-msg');
         var btn = form.querySelector('[type=submit]');
         var g = function (n) { var el = form.querySelector('[name=' + n + ']'); return el ? el.value : ''; };
-        var body = { postId: form.getAttribute('data-post-id'), content: g('content'), authorName: g('authorName'), authorEmail: g('authorEmail'), authorUrl: g('authorUrl') };
+        var body = { postId: form.getAttribute('data-post-id'), parentId: g('parentId') || null, content: g('content'), authorName: g('authorName'), authorEmail: g('authorEmail'), authorUrl: g('authorUrl'), pageurl: location.href };
         if (!body.content.trim()) { if (msg) { msg.className = 'lill-comment-msg is-error'; msg.textContent = '请填写评论内容'; } return; }
         if (btn) btn.disabled = true;
-        API.post('/comments', body).then(function () {
-          if (msg) { msg.className = 'lill-comment-msg is-ok'; msg.textContent = '评论已提交，审核通过后显示'; }
+        API.post('/comments', body).then(function (result) {
+          if (msg) {
+            msg.className = 'lill-comment-msg is-ok';
+            msg.textContent = result && result.status === 'approved' ? '评论已发表' : '评论已提交，审核通过后显示';
+          }
           form.reset();
+          form.dispatchEvent(new CustomEvent('lill:comment:submitted', { detail: result }));
         }).catch(function (err) {
           if (msg) { msg.className = 'lill-comment-msg is-error'; msg.textContent = err.message || '提交失败'; }
         }).then(function () { if (btn) btn.disabled = false; });

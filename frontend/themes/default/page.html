@@ -4,6 +4,7 @@
     <h1 class="post-title">{$post.title}</h1>
     <div class="post-content">{$post.html_content|raw}</div>
   </article>
+  {include comments}
 </main>
 {include sidebar}
 {include footer}

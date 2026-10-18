@@ -95,6 +95,10 @@ function getPermalinkUrl(type, post, category, tag) {
     const path = format.replace('{slug}', tag.slug).replace('{mid}', tag.id);
     return { url: siteUrl + path, route: '/tag/' + tag.slug };
   }
+  if (type === 'page') {
+    const path = '/page/' + post.slug;
+    return { url: siteUrl + path, route: path };
+  }
   return { url: '', route: '' };
 }
 
@@ -141,7 +145,7 @@ function buildThemeOptions() {
 }
 
 function decoratePost(p) {
-  const r = getPermalinkUrl('post', p, p.category_slug ? { slug: p.category_slug } : null);
+  const r = getPermalinkUrl(p.type === 'page' ? 'page' : 'post', p, p.category_slug ? { slug: p.category_slug } : null);
   p.permalink = r.url;
   p.route = r.route;
   p.url = r.route;              // 模板中 {$post.url} 直接用可访问地址
@@ -189,12 +193,12 @@ function listArchives() {
 function listRecentComments(limit) {
   const items = db.prepare(`
     SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
-           p.title as post_title, p.slug as post_slug, u.nickname, u.avatar
+           p.title as post_title, p.slug as post_slug, p.type as post_type, u.nickname, u.avatar
     FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id
     WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}
     ORDER BY c.created_at DESC LIMIT ?
   `).all(limit || 5);
-  items.forEach(c => { c.post_url = '/post/' + c.post_slug; c.post_route = '/post/' + c.post_slug; c.author = c.nickname || c.author_name || '匿名'; });
+  items.forEach(c => { c.post_url = '/' + (c.post_type === 'page' ? 'page' : 'post') + '/' + c.post_slug; c.post_route = c.post_url; c.author = c.nickname || c.author_name || '匿名'; });
   return items;
 }
 
@@ -268,8 +272,8 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
     post.prev = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at < ? ORDER BY p.published_at DESC LIMIT 1`).get(post.type, post.published_at) || null;
     post.next = db.prepare(`SELECT title, slug FROM posts p WHERE p.type = ? AND ${PUBLIC_POST_WHERE} AND p.published_at > ? ORDER BY p.published_at ASC LIMIT 1`).get(post.type, post.published_at) || null;
-    if (post.prev) post.prev.url = '/post/' + post.prev.slug;
-    if (post.next) post.next.url = '/post/' + post.next.slug;
+    if (post.prev) post.prev.url = '/' + type + '/' + post.prev.slug;
+    if (post.next) post.next.url = '/' + type + '/' + post.next.slug;
     decoratePost(post);
     post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
     /* 阅读时长：原版 post.php 的元信息行显示「N 分钟」而不是阅读量。
@@ -351,7 +355,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
         return item;
       });
       data.commentMeta = { total };
-      data.commentAllowed = post.comment_allowed !== 0;
+      data.commentAllowed = commentsAllowed(post);
     }
   } else if (type === 'archive') {
     const all = listPosts({ pageSize: 500, type: 'post' }).items;
@@ -512,20 +516,8 @@ route('GET', '/api/v1/archives', async (req, res) => {
 // 最新评论（侧边栏 Widget）
 route('GET', '/api/v1/comments/recent', async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const limit = parseInt(url.searchParams.get('limit')) || 5;
-  const items = db.prepare(`
-    SELECT c.id, c.content, c.created_at, c.author_name, c.post_id,
-           p.title as post_title, p.slug as post_slug, u.nickname, u.avatar
-    FROM comments c LEFT JOIN posts p ON c.post_id = p.id LEFT JOIN users u ON c.user_id = u.id
-    WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}
-    ORDER BY c.created_at DESC LIMIT ?
-  `).all(limit);
-  // 为每条评论生成 post_url 和 post_route
-  items.forEach(c => {
-    c.post_url = '/post/' + c.post_slug;
-    c.post_route = '/post/' + c.post_slug;
-  });
-  json(res, items);
+  const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get('limit')) || 5));
+  json(res, listRecentComments(limit));
 });
 
 // 文章详情（含标签、上下篇导航）
@@ -636,6 +628,11 @@ function commentModerationOn() {
   return !moderation || moderation.value !== 'false';
 }
 
+function commentsAllowed(post) {
+  const disabled = db.prepare('SELECT value FROM options WHERE key = ?').get('comments_disabled');
+  return post.comment_allowed !== 0 && disabled?.value !== 'true';
+}
+
 route('GET', '/api/v1/comments', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -687,7 +684,7 @@ route('POST', '/api/v1/comments', async (req, res) => {
   validators.string(body.content, '评论内容', 2000);
   const post = db.prepare(`SELECT p.id, p.author_id, p.comment_allowed FROM posts p WHERE p.id = ? AND ${PUBLIC_POST_WHERE}`).get(body.postId);
   if (!post) return error(res, '文章不存在', 404);
-  if (post.comment_allowed === 0) return error(res, '该文章已关闭评论');
+  if (!commentsAllowed(post)) return error(res, '评论已关闭');
 
   const ip = clientIp(req);
   const ua = req.headers['user-agent'] || '';

@@ -107,4 +107,13 @@ for path in / /admin/ /admin/login/; do
   [ "$code" = "200" ] || { echo "❌ 页面异常: $path"; exit 1; }
 done
 
+echo "▶ 9. 校验公开主题引擎入口"
+# 只比磁盘文件不能发现面板里遗留的 alias；按浏览器实际使用的 URL 再校验一次。
+EXPECTED_ENGINE=$(shasum -a 256 "$LOCAL/frontend/dist/theme.js" | awk '{print $1}')
+SERVED_ENGINE=$(curl --fail --silent --show-error --max-time 20 "https://test.abohe.cn/theme.js" | shasum -a 256 | awk '{print $1}')
+if [ "$SERVED_ENGINE" != "$EXPECTED_ENGINE" ]; then
+  echo "❌ /theme.js 未返回通用主题引擎，请删除 Nginx 中指向具体主题脚本的 alias。"
+  exit 1
+fi
+
 echo "✅ 部署完成"

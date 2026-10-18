@@ -123,7 +123,87 @@
     if (!content || !counter) return;
     function updateCount() { counter.textContent = content.value.length + ' / ' + content.maxLength; }
     content.addEventListener('input', updateCount);
-    form.addEventListener('reset', function () { window.setTimeout(updateCount, 0); });
+    var parent = form.querySelector('[name="parentId"]');
+    var target = form.querySelector('.comment-reply-target');
+    var section = form.closest('.comments');
+    function cancelReply() {
+      if (parent) parent.value = '';
+      if (target) target.hidden = true;
+    }
+    if (parent && target && section) {
+      section.addEventListener('click', function (event) {
+        var reply = event.target.closest('.comment-reply-btn');
+        if (!reply || !section.contains(reply)) return;
+        parent.value = reply.getAttribute('data-comment-id') || '';
+        target.querySelector('span').textContent = '正在回复 ' + reply.getAttribute('data-comment-author');
+        target.hidden = false;
+        content.focus();
+      });
+      target.querySelector('.comment-cancel-reply').addEventListener('click', function () {
+        cancelReply();
+        content.focus();
+      });
+    }
+    form.addEventListener('reset', function () {
+      cancelReply();
+      window.setTimeout(updateCount, 0);
+    });
+    form.addEventListener('lill:comment:submitted', function (event) {
+      var result = event.detail;
+      if (!result || result.status !== 'approved' || !result.comment || !section) return;
+      var comment = result.comment;
+      var list = section.querySelector('.comment-list');
+      var item = document.createElement('div');
+      item.className = 'comment-item';
+      item.id = 'comment-' + comment.id;
+      item.setAttribute('data-created-at', comment.created_at || '');
+      // Build from text so author names and comment content never become HTML.
+      var body = document.createElement('div');
+      body.className = 'comment-body';
+      var head = document.createElement('div');
+      head.className = 'comment-head';
+      var author = document.createElement('strong');
+      author.textContent = comment.author;
+      head.appendChild(author);
+      var text = document.createElement('div');
+      text.className = 'comment-text';
+      text.style.whiteSpace = 'pre-wrap';
+      text.textContent = comment.content;
+      body.appendChild(head);
+      body.appendChild(text);
+      var reply = document.createElement('button');
+      reply.type = 'button';
+      reply.className = 'comment-reply-btn';
+      reply.textContent = '回复';
+      reply.setAttribute('data-comment-id', comment.id);
+      reply.setAttribute('data-comment-author', comment.author);
+      body.appendChild(reply);
+      item.appendChild(body);
+      function insertSorted(container) {
+        var ascending = (window.__LILL_SCOPE__ || {}).commentSort === 'asc';
+        var key = (comment.created_at || '') + '/' + comment.id;
+        var next = Array.prototype.slice.call(container.children).find(function (child) {
+          if (!child.classList.contains('comment-item')) return false;
+          var other = (child.getAttribute('data-created-at') || '') + '/' + child.id.slice(8);
+          return ascending ? key < other : key > other;
+        });
+        container.insertBefore(item, next || null);
+      }
+      var parentItem = comment.parent_id && document.getElementById('comment-' + comment.parent_id);
+      if (parentItem && list.contains(parentItem)) {
+        var replies = parentItem.nextElementSibling;
+        if (!replies || !replies.classList.contains('comment-replies')) {
+          replies = document.createElement('div');
+          replies.className = 'comment-replies';
+          parentItem.after(replies);
+        }
+        insertSorted(replies);
+      } else insertSorted(list);
+      var empty = list.querySelector('.comment-empty');
+      if (empty) empty.remove();
+      var total = section.querySelector('.comments-title span');
+      if (total) total.textContent = String((parseInt(total.textContent, 10) || 0) + 1);
+    });
     updateCount();
   }
 

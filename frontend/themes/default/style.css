@@ -372,6 +372,9 @@ body.layout-full .sidebar { display: none; }
 .comment-reply-btn:hover { color: var(--text); text-decoration: underline; }
 .comment-replies { margin-left: 24px; padding-left: 16px; border-left: 1px solid var(--border); }
 .comment-form h4 { margin-bottom: 16px; font-size: 16px; }
+.comment-reply-target:not([hidden]) { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; font-size: 13px; }
+.comment-cancel-reply { border: 0; background: transparent; color: var(--text-light); cursor: pointer; text-decoration: underline; }
+.comment-closed { color: var(--text-light); font-size: 14px; }
 .comment-form-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .comment-form textarea { display: block; min-height: 120px; resize: vertical; }
 .comment-form-footer { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px 16px; margin-top: 16px; }
