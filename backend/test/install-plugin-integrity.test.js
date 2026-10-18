@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,7 +14,7 @@ import { register as registerInstall } from '../routes/install.js';
 import { register as registerPlugins } from '../routes/admin/plugins.js';
 import { startApiServer } from './helpers/api-server.js';
 import {
-  activatePlugin, deactivatePlugin, createPluginContext, ensureBuiltinPlugin, loadPlugins, triggerHook, unloadPlugin,
+  activatePlugin, cleanupPluginLoadCopies, deactivatePlugin, createPluginContext, ensureBuiltinPlugin, loadPlugins, triggerHook, unloadPlugin,
 } from '../lib/plugin-ext.js';
 
 function deferred() {
@@ -323,6 +323,18 @@ test('an activated plugin can read bundled files relative to its module at runti
   assert.equal((await f.toggle(dir)).status, 200);
   const response = await f.request('GET', '/api/v1/plugin-asset');
   assert.equal(response.payload.data.text, 'bundled asset');
+});
+
+test('startup cleanup removes interrupted module copies but keeps active ones', async t => {
+  const f = fixture(t);
+  const dir = f.plugin('export function activate(ctx) { ctx.route("GET", "/api/v1/cleanup-check", (_req, res) => ctx.json(res, { ok: true })); }');
+  assert.equal((await f.toggle(dir)).status, 200);
+  const stale = join(f.ctx.PLUGINS_DIR, '.load-stale-fixture');
+  mkdirSync(stale);
+  writeFileSync(join(stale, 'index.js'), '');
+  const removed = cleanupPluginLoadCopies(f.ctx.PLUGINS_DIR, f.ctx._activePlugins);
+  assert.ok(removed >= 1);
+  assert.equal(existsSync(stale), false);
 });
 
 test('failed activation restores a route it temporarily replaced', async t => {

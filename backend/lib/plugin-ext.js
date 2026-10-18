@@ -215,6 +215,21 @@ export async function loadPlugins(pluginsDir, ctx) {
   return active;
 }
 
+/** Remove copies left by interrupted hot reloads; active module directories stay until unload. */
+export function cleanupPluginLoadCopies(pluginsDir, active = null) {
+  const keep = new Set([...(active?.values?.() || [])].map(entry => entry.loadDir).filter(Boolean));
+  let entries = [];
+  try { entries = readdirSync(pluginsDir, { withFileTypes: true }); } catch { return 0; }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('.load-')) continue;
+    const path = join(pluginsDir, entry.name);
+    if (keep.has(path)) continue;
+    try { rmSync(path, { recursive: true, force: true }); removed++; } catch {}
+  }
+  return removed;
+}
+
 /** 激活单个插件（用于运行时热加载） */
 export async function activatePlugin(dir, pluginsDir, ctx) {
   if (!ctx._activePlugins) ctx._activePlugins = new Map();
