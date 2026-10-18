@@ -58,12 +58,20 @@ function setTopbar(html) { document.getElementById('topbar-actions').innerHTML =
 
 function paginate(meta) {
   if (!meta || !meta.totalPages || meta.totalPages <= 1) return '';
+  const total = Math.max(1, Number(meta.totalPages) || 1);
+  const current = Math.min(total, Math.max(1, Number(meta.page) || 1));
+  const pages = new Set([1, current, total]);
+  for (let i = current - 2; i <= current + 2; i++) if (i >= 1 && i <= total) pages.add(i);
+  const ordered = [...pages].sort((a, b) => a - b);
   let html = '<div class="pagination">';
-  html += '<button ' + (meta.hasPrev ? '' : 'disabled') + ' onclick="gotoPage(' + (meta.page - 1) + ')">←</button>';
-  for (let i = 1; i <= meta.totalPages; i++) {
-    html += '<button class="' + (i === meta.page ? 'active' : '') + '" onclick="gotoPage(' + i + ')">' + i + '</button>';
+  html += '<button ' + (current > 1 ? '' : 'disabled') + ' onclick="gotoPage(' + (current - 1) + ')">←</button>';
+  let previous = 0;
+  for (const i of ordered) {
+    if (previous && i - previous > 1) html += '<span class="pagination-gap" aria-hidden="true">…</span>';
+    html += '<button class="' + (i === current ? 'active' : '') + '"' + (i === current ? ' aria-current="page"' : '') + ' onclick="gotoPage(' + i + ')">' + i + '</button>';
+    previous = i;
   }
-  html += '<button ' + (meta.hasNext ? '' : 'disabled') + ' onclick="gotoPage(' + (meta.page + 1) + ')">→</button>';
+  html += '<button ' + (current < total ? '' : 'disabled') + ' onclick="gotoPage(' + (current + 1) + ')">→</button>';
   return html + '</div>';
 }
 
@@ -653,7 +661,23 @@ async function loadCatEditor(id, signal) {
   cats = await api('/admin/categories', { signal });
   if (signal.aborted) return;
   if (id) cat = (cats || []).find(c => c.id === id);
-  const parentOpts = ['<option value="">无父级</option>'].concat((cats || []).filter(c => c.id !== id).map(c => '<option value="' + c.id + '"' + (cat && cat.parent_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
+  if (id && !cat) throw new Error('分类不存在');
+  const children = new Map();
+  for (const item of cats || []) {
+    if (!item.parent_id) continue;
+    if (!children.has(item.parent_id)) children.set(item.parent_id, []);
+    children.get(item.parent_id).push(item.id);
+  }
+  const blocked = new Set([id]);
+  const queue = id ? [id] : [];
+  while (queue.length) {
+    for (const childId of children.get(queue.shift()) || []) {
+      if (blocked.has(childId)) continue;
+      blocked.add(childId);
+      queue.push(childId);
+    }
+  }
+  const parentOpts = ['<option value="">无父级</option>'].concat((cats || []).filter(c => !blocked.has(c.id)).map(c => '<option value="' + c.id + '"' + (cat && cat.parent_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
   document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">' + (id ? '编辑分类' : '新建分类') + '</h3>' +
     '<div class="form-group"><label>名称</label><input id="ce-name" value="' + escape(cat ? cat.name : '') + '"></div>' +
     '<div class="form-group"><label>别名（留空自动生成）</label><input id="ce-slug" value="' + escape(cat ? cat.slug : '') + '"></div>' +
@@ -1034,10 +1058,15 @@ async function renderUsers() {
 window.openUserEditor = id => showView('user-editor:' + (id || 'new'), signal => loadUserEditor(id, signal), true);
 async function loadUserEditor(id, signal) {
   let u = null;
-  if (id) { const r = await api('/admin/users?pageSize=100', { signal }); u = (r.items || []).find(x => x.id === id); }
+  if (id) {
+    u = await api('/admin/users/' + encodeURIComponent(id), { signal });
+    if (!u) throw new Error('用户不存在');
+  }
   if (signal.aborted) return;
-  const roleOpts = [['admin', '管理员'], ['editor', '编辑'], ['author', '作者'], ['contributor', '投稿者'], ['subscriber', '订阅者']].map(x => '<option value="' + x[0] + '"' + (u && u.role === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
-  const statusOpts = [['active', '正常'], ['banned', '禁用']].map(x => '<option value="' + x[0] + '"' + (u && u.status === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
+  const currentRole = u ? u.role : 'subscriber';
+  const currentStatus = u ? u.status : 'active';
+  const roleOpts = [['admin', '管理员'], ['editor', '编辑'], ['author', '作者'], ['contributor', '投稿者'], ['subscriber', '订阅者']].map(x => '<option value="' + x[0] + '"' + (currentRole === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
+  const statusOpts = [['active', '正常'], ['banned', '禁用']].map(x => '<option value="' + x[0] + '"' + (currentStatus === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
   setTopbar('<button class="btn btn-outline" onclick="navigate(\'users\')">← 返回</button>');
   document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">' + (id ? '编辑用户' : '新建用户') + '</h3>' +
     '<div class="form-group"><label>用户名</label><input id="ue-name" value="' + escape(u ? u.username : '') + '"' + (id ? ' disabled' : '') + '></div>' +
@@ -1054,10 +1083,12 @@ window.saveUser = async (id) => {
   const pass = document.getElementById('ue-pass').value;
   if (pass) body.password = pass;
   if (!body.username && !id) return toast('请填写用户名', 'error');
+  if (!id && !pass) return toast('请填写密码', 'error');
+  if (!id && pass.length < 6) return toast('密码至少6位', 'error');
   try {
     if (id) await api('/admin/users/' + id, { method: 'PUT', body });
     else await api('/admin/users', { method: 'POST', body });
-    toast('已保存'); if (activeView?.navigation === view.navigation) { pageNum = 1; refreshView(view); }
+    toast('已保存'); if (activeView?.navigation === view.navigation) refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
 window.delUser = async (id) => { if (!confirm('确定删除该用户？')) return; const view = activeView; try { await api('/admin/users/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
@@ -1388,14 +1419,15 @@ async function loadPluginMenus() {
     const menus = await api('/admin/plugin-menus', { timeout: 8000 });
     const box = document.getElementById('plugin-menus');
     const section = document.getElementById('plugin-menu-section');
-    if (!box || !Array.isArray(menus) || !menus.length) return;
-    box.innerHTML = menus.map(m => {
+    if (!box || !section) return;
+    const items = Array.isArray(menus) ? menus : [];
+    box.innerHTML = items.map(m => {
       const icon = m.icon || '🔌';
       const url = m.url ? ' data-url="' + escape(m.url) + '"' : '';
       const pageAttr = m.url ? '' : ' data-page="' + escape(m.page || ('plugin:' + m.id)) + '"';
       return '<a href="#" class="menu-item"' + url + pageAttr + '><span aria-hidden="true">' + escape(icon) + '</span><span>' + escape(m.title || m.id) + '</span></a>';
     }).join('');
-    if (section) section.style.display = '';
+    section.style.display = items.length ? '' : 'none';
   } catch (e) { /* 插件菜单加载失败不影响后台 */ }
 }
 document.getElementById('logout-btn').onclick = () => { localStorage.removeItem('lill_token'); location.href = '/admin/login'; };
@@ -1531,6 +1563,7 @@ window.togglePlugin = async (dir) => {
     const r = await api('/admin/plugins/toggle', { method: 'POST', body: { dir } });
     if (r && r.hot && r.hot !== 'ok') toast('状态已保存，但热加载失败：' + r.hot, 'error');
     else toast(r && r.active ? '插件已启用' : '插件已禁用');
+    await loadPluginMenus();
     refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
@@ -1541,6 +1574,7 @@ window.uninstallPlugin = async (dir, name) => {
   try {
     await api('/admin/plugins/' + encodeURIComponent(dir), { method: 'DELETE' });
     toast('插件已卸载');
+    await loadPluginMenus();
     refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
@@ -1560,6 +1594,7 @@ window.uploadPlugin = async (input) => {
     });
     const r = await api('/admin/plugins/install', { method: 'POST', body: { name: file.name, data }, timeout: 120000 });
     toast('插件「' + (r.name || r.dir) + '」安装成功，请在列表中启用');
+    await loadPluginMenus();
     refreshView(view);
   } catch (e) {
     toast(e.message || '安装失败', 'error');

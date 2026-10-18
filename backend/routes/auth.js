@@ -32,7 +32,7 @@ route('POST', '/api/v1/auth/login', async (req, res) => {
 
   loginLimiter.reset(key);
   const rememberMe = body?.rememberMe === true;
-    const token = signJWT({ id: user.id, username: user.username, role: user.role }, rememberMe ? '30d' : '2h');
+  const token = signJWT({ id: user.id, username: user.username, role: user.role }, rememberMe ? '30d' : '2h');
   const csrfToken = generateCSRFToken();
   try { if (typeof triggerHook === 'function') triggerHook('user.login', { id: user.id, username: user.username, role: user.role, ip }); } catch {}
   json(res, { token, csrfToken, user: { id: user.id, username: user.username, nickname: user.nickname, email: user.email, role: user.role } });

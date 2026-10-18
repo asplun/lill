@@ -19,7 +19,7 @@ test('admin entry registers the complete management route set exactly once', () 
   const router = createRouter();
   registerAdmin(router, context());
   const routes = [...router.routes.values()].filter(route => route.pattern.startsWith('/api/v1/admin/'));
-  assert.equal(routes.length, 66);
+  assert.equal(routes.length, 67);
   assert.equal(new Set(router.routes.keys()).size, routes.length);
   for (const route of routes) {
     assert.equal(route.auth, true, route.pattern);
@@ -69,6 +69,7 @@ test('users module owns user management routes', () => {
   assert.deepEqual([...router.routes.keys()].sort(), [
     'DELETE:/api/v1/admin/users/:id',
     'GET:/api/v1/admin/users',
+    'GET:/api/v1/admin/users/:id',
     'POST:/api/v1/admin/users',
     'PUT:/api/v1/admin/users/:id',
   ].sort());

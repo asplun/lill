@@ -91,6 +91,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(slug);
   CREATE TABLE IF NOT EXISTS post_tags (post_id TEXT, tag_id TEXT, PRIMARY KEY (post_id, tag_id));
+  CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
   CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY, content TEXT NOT NULL, status TEXT DEFAULT 'pending',
     user_agent TEXT, ip TEXT, parent_id TEXT, author_name TEXT, author_email TEXT, author_url TEXT,
@@ -513,10 +514,14 @@ const server = http.createServer(async (req, res) => {
       if (!res.writableEnded && !res.destroyed) res.destroy();
       return;
     }
-    const status = (e.message === '未登录' || e.message === 'Token expired' || e.message === 'Invalid') ? 401 : 500;
+    const status = (e.message === '未登录' || e.message === 'Token expired' || e.message === 'Invalid')
+      ? 401
+      : (e?.name === 'SyntaxError' ? 400 : (e?.status >= 400 && e?.status < 500 ? e.status : 500));
     logRequest(req.method, path, status, Date.now() - startTime);
     if (status === 401) error(res, '未登录', 401);
-    else { console.error('Internal error:', e); error(res, '服务器内部错误', 500); }
+    else if (status >= 500) { console.error('Internal error:', e); error(res, '服务器内部错误', 500); }
+    else if (e?.name === 'SyntaxError') error(res, '请求体不是有效 JSON', 400);
+    else error(res, e.message || '请求参数无效', status);
   }
 });
 

@@ -21,7 +21,7 @@ const SKIPPED_ROUTES = new Set([
   'GET:/api/v1/admin/comments/export', 'GET:/api/v1/admin/comments', 'PATCH:/api/v1/admin/comments/:id/status', 'DELETE:/api/v1/admin/comments/:id',
   'GET:/api/v1/admin/comments/recent', 'POST:/api/v1/admin/comments/:id/reply', 'PUT:/api/v1/admin/comments/:id', 'PATCH:/api/v1/admin/comments/batch-status',
   'POST:/api/v1/admin/media/upload', 'GET:/api/v1/admin/media', 'DELETE:/api/v1/admin/media/:id',
-  'GET:/api/v1/admin/users', 'POST:/api/v1/admin/users', 'PUT:/api/v1/admin/users/:id', 'DELETE:/api/v1/admin/users/:id',
+  'GET:/api/v1/admin/users', 'GET:/api/v1/admin/users/:id', 'POST:/api/v1/admin/users', 'PUT:/api/v1/admin/users/:id', 'DELETE:/api/v1/admin/users/:id',
   'GET:/api/v1/admin/options', 'PUT:/api/v1/admin/options',
   'GET:/api/v1/admin/themes', 'POST:/api/v1/admin/themes/:themeId/activate', 'GET:/api/v1/admin/themes/:themeId/settings',
   'PUT:/api/v1/admin/themes/:themeId/settings', 'POST:/api/v1/admin/themes/install',

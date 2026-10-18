@@ -276,6 +276,55 @@ test('activation failure removes routes, hooks and menus without disrupting anot
   assert.equal(f.db.prepare('SELECT value FROM options WHERE key = ?').get(`plugin_${broken}_events`), undefined);
 });
 
+test('a plugin upgrade loaded after restart executes the new module version', async t => {
+  const f = fixture(t);
+  const dir = f.plugin(`export function activate(ctx) {
+    ctx.route('GET', '/api/v1/plugin-version-check', (_req, res) => ctx.json(res, { version: '1.0.0' }));
+  }`);
+  assert.equal((await f.toggle(dir)).status, 200);
+  assert.equal((await f.request('GET', '/api/v1/plugin-version-check')).payload.data.version, '1.0.0');
+  assert.equal((await f.toggle(dir)).status, 200);
+
+  writeFileSync(join(f.ctx.PLUGINS_DIR, dir, 'plugin.json'), JSON.stringify({ name: dir, version: '2.0.0' }));
+  writeFileSync(join(f.ctx.PLUGINS_DIR, dir, 'index.js'), `export function activate(ctx) {
+    ctx.route('GET', '/api/v1/plugin-version-check', (_req, res) => ctx.json(res, { version: '2.0.0' }));
+  }`);
+  assert.equal((await f.toggle(dir)).status, 200);
+  assert.equal((await f.request('GET', '/api/v1/plugin-version-check')).payload.data.version, '2.0.0');
+});
+
+test('replacing an installed plugin loads the new entry after disable and enable', async t => {
+  const f = fixture(t);
+  const dir = f.plugin(`export function activate(ctx) {
+    ctx.route('GET', '/api/v1/plugin-version-check', (_req, res) => ctx.json(res, { version: '1.0.0' }));
+  }`);
+  assert.equal((await f.toggle(dir)).status, 200);
+  let live = await f.request('GET', '/api/v1/plugin-version-check');
+  assert.equal(live.payload.data.version, '1.0.0');
+
+  assert.equal((await f.toggle(dir)).status, 200);
+  writeFileSync(join(f.ctx.PLUGINS_DIR, dir, 'index.js'), `export function activate(ctx) {
+    ctx.route('GET', '/api/v1/plugin-version-check', (_req, res) => ctx.json(res, { version: '2.0.0' }));
+  }`);
+  assert.equal((await f.toggle(dir)).status, 200);
+  live = await f.request('GET', '/api/v1/plugin-version-check');
+  assert.equal(live.payload.data.version, '2.0.0');
+});
+
+test('an activated plugin can read bundled files relative to its module at runtime', async t => {
+  const f = fixture(t);
+  const dir = f.plugin(`import { readFileSync } from 'node:fs';
+    const asset = () => readFileSync(new URL('./asset.txt', import.meta.url), 'utf8');
+    export function activate(ctx) {
+      ctx.route('GET', '/api/v1/plugin-asset', (_req, res) => ctx.json(res, { text: asset() }));
+    }
+  `);
+  writeFileSync(join(f.ctx.PLUGINS_DIR, dir, 'asset.txt'), 'bundled asset');
+  assert.equal((await f.toggle(dir)).status, 200);
+  const response = await f.request('GET', '/api/v1/plugin-asset');
+  assert.equal(response.payload.data.text, 'bundled asset');
+});
+
 test('failed activation restores a route it temporarily replaced', async t => {
   const f = fixture(t);
   f.router.route('GET', '/api/v1/shared-fixture', (_req, res) => json(res, { owner: 'core' }));

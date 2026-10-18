@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createThumbnailOnUpload } from '../../lib/thumbnail.js';
+import { boundedPagination } from '../../lib/http.js';
 
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, uid, authenticate, triggerHook, core, UPLOAD_DIR } = ctx;
@@ -12,7 +13,7 @@ export function register(router, ctx, helpers) {
 
   route('POST', '/api/v1/admin/media/upload', async (req, res) => {
     const auth = await authenticate(req);
-    const body = await parseBody(req);
+    const body = await parseBody(req, 40 * 1024 * 1024);
     if (!body.data || !body.name) return error(res, '缺少文件数据', 400);
     const ext = (body.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0].toLowerCase();
     const safeExt = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf', '.txt', '.md', '.zip'].includes(ext) ? ext : '';
@@ -67,12 +68,11 @@ export function register(router, ctx, helpers) {
   route('GET', '/api/v1/admin/media', async (req, res) => {
     const auth = await authenticate(req);
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const page = parseInt(url.searchParams.get('page')) || 1;
-    const pageSize = parseInt(url.searchParams.get('pageSize')) || 20;
+    const { page, pageSize, offset } = boundedPagination(url.searchParams, 20, 100);
     const where = managesAll(auth) ? '' : ' WHERE m.uploader_id = ?';
     const args = managesAll(auth) ? [] : [auth.id];
     const total = db.prepare(`SELECT COUNT(*) as c FROM media m${where}`).get(...args).c;
-    const items = db.prepare(`SELECT m.*, u.username as uploader_name FROM media m LEFT JOIN users u ON m.uploader_id = u.id${where} ORDER BY m.created_at DESC LIMIT ? OFFSET ?`).all(...args, pageSize, (page - 1) * pageSize);
+    const items = db.prepare(`SELECT m.*, u.username as uploader_name FROM media m LEFT JOIN users u ON m.uploader_id = u.id${where} ORDER BY m.created_at DESC LIMIT ? OFFSET ?`).all(...args, pageSize, offset);
     json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
   });
 

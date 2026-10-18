@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import * as sqlite from 'node:sqlite';
+import { boundedPagination } from '../../lib/http.js';
 
 const BACKUP_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const backendDir = fileURLToPath(new URL('../../', import.meta.url));
@@ -77,10 +78,9 @@ export function register(router, ctx, helpers) {
   route('GET', '/api/v1/admin/logs', async (req, res) => {
     await authenticate(req);
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const page = parseInt(url.searchParams.get('page')) || 1;
-    const pageSize = parseInt(url.searchParams.get('pageSize')) || 20;
+    const { page, pageSize, offset } = boundedPagination(url.searchParams, 20, 100);
     const total = db.prepare('SELECT COUNT(*) as c FROM logs').get().c;
-    const items = db.prepare('SELECT l.*, u.username FROM logs l LEFT JOIN users u ON l.user_id = u.id ORDER BY l.created_at DESC LIMIT ? OFFSET ?').all(pageSize, (page - 1) * pageSize);
+    const items = db.prepare('SELECT l.*, u.username FROM logs l LEFT JOIN users u ON l.user_id = u.id ORDER BY l.created_at DESC LIMIT ? OFFSET ?').all(pageSize, offset);
     json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
   });
 

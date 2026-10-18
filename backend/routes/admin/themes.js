@@ -1,6 +1,7 @@
 /** Theme management, settings, installer, and editor routes. */
 import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync, realpathSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
 import { runThemeMigrations } from '../../lib/theme-runtime.js';
 import { listNavigationItems } from '../../lib/navigation.js';
@@ -65,23 +66,48 @@ export function register(router, ctx, helpers) {
     const previous = db.prepare('SELECT theme_id FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get()?.theme_id || 'default';
     const previousManifest = themeRuntime?.manifests?.get(themeId);
     const previousExtension = themeRuntime?.extensions?.get(themeId);
+    let migrationDb = null;
     try {
-      db.exec('BEGIN');
-      if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId)) {
-        db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), themeId, manifest?.name || themeId, manifest?.version || '1.0.0');
-      }
       const loadedTheme = themeRuntime?.loadTheme ? await themeRuntime.loadTheme(themeId) : null;
       if (loadedTheme?.loadError) throw new Error('主题后端扩展加载失败');
-      await runThemeMigrations(themeRuntime, themeId, { ...ctx, themeId });
+      // Register the new handlers before migrations so a migration can safely
+      // exercise extension routes; restore the previous handlers on failure.
       if (typeof ctx.registerThemeExtension === 'function' && themeRuntime?.extensions && !ctx.registerThemeExtension(themeId)) {
         throw new Error(`主题扩展注册失败：${themeId}`);
       }
-      db.prepare('UPDATE themes SET active = 0').run();
-      db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(themeId);
-      db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), themeId);
-      db.exec('COMMIT');
+      // Theme migrations can await I/O. Keep their transaction on a dedicated
+      // connection so an activation failure can never roll back unrelated writes
+      // that arrived on the shared request connection while migration was pending.
+      if (ctx.DB_PATH) {
+        migrationDb = new DatabaseSync(ctx.DB_PATH);
+        migrationDb.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; BEGIN');
+      }
+      try {
+        await runThemeMigrations(themeRuntime, themeId, { ...ctx, db: migrationDb || db, themeId });
+        migrationDb?.exec('COMMIT');
+      } catch (migrationError) {
+        try { migrationDb?.exec('ROLLBACK'); } catch {}
+        throw migrationError;
+      } finally {
+        migrationDb?.close();
+        migrationDb = null;
+      }
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!db.prepare('SELECT id FROM themes WHERE theme_id = ?').get(themeId)) {
+          db.prepare('INSERT INTO themes (id, theme_id, name, version, active) VALUES (?, ?, ?, ?, 0)').run(uid(), themeId, manifest?.name || themeId, manifest?.version || '1.0.0');
+        }
+        db.prepare('UPDATE themes SET active = 0').run();
+        db.prepare('UPDATE themes SET active = 1 WHERE theme_id = ?').run(themeId);
+        db.prepare("INSERT INTO options (id, key, value, autoload) VALUES (?, 'active_theme', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(uid(), themeId);
+        db.exec('COMMIT');
+      } catch (activationError) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw activationError;
+      }
     } catch (migrationError) {
-      try { db.exec('ROLLBACK'); } catch {}
+      try { migrationDb?.exec('ROLLBACK'); } catch {}
+      try { migrationDb?.close(); } catch {}
       if (themeRuntime?.manifests) {
         if (previousManifest) themeRuntime.manifests.set(themeId, previousManifest);
         else themeRuntime.manifests.delete(themeId);
@@ -108,6 +134,11 @@ export function register(router, ctx, helpers) {
     if (!theme) return error(res, '主题不存在', 404);
     const manifest = readThemeManifest(params.themeId);
     if (!manifest || manifest.id !== params.themeId) return error(res, '主题不存在或 manifest 无效', 404);
+    const activeTheme = db.prepare('SELECT theme_id FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get()?.theme_id;
+    if (activeTheme === params.themeId && typeof ctx.registerThemeExtension === 'function' &&
+        !ctx.registerThemeExtension(params.themeId)) {
+      return error(res, '主题扩展注册失败，请重新启用主题', 500);
+    }
     let config = {};
     try { config = JSON.parse(theme.config || '{}'); } catch {}
     const schema = (manifest.settings || []).map(field => field.type === 'navigation'
@@ -133,7 +164,7 @@ export function register(router, ctx, helpers) {
 
   route('POST', '/api/v1/admin/themes/install', async (req, res) => {
     const auth = await authenticate(req);
-    const body = await parseBody(req);
+    const body = await parseBody(req, 45 * 1024 * 1024);
     if (!body || !body.data) return error(res, '缺少主题包数据', 400);
 
     let buf;

@@ -98,7 +98,8 @@ token 通过 [`POST /auth/login`](#31-登录) 或 [`POST /install`](#42-执行�
 }
 ```
 
-通用查询参数：`page`（默认 1）、`pageSize`（默认 10~50）。
+通用查询参数：`page`（默认 1）、`pageSize`（默认 10~50，管理列表和公开列表统一限制最大 100）。
+非法页码/页大小会回退到默认值；会导致 SQLite 偏移量溢出的超大参数返回 400。
 
 ### 1.5 时间格式
 
@@ -638,15 +639,17 @@ POST /admin/media/upload
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/admin/users` | 用户列表（分页，含 `post_count`） |
+| GET | `/admin/users/:id` | 用户详情（不返回密码哈希） |
 | POST | `/admin/users` | 新建用户 |
 | PUT | `/admin/users/:id` | 更新用户 |
 | DELETE | `/admin/users/:id` | 删除用户 |
 
-**字段：** `username`（必填）、`email`（必填）、`password`、`nickname`、`role`、`status`、`avatar`、`bio`。
+**字段：** `username`（创建时必填）、`email`（创建时必填）、`password`（创建时必填，至少 6 位）、`nickname`、`role`、`status`、`avatar`、`bio`。
 
 **角色：** `admin`（管理员）/ `editor`（编辑）/ `author`（作者）/ `contributor`（贡献者）/ `subscriber`（订阅者）
 
 > `contributor` 只能编辑/删除自己的文章。
+> 用户名创建后不可修改；最后一个有效管理员不能被降级或禁用；仍有文章的用户不能被删除。
 
 ### 5.7 站点设置
 
@@ -918,7 +921,8 @@ POST /admin/widgets
 | 401 | 1 | 未登录 / 用户名密码错误 |
 | 403 | 1 | 无权限 / 站点已安装 / 注册未开放 |
 | 404 | 1 | 资源不存在 |
-| 409 | 1 | 冲突（用户名或邮箱已存在） |
+| 409 | 1 | 状态或唯一性冲突（重复用户/分类/标签、受保护记录等） |
+| 413 | 1 | 请求体超过大小上限 |
 | 429 | 1 | 请求过于频繁（登录锁定 / 安装限流） |
 | 500 | 1 | 服务器内部错误 |
 

@@ -21,16 +21,26 @@ export function createAuth(JWT_SECRET) {
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   };
 
-  const signJWT = (payload) => {
+  const durationMs = value => {
+    const match = /^(\d+)([smhd])$/.exec(String(value || ''));
+    if (!match) throw new Error('无效的会话时长');
+    return Number(match[1]) * ({ s: 1000, m: 60000, h: 3600000, d: 86400000 }[match[2]]);
+  };
+
+  const signJWT = (payload, expiresIn = '7d') => {
     const h = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-    const b = b64url(JSON.stringify({ ...payload, exp: Date.now() + 604800000 }));
+    const now = Date.now();
+    const b = b64url(JSON.stringify({ ...payload, iat: now, exp: now + durationMs(expiresIn) }));
     const s = b64url(createHmac('sha256', JWT_SECRET).update(h + '.' + b).digest());
     return h + '.' + b + '.' + s;
   };
 
   const verifyJWT = (token) => {
     const [h, b, s] = token.split('.');
-    if (b64url(createHmac('sha256', JWT_SECRET).update(h + '.' + b).digest()) !== s) throw new Error('Invalid');
+    const expected = b64url(createHmac('sha256', JWT_SECRET).update(h + '.' + b).digest());
+    const actualBuffer = Buffer.from(String(s || ''));
+    const expectedBuffer = Buffer.from(expected);
+    if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) throw new Error('Invalid');
     const p = JSON.parse(Buffer.from(b, 'base64url').toString());
     if (p.exp < Date.now()) throw new Error('Expired');
     return p;
@@ -49,7 +59,9 @@ export function createAuth(JWT_SECRET) {
   const verifyCSRFToken = (req, csrfToken) => {
     const header = req.headers['x-csrf-token'];
     if (!header || !csrfToken) return false;
-    return timingSafeEqual(Buffer.from(header), Buffer.from(csrfToken));
+    const actual = Buffer.from(String(header));
+    const expected = Buffer.from(String(csrfToken));
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
 
   return { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate, generateCSRFToken, verifyCSRFToken };

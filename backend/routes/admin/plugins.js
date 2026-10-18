@@ -140,7 +140,7 @@ export function register(router, ctx, helpers) {
 
   route('POST', '/api/v1/admin/plugins/install', async (req, res) => {
     const auth = await authenticate(req);
-    const body = await parseBody(req);
+    const body = await parseBody(req, 45 * 1024 * 1024);
     if (!body.name || !body.data) return error(res, '缺少插件数据', 400);
 
     let buf;
