@@ -652,23 +652,33 @@ PUT /admin/options
 
 ```json
 {
-  "theme": { "theme_id": "default", "name": "默认主题", "version": "1.1.0", "active": 1, "config": "{}" },
+  "theme": { "theme_id": "default", "name": "默认主题", "version": "1.3.2", "active": 1, "config": "{}" },
   "schema": [
-    { "key": "accent_color", "label": "主题色", "type": "color", "default": "#4f46e5" },
-    { "key": "show_sidebar", "label": "显示侧边栏", "type": "switch", "default": true }
+    {
+      "key": "navigation", "label": "顶部导航", "type": "navigation",
+      "default": ["index", "archive"],
+      "options": [
+        { "value": "index", "label": "首页", "url": "/" },
+        { "value": "page:abc", "label": "关于", "url": "/page/about" },
+        { "value": "archive", "label": "归档", "url": "/archive" }
+      ]
+    }
   ],
-  "values": { "accent_color": "#4f46e5" }
+  "values": { "navigation": ["index", "page:abc", "archive"] }
 }
 ```
 
 > `schema` 来自主题目录下的 `theme.json` 的 `settings` 字段，详见 [主题开发指南](./主题开发指南.md)。
+> `navigation` 类型的 `options` 由接口填入公开内容候选项，保存值为按显示顺序排列的引用数组。
 
 **保存主题设置：**
 
 ```json
 PUT /admin/themes/default/settings
-{ "accent_color": "#ae1986", "show_sidebar": true }
+{ "navigation": ["page:abc", "index"], "color": "#23282b" }
 ```
+
+`navigation: []` 表示不显示导航。页面改名或修改 slug 时，引用继续有效；暂不可用的页面不会出现在前台导航中。默认主题将筛选结果放在 bootstrap 的 `theme.extension.navigation`，其他主题可以自行决定如何使用配置及通用候选 `nav`。
 
 **安装主题包：**
 

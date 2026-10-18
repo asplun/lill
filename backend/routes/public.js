@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { scanThemeAssets, scanPageTemplates } from '../lib/themes.js';
 import { orderBy, normQQ, shapeComment } from '../lib/comment-util.js';
 import { clientIp } from '../lib/http.js';
+import { listNavigationItems } from '../lib/navigation.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
@@ -220,13 +221,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const pageTemplatesList = scanPageTemplates(activeThemeId, themesDir);
 
   const cats = listCategories();
-  const pagesList = db.prepare(`SELECT id, title, slug, template FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
-  const nav = [
-    { title: '首页', url: '/', type: 'index', slug: '', active: type === 'index' },
-    ...cats.map(c => ({ title: c.name, url: c.route, type: 'category', slug: c.slug, active: type === 'category' && slug === c.slug })),
-    ...pagesList.map(p => ({ title: p.title, url: '/page/' + p.slug, type: 'page', slug: p.slug, active: type === 'page' && slug === p.slug })),
-    { title: '归档', url: '/archive', type: 'archive', slug: '', active: type === 'archive' },
-  ];
+  const nav = listNavigationItems(db, { categories: cats, type, slug });
 
   // 左右边栏小组件配置（由「小组件」管理页面维护，存于 themes.config）
   // 归一化与 name/icon 装饰由主题扩展负责（各主题的小组件定义不同）

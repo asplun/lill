@@ -777,10 +777,26 @@ function settingsFormHTML(schema, values, keyAttr) {
     groupMap[g].forEach(f => {
       const raw = values[f.key] !== undefined ? values[f.key] : (f.default !== undefined ? f.default : '');
       const v = (raw === null || raw === undefined) ? '' : String(raw);
-      const id = keyAttr + '_' + f.key;
+      const id = escape(keyAttr + '_' + f.key);
       const attr = ' ' + keyAttr + '="' + escape(f.key) + '"';
-      html += '<div class="form-group"><label>' + escape(f.label || f.key) + '</label>';
-      if (f.type === 'color') {
+      html += '<div class="form-group">' + (f.type === 'navigation' ? '' : '<label for="' + id + '">' + escape(f.label || f.key) + '</label>');
+      if (f.type === 'navigation') {
+        const selected = [...new Set(Array.isArray(raw) ? raw.filter(key => typeof key === 'string') : [])];
+        const choices = new Map((f.options || []).map(option => [option.value, option]));
+        const order = selected.concat([...choices.keys()].filter(key => !selected.includes(key)));
+        html += '<fieldset id="' + id + '" class="navigation-editor" data-setting-type="navigation"' + attr + ' aria-describedby="' + id + '_hint"><legend>' + escape(f.label || f.key) + '</legend><div class="navigation-items">';
+        order.forEach(key => {
+          const option = choices.get(key);
+          const checked = selected.includes(key);
+          const index = selected.indexOf(key);
+          html += '<div class="navigation-item' + (option ? '' : ' navigation-unavailable') + '">' +
+            '<label class="navigation-choice"><input type="checkbox" value="' + escape(key) + '"' + (checked ? ' checked' : '') + ' onchange="updateNavigationSelection(this)">' +
+            '<span><span class="navigation-name">' + escape(option ? option.label : '已删除或未公开的项目') + '</span><small>' + escape(option ? option.url : '暂不在前台显示，可取消勾选移除') + '</small></span></label>' +
+            '<div class="navigation-actions"><button type="button" class="btn btn-sm btn-outline" aria-label="上移" title="上移"' + (!checked || index === 0 ? ' disabled' : '') + ' onclick="moveNavigationItem(this,-1)">↑</button>' +
+            '<button type="button" class="btn btn-sm btn-outline" aria-label="下移" title="下移"' + (!checked || index === selected.length - 1 ? ' disabled' : '') + ' onclick="moveNavigationItem(this,1)">↓</button></div></div>';
+        });
+        html += '</div><span class="sr-only navigation-status" role="status"></span></fieldset>';
+      } else if (f.type === 'color') {
         html += '<input type="color" id="' + id + '" value="' + escape(v) + '"' + attr + '>';
       } else if (f.type === 'select') {
         html += '<select id="' + id + '"' + attr + '>' + (f.options || []).map(o => '<option value="' + escape(o.value) + '"' + (v === String(o.value) ? ' selected' : '') + '>' + escape(o.label) + '</option>').join('') + '</select>';
@@ -793,6 +809,7 @@ function settingsFormHTML(schema, values, keyAttr) {
       } else {
         html += '<input type="text" id="' + id + '" value="' + escape(v) + '"' + attr + '>';
       }
+      if (f.description) html += '<p class="form-hint" id="' + id + '_hint">' + escape(f.description) + '</p>';
       html += '</div>';
     });
     html += '</div>';
@@ -800,12 +817,46 @@ function settingsFormHTML(schema, values, keyAttr) {
   return html;
 }
 
+function updateNavigationButtons(editor) {
+  const rows = [...editor.querySelectorAll('.navigation-item')];
+  const selected = rows.filter(row => row.querySelector('input').checked);
+  rows.forEach(row => {
+    const index = selected.indexOf(row);
+    const buttons = row.querySelectorAll('button');
+    buttons[0].disabled = index <= 0;
+    buttons[1].disabled = index < 0 || index === selected.length - 1;
+  });
+}
+window.updateNavigationSelection = input => {
+  const editor = input.closest('.navigation-editor');
+  const list = editor.querySelector('.navigation-items');
+  [...list.children].sort((a, b) => Number(b.querySelector('input').checked) - Number(a.querySelector('input').checked))
+    .forEach(row => list.appendChild(row));
+  updateNavigationButtons(editor);
+  input.focus();
+};
+window.moveNavigationItem = (button, direction) => {
+  const editor = button.closest('.navigation-editor');
+  const row = button.closest('.navigation-item');
+  const selected = [...editor.querySelectorAll('.navigation-item')].filter(item => item.querySelector('input').checked);
+  const sibling = selected[selected.indexOf(row) + direction];
+  if (!sibling) return;
+  if (direction < 0) sibling.before(row);
+  else sibling.after(row);
+  updateNavigationButtons(editor);
+  // Moving the first/last item disables its button. Keep keyboard focus in the row.
+  if (button.disabled) row.querySelector('input').focus();
+  else button.focus();
+  editor.querySelector('.navigation-status').textContent = row.querySelector('.navigation-name').textContent + (direction < 0 ? '已上移' : '已下移');
+};
+
 // 按 keyAttr 从 DOM 回读表单值
 function readSettingsForm(keyAttr) {
   const body = {};
   document.querySelectorAll('[' + keyAttr + ']').forEach(el => {
     const key = el.getAttribute(keyAttr);
-    if (el.type === 'checkbox') body[key] = el.checked ? 'true' : 'false';
+    if (el.dataset.settingType === 'navigation') body[key] = [...el.querySelectorAll('input:checked')].map(input => input.value);
+    else if (el.type === 'checkbox') body[key] = el.checked ? 'true' : 'false';
     else body[key] = el.value;
   });
   return body;

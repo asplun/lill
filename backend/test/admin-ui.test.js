@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdir, readFile, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, stat } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -14,7 +14,9 @@ const evidenceDir = process.env.LILL_UI_EVIDENCE_DIR;
 
 test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, async t => {
   const { chromium } = await import(process.env.LILL_UI_PLAYWRIGHT);
-  const api = await startApiServer();
+  const api = await startApiServer({ prepareThemes: target => cp(
+    join(root, 'frontend/themes/default'), join(target, 'default'), { recursive: true },
+  ) });
   let server, browser;
   t.after(async () => {
     await browser?.close();
@@ -178,6 +180,52 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
     assert.equal(defaultValue, tagName);
     const result = await api.request('GET', '/api/v1/admin/tags', { headers });
     assert.equal(result.payload.data.items.find(item => item.id === tag.id).name, 'Updated reader notes');
+  });
+
+  await t.test('theme navigation can be selected, reordered, saved and emptied on mobile', async subtest => {
+    const title = '关于 "lill" ' + '很长的页面名称'.repeat(12);
+    const post = await write('/posts', { title, slug: 'navigation-about', type: 'page', status: 'published', content: 'About' });
+    const page = await openAdmin(subtest);
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const open = async () => {
+      await page.evaluate(() => window.navigate('themes'));
+      await page.locator('.theme-grid').waitFor();
+      await page.locator('.theme-card.active').getByRole('button', { name: '设置', exact: true }).click();
+      await page.locator('.navigation-editor').waitFor();
+    };
+    await open();
+    const editor = page.locator('[data-ts-key="navigation"]');
+    const selected = () => editor.locator('input:checked').evaluateAll(inputs => inputs.map(input => input.value));
+    assert.deepEqual(await selected(), ['index', 'archive']);
+    const item = editor.locator('input[value="page:' + post.id + '"]');
+    await item.check();
+    const row = item.locator('..').locator('..');
+    const moveUp = row.getByRole('button', { name: '上移', exact: true });
+    await moveUp.click();
+    assert.equal(await moveUp.evaluate(element => element === document.activeElement), true);
+    await moveUp.click();
+    await editor.locator('input[value="archive"]').uncheck();
+    assert.deepEqual(await selected(), ['page:' + post.id, 'index']);
+    const saved = page.waitForResponse(response => response.url().endsWith('/themes/default/settings') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    assert.equal((await saved).status(), 200);
+    await open();
+    assert.deepEqual(await selected(), ['page:' + post.id, 'index']);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'navigation must not overflow on mobile');
+    await screenshot(page, 'theme-navigation');
+    const hidden = await api.request('PUT', '/api/v1/admin/posts/' + post.id, { headers, body: { status: 'draft' } });
+    assert.equal(hidden.status, 200);
+    await open();
+    assert.equal(await editor.locator('.navigation-unavailable').count(), 1);
+    while (await editor.locator('input:checked').count()) await editor.locator('input:checked').first().uncheck();
+    const emptied = page.waitForResponse(response => response.url().endsWith('/themes/default/settings') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    assert.equal((await emptied).status(), 200);
+    const boot = await api.request('GET', '/api/v1/site/bootstrap');
+    assert.deepEqual(boot.payload.data.theme.extension.navigation, []);
+    assert.deepEqual(errors, []);
   });
 
   await t.test('admin destinations and editor controls fit narrow and desktop viewports', async subtest => {

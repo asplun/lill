@@ -90,6 +90,18 @@ input[type=checkbox],input[type=radio]{accent-color:var(--primary);width:16px;he
 .settings-group{margin-bottom:26px;padding-bottom:24px;border-bottom:1px solid var(--border-light)}
 .settings-group:last-of-type{border-bottom:0}
 .settings-group-title{font-size:14px;font-weight:600;margin-bottom:18px}
+.navigation-editor{min-width:0;border:0;padding:0;margin:0}
+.navigation-editor legend{font-size:13px;font-weight:550;margin-bottom:8px}
+.navigation-items{border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.navigation-item{display:flex;align-items:center;gap:12px;padding:12px;background:#ffffff80}
+.navigation-item+.navigation-item{border-top:1px solid var(--border-light)}
+.form-group .navigation-choice{display:flex;align-items:center;gap:10px;flex:1;min-width:0;margin:0;cursor:pointer;font-weight:400}
+.navigation-choice>span{min-width:0;overflow-wrap:anywhere}
+.navigation-choice input{flex-shrink:0}
+.navigation-choice small{display:block;margin-top:3px;color:var(--text-light);font-size:11px}
+.navigation-unavailable .navigation-name{color:var(--text-light)}
+.navigation-actions{display:flex;gap:4px;flex-shrink:0}
+.navigation-actions .btn{min-width:36px;min-height:36px;padding:6px}
 .settings-tabs,.filter-tabs{display:flex;align-items:center;gap:4px;width:fit-content;max-width:100%;padding:5px;border:1px solid #ffffffb3;background:#ffffff61;border-radius:999px;overflow-x:auto;scrollbar-width:none}
 .settings-tabs{margin-bottom:24px}
 .settings-tab,.filter-tab{padding:8px 17px;border:0;border-radius:999px;background:none;color:var(--text-light);font-size:12px;white-space:nowrap;transition:var(--transition)}

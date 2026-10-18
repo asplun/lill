@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync
 import { join, dirname } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
 import { runThemeMigrations } from '../../lib/theme-runtime.js';
+import { listNavigationItems } from '../../lib/navigation.js';
 
 const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
@@ -92,7 +93,10 @@ export function register(router, ctx, helpers) {
     if (!manifest || manifest.id !== params.themeId) return error(res, '主题不存在或 manifest 无效', 404);
     let config = {};
     try { config = JSON.parse(theme.config || '{}'); } catch {}
-    json(res, { theme, schema: manifest.settings || [], values: config });
+    const schema = (manifest.settings || []).map(field => field.type === 'navigation'
+      ? { ...field, options: listNavigationItems(db).map(item => ({ value: item.key, label: item.title, url: item.url })) }
+      : field);
+    json(res, { theme, schema, values: config });
   });
 
   route('PUT', '/api/v1/admin/themes/:themeId/settings', async (req, res, params) => {

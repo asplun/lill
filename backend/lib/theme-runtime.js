@@ -9,6 +9,9 @@ function fieldsOf(manifest) {
   return Array.isArray(manifest.groups) ? manifest.groups.flatMap(g => Array.isArray(g?.fields) ? g.fields : []) : [];
 }
 function normalizeValue(field, value) {
+  if (field.type === 'navigation') {
+    return Array.isArray(value) ? [...new Set(value.filter(key => typeof key === 'string' && key.length <= 128))] : [];
+  }
   if (field.type === 'checkbox') return typeof value === 'boolean' ? value : ['1', 'true', 'on', 'yes'].includes(String(value ?? '').trim().toLowerCase());
   if (field.type === 'number') { const n = Number(value); return Number.isFinite(n) ? n : 0; }
   return value;
