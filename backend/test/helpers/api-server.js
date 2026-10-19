@@ -20,10 +20,12 @@ async function getFreePort() {
  * 因此对 EADDRINUSE 做有限重试（见 startApiServer）。
  * prepareThemes 可在服务启动前向临时主题目录写入 fixture 主题。
  */
-async function launchOnce({ prepareThemes } = {}) {
+async function launchOnce({ prepareThemes, preparePlugins } = {}) {
   const tempDir = await mkdtemp(join(tmpdir(), 'lill-security-test-'));
   const themesDir = join(tempDir, 'themes');
+  const pluginsDir = join(tempDir, 'plugins');
   if (typeof prepareThemes === 'function') await prepareThemes(themesDir);
+  if (typeof preparePlugins === 'function') await preparePlugins(pluginsDir);
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server.js'], {
@@ -34,7 +36,7 @@ async function launchOnce({ prepareThemes } = {}) {
       DB_PATH: join(tempDir, 'lill.db'),
       UPLOAD_DIR: join(tempDir, 'uploads'),
       THEMES_DIR: themesDir,
-      PLUGINS_DIR: join(tempDir, 'plugins'),
+      PLUGINS_DIR: pluginsDir,
       JWT_SECRET: 'test-only-secret-not-for-production',
       FRONTEND_URL: baseUrl,
     },
@@ -81,6 +83,7 @@ async function launchOnce({ prepareThemes } = {}) {
 
   return {
     themesDir,
+    pluginsDir,
     baseUrl,
     dbPath: join(tempDir, 'lill.db'),
     request,
@@ -101,11 +104,11 @@ async function launchOnce({ prepareThemes } = {}) {
   };
 }
 
-export async function startApiServer({ attempts = 3, prepareThemes } = {}) {
+export async function startApiServer({ attempts = 3, prepareThemes, preparePlugins } = {}) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      return await launchOnce({ prepareThemes });
+      return await launchOnce({ prepareThemes, preparePlugins });
     } catch (error) {
       lastError = error;
       if (!/EADDRINUSE/.test(error.message)) throw error;

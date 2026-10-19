@@ -1,10 +1,76 @@
 /** Article and page management routes. */
 import { withTransaction } from './shared.js';
+import { mergeThemeEditorFields, normalizeEditorFieldSchema, readThemeEditorFields } from '../../lib/theme-editor-fields.js';
+import { mergePluginEditorFields, readPluginEditorFields } from '../../lib/plugin-editor-ext.js';
 
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, triggerHook } = ctx;
   const { route, canManagePost, validatePostWrite, logAction, activeThemeId, normalizePageTemplate, listPostsHandler } = helpers;
   const { THEMES_DIR } = ctx;
+  const themeRuntime = ctx.themeRuntime;
+  const editorRegistry = ctx._editorRegistry;
+  const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const schemaFor = type => themeRuntime?.editorFields
+    ? themeRuntime.editorFields(activeThemeId(), type)
+    : normalizeEditorFieldSchema(null, type);
+  const genericFieldsInput = value => {
+    if (!isRecord(value)) return value;
+    const result = { ...value };
+    delete result._lillThemeFields;
+    delete result._lillPluginFields;
+    return result;
+  };
+  const replaceGenericFields = (storedValue, submittedValue) => {
+    let stored = storedValue;
+    if (typeof stored === 'string') {
+      try { stored = JSON.parse(stored); }
+      catch { throw new TypeError('存储的自定义字段不是有效 JSON'); }
+    }
+    const submitted = genericFieldsInput(submittedValue);
+    const themes = isRecord(stored) && isRecord(stored._lillThemeFields) ? stored._lillThemeFields : null;
+    if (!themes) return submitted;
+    if (!isRecord(submitted)) throw new TypeError('更新通用字段时必须提交对象，才能保留主题字段');
+    return { ...submitted, _lillThemeFields: themes };
+  };
+  const fieldsForWrite = (storedValue, genericValue, themeFields, pluginFields, type, themeId) => {
+    let next = genericValue === undefined ? storedValue : replaceGenericFields(storedValue, genericValue);
+    if (next === undefined || next === null || next === '') next = {};
+    if (themeFields !== undefined) {
+      let schema;
+      try {
+        schema = themeRuntime?.editorFields
+          ? themeRuntime.editorFields(themeId, type)
+          : normalizeEditorFieldSchema(null, type);
+      } catch {
+        return { error: '当前主题内容字段定义无效', status: 500 };
+      }
+      try {
+        next = mergeThemeEditorFields(next, themeId, themeFields, schema);
+      } catch (validationError) {
+        return { error: validationError.message, status: 400 };
+      }
+    }
+    if (pluginFields !== undefined) {
+      try {
+        next = mergePluginEditorFields(next, pluginFields, editorRegistry, type);
+      } catch (validationError) {
+        return { error: validationError.message, status: 400 };
+      }
+    }
+    return { value: next };
+  };
+  const activeFieldsForRead = (post) => {
+    const themeId = activeThemeId();
+    try {
+      return readThemeEditorFields(post.fields, themeId, schemaFor(post.type));
+    } catch {
+      return {};
+    }
+  };
+  const activePluginFieldsForRead = (post) => {
+    try { return readPluginEditorFields(post.fields, editorRegistry, post.type); }
+    catch { return {}; }
+  };
 
   /** 规范自定义别名：保留字母（含中文等 Unicode 字母）、数字与连字符，其余折叠为 - */
   const normalizeSlug = (raw) => String(raw).trim().toLowerCase()
@@ -47,6 +113,12 @@ export function register(router, ctx, helpers) {
   const nowPublishedAt = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
   const validateWrite = body => {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return '内容参数必须是对象';
+    if (body.themeFields !== undefined && (!body.themeFields || typeof body.themeFields !== 'object' || Array.isArray(body.themeFields))) {
+      return '主题字段必须是对象';
+    }
+    if (body.pluginFields !== undefined && (!body.pluginFields || typeof body.pluginFields !== 'object' || Array.isArray(body.pluginFields))) {
+      return '插件字段必须是对象';
+    }
     if (body.type !== undefined && !['post', 'page'].includes(body.type)) return '无效内容类型，仅支持 post/page';
     if (body.status !== undefined && !['draft', 'published', 'pending'].includes(body.status)) return '无效内容状态，仅支持 draft/published/pending';
     if (body.visibility !== undefined && body.visibility !== 'public') return '尚未支持非公开可见性，请勿提交私密或密码内容';
@@ -89,6 +161,17 @@ export function register(router, ctx, helpers) {
   };
   route('GET', '/api/v1/admin/posts', (req, res) => listPostsHandler(req, res));
   route('GET', '/api/v1/admin/pages', (req, res) => listPostsHandler(req, res, 'page'));
+  route('GET', '/api/v1/admin/editor-fields', async (req, res) => {
+    await authenticate(req);
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const type = url.searchParams.get('type');
+    if (!['post', 'page'].includes(type)) return error(res, '内容类型无效，仅支持 post/page', 400);
+    try {
+      json(res, { themeId: activeThemeId(), fields: schemaFor(type) });
+    } catch {
+      error(res, '当前主题内容字段定义无效', 500);
+    }
+  });
   route('GET', '/api/v1/admin/page-templates', async (req, res) => {
     await authenticate(req);
     const themeId = activeThemeId();
@@ -113,9 +196,15 @@ export function register(router, ctx, helpers) {
     const automaticExcerpt = body.excerptAuto ?? !body.excerpt;
     const excerpt = automaticExcerpt ? plainText(body.content || '').substring(0, 200) : (body.excerpt || '');
     const tpl = normalizePageTemplate(body.type || 'post', body.template);
+    const themeId = activeThemeId();
+    const contentFields = fieldsForWrite(
+      '{}', body.fields || {}, body.themeFields, body.pluginFields, body.type || 'post', themeId,
+    );
+    if (contentFields.error) return error(res, contentFields.error, contentFields.status);
+    const fieldsValue = contentFields.value;
     withTransaction(db, () => {
       db.prepare('INSERT INTO posts (id, title, slug, content, html_content, excerpt, cover_image, type, status, sticky, published_at, author_id, category_id, fields, template, comment_allowed, "order", excerpt_auto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(body.fields || {}), tpl, body.commentAllowed === false ? 0 : 1, body.order ?? 0, automaticExcerpt ? 1 : 0);
+        .run(id, body.title, slug, body.content || '', renderMD(body.content || ''), excerpt, body.coverImage || null, body.type || 'post', status, body.sticky ? 1 : 0, publishedAt, auth.id, body.categoryId || null, JSON.stringify(fieldsValue), tpl, body.commentAllowed === false ? 0 : 1, body.order ?? 0, automaticExcerpt ? 1 : 0);
       if (body.tagNames !== undefined) replaceTags(id, body.tagNames);
     });
     logAction(auth.id, 'post.create', '创建文章: ' + body.title, req);
@@ -157,7 +246,16 @@ export function register(router, ctx, helpers) {
       updates.push('published_at = ?');
       args.push(body.publishedAt || (status === 'published' ? (exist.published_at || nowPublishedAt()) : null));
     }
-    if (body.fields) updates.push('fields = ?'), args.push(JSON.stringify(body.fields));
+    const themeId = activeThemeId();
+    if (body.fields || body.themeFields !== undefined || body.pluginFields !== undefined) {
+      const contentFields = fieldsForWrite(
+        exist.fields, body.fields || undefined, body.themeFields, body.pluginFields, body.type || exist.type, themeId,
+      );
+      if (contentFields.error) return error(res, contentFields.error, contentFields.status);
+      const fieldsValue = contentFields.value;
+      updates.push('fields = ?');
+      args.push(JSON.stringify(fieldsValue));
+    }
     withTransaction(db, () => {
       db.prepare('INSERT INTO post_versions (id, post_id, title, content, html_content, excerpt, status, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(uid(), exist.id, exist.title, exist.content, exist.html_content, exist.excerpt, exist.status, exist.author_id);
@@ -175,7 +273,7 @@ export function register(router, ctx, helpers) {
     if (!post) return error(res, '文章不存在', 404);
     if (!canManagePost(auth, post)) return error(res, '无权限', 403);
     const tags = db.prepare('SELECT t.id, t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(params.id);
-    json(res, { ...post, tags });
+    json(res, { ...post, tags, themeFields: activeFieldsForRead(post), pluginFields: activePluginFieldsForRead(post) });
   });
   route('DELETE', '/api/v1/admin/posts/:id', async (req, res, params) => {
     const auth = await authenticate(req);

@@ -10,10 +10,11 @@ import { register as registerThemes } from './themes.js';
 import { register as registerPlugins } from './plugins.js';
 import { register as registerSystem } from './system.js';
 import { register as registerWidgets } from './widgets.js';
+import { register as registerEditorExtensions } from './editor-extensions.js';
 import { createAdminHelpers } from './shared.js';
 
 const SKIPPED_ROUTES = new Set([
-  'GET:/api/v1/admin/posts', 'GET:/api/v1/admin/pages', 'GET:/api/v1/admin/page-templates',
+  'GET:/api/v1/admin/posts', 'GET:/api/v1/admin/pages', 'GET:/api/v1/admin/page-templates', 'GET:/api/v1/admin/editor-fields',
   'POST:/api/v1/admin/posts', 'PUT:/api/v1/admin/posts/:id', 'GET:/api/v1/admin/posts/:id',
   'DELETE:/api/v1/admin/posts/:id', 'GET:/api/v1/admin/posts/recent', 'POST:/api/v1/admin/posts/batch',
   'GET:/api/v1/admin/categories', 'POST:/api/v1/admin/categories', 'PUT:/api/v1/admin/categories/:id', 'DELETE:/api/v1/admin/categories/:id',
@@ -39,6 +40,7 @@ export function register(router, ctx) {
   registerLegacy(router, ctx, { skip: SKIPPED_ROUTES });
   const helpers = createAdminHelpers(ctx, router);
   registerContent(router, ctx, helpers);
+  registerEditorExtensions(router, ctx, helpers);
   registerTaxonomy(router, ctx, helpers);
   registerComments(router, ctx, helpers);
   registerMedia(router, ctx, helpers);

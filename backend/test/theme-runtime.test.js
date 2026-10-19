@@ -187,3 +187,28 @@ test('public theme config excludes credential-like fields when private metadata 
   const config = { siteName: 'visible', qiniuSecretKey: 'secret', metingCookieTencent: 'cookie', albumApiToken: 'token', smtpPass: 'password' };
   assert.deepEqual(publicThemeConfig(manifest, config), { siteName: 'visible' });
 });
+
+test('theme runtime exposes normalized editor fields for the requested content type', async t => {
+  const themesDir = await mkdtemp(join(tmpdir(), 'lill-theme-editor-fields-'));
+  await mkdir(join(themesDir, 'editor-theme'), { recursive: true });
+  await writeFile(join(themesDir, 'editor-theme', 'theme.json'), JSON.stringify({
+    id: 'editor-theme',
+    editorFields: [
+      { key: 'subtitle', label: 'Subtitle', type: 'text', for: 'post' },
+      { key: 'hero_style', label: 'Hero style', type: 'select', for: 'page', options: [{ value: 'wide', label: 'Wide' }] },
+    ],
+  }));
+  t.after(() => rm(themesDir, { recursive: true, force: true }));
+
+  const runtime = await loadThemeRuntime(themesDir);
+  assert.deepEqual(runtime.editorFields('editor-theme', 'post'), [
+    { key: 'subtitle', label: 'Subtitle', type: 'text', for: 'post', group: '', default: '', description: '' },
+  ]);
+  assert.deepEqual(runtime.editorFields('editor-theme', 'page'), [
+    {
+      key: 'hero_style', label: 'Hero style', type: 'select', for: 'page', group: '', default: 'wide',
+      description: '', options: [{ value: 'wide', label: 'Wide' }],
+    },
+  ]);
+  assert.deepEqual(runtime.editorFields('missing-theme', 'post'), []);
+});

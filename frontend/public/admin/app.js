@@ -3,6 +3,9 @@ let page = 'dashboard';
 let pageNum = 1;
 let postStatus = '';
 let commentStatus = '';
+let currentEditorThemeFields = null;
+let currentEditorPluginManifest = null;
+let currentEditorRuntime = null;
 
 const TITLES = { dashboard: '控制台', posts: '文章', pages: '页面', categories: '分类', tags: '标签', comments: '评论', media: '附件', themes: '外观', users: '用户', settings: '设置', logs: '日志', backup: '备份', plugins: '插件' };
 
@@ -345,18 +348,367 @@ window.mdToggleFullscreen = () => {
   card.classList.toggle('editor-fs');
 };
 window.openPostEditor = (type = 'post', id) => showView('editor:' + type + ':' + (id || 'new'), signal => loadPostEditor(type, id, signal), true);
+
+const EDITOR_EVENTS = new Set(['content:change', 'save:before', 'save:after']);
+function createEditorBridge({ post = {}, type = 'post', pluginDir = '', fieldSchema = [], textarea, request = api } = {}) {
+  if (!textarea || typeof textarea !== 'object') throw new TypeError('编辑器桥接需要 textarea');
+  const schema = new Map((Array.isArray(fieldSchema) ? fieldSchema : [])
+    .filter(field => field && typeof field.key === 'string')
+    .map(field => [field.key, field]));
+  const saved = post?.pluginFields?.[pluginDir];
+  const pluginFields = {};
+  for (const field of schema.values()) {
+    const value = saved && Object.hasOwn(saved, field.key)
+      ? saved[field.key]
+      : (field.default ?? (field.type === 'checkbox' ? false : field.type === 'number' ? 0 : field.type === 'select' ? field.options?.[0]?.value ?? '' : ''));
+    pluginFields[field.key] = value;
+  }
+  const listeners = new Map([...EDITOR_EVENTS].map(event => [event, []]));
+  const notifyContentChange = () => {
+    try { mdSync(); } catch {}
+    for (const handler of listeners.get('content:change')) handler(getDocument());
+  };
+  const selection = () => ({
+    start: Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : textarea.value.length,
+    end: Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : textarea.value.length,
+  });
+  const applyText = (text, replace = true) => {
+    const range = replace ? selection() : { start: textarea.value.length, end: textarea.value.length };
+    textarea.value = textarea.value.slice(0, range.start) + text + textarea.value.slice(range.end);
+    const caret = range.start + text.length;
+    if (typeof textarea.setSelectionRange === 'function') textarea.setSelectionRange(caret, caret);
+    notifyContentChange();
+    return textarea.value;
+  };
+  function getDocument() {
+    return { content: String(textarea.value || ''), pluginFields: { ...pluginFields }, type, postId: post?.id || null };
+  }
+  const bridge = {
+    getDocument,
+    getContent: () => String(textarea.value || ''),
+    replaceContent: text => { textarea.value = String(text ?? ''); if (typeof textarea.setSelectionRange === 'function') textarea.setSelectionRange(0, textarea.value.length); notifyContentChange(); },
+    insertText: text => applyText(String(text ?? ''), true),
+    replaceSelection: text => applyText(String(text ?? ''), true),
+    getPluginFields: () => ({ ...pluginFields }),
+    setPluginField: (key, value) => {
+      if (!schema.has(key)) throw new Error('未知插件字段：' + key);
+      pluginFields[key] = value;
+      const input = pluginDir ? document.getElementById('pe-plugin-field-' + pluginDir + '-' + key) : null;
+      if (input) {
+        if (input.type === 'checkbox') input.checked = value === true;
+        else input.value = value;
+      }
+      for (const handler of listeners.get('content:change')) handler(getDocument());
+    },
+    on: (event, handler) => {
+      if (!EDITOR_EVENTS.has(event)) throw new Error('不支持的编辑器事件：' + event);
+      if (typeof handler !== 'function') throw new TypeError('编辑器事件监听器必须是函数');
+      listeners.get(event).push(handler);
+      return () => {
+        const list = listeners.get(event);
+        const index = list.indexOf(handler);
+        if (index >= 0) list.splice(index, 1);
+      };
+    },
+    request: (method, path, options = {}) => typeof request === 'function'
+      ? (request === api || request.length < 3
+        ? request(path, { ...options, method })
+        : request(method, path, options))
+      : Promise.reject(new Error('编辑器请求客户端不可用')),
+    async runSaveBefore(input = {}) {
+      let state = {
+        content: input.content === undefined ? String(textarea.value || '') : String(input.content),
+        pluginFields: { ...pluginFields },
+        type,
+        postId: post?.id || null,
+      };
+      for (const handler of [...listeners.get('save:before')]) {
+        const result = await handler(state);
+        if (result && typeof result === 'object' && Object.hasOwn(result, 'content')) {
+          if (typeof result.content !== 'string') throw new Error('save:before 必须返回字符串 content');
+          state = { ...state, content: result.content };
+        }
+      }
+      return state;
+    },
+    emitSaveAfter: (state = getDocument()) => {
+      for (const handler of [...listeners.get('save:after')]) {
+        try { handler(state); } catch {}
+      }
+    },
+  };
+  return bridge;
+}
+
+function createEditorSlots(root = {}) {
+  const mounted = { toolbar: [], sidebar: [] };
+  const slotRoot = (name) => {
+    if (root && root[name]) return root[name];
+    if (!root || typeof root.appendChild !== 'function') throw new TypeError('编辑器 slot 根节点无效');
+    const element = document.createElement('div');
+    element.className = 'editor-extension-slot editor-extension-slot-' + name;
+    root.appendChild(element);
+    return element;
+  };
+  const createSlot = name => ({
+    mount(render) {
+      if (typeof render !== 'function') throw new TypeError('slot mount 需要渲染函数');
+      const container = document.createElement('div');
+      container.className = 'editor-extension-mount editor-extension-mount-' + name;
+      slotRoot(name).appendChild(container);
+      render(container);
+      mounted[name].push(container);
+      let active = true;
+      return {
+        unmount() {
+          if (!active) return;
+          active = false;
+          const index = mounted[name].indexOf(container);
+          if (index >= 0) mounted[name].splice(index, 1);
+          container.remove?.();
+        },
+      };
+    },
+  });
+  return {
+    toolbar: createSlot('toolbar'),
+    sidebar: createSlot('sidebar'),
+    clear() {
+      for (const name of ['toolbar', 'sidebar']) {
+        for (const container of mounted[name].splice(0)) container.remove?.();
+      }
+    },
+  };
+}
+
+async function loadEditorExtensions(manifest, context = {}) {
+  const errors = [];
+  const cleanups = [];
+  const styles = [];
+  const request = context.request || api;
+  const slots = context.slots || createEditorSlots(context.root);
+  const extensions = Array.isArray(manifest?.extensions) ? manifest.extensions : [];
+  for (const plugin of extensions) {
+    const editor = context.editors?.get(plugin.plugin) || context.editor;
+    for (const module of (plugin.modules || [])) {
+      try {
+        for (const stylePath of module.styles || []) {
+          const response = await request(stylePath);
+          if (!response || typeof response.content !== 'string') throw new Error('样式资源格式无效');
+          const style = document.createElement('style');
+          style.dataset.plugin = plugin.plugin;
+          style.dataset.extension = module.id;
+          style.textContent = response.content;
+          (document.head || document.body).appendChild(style);
+          styles.push(style);
+        }
+        const response = await request(module.entry);
+        if (!response || typeof response.content !== 'string') throw new Error('扩展模块格式无效');
+        if (typeof URL?.createObjectURL !== 'function' || typeof Blob !== 'function') {
+          throw new Error('当前浏览器不支持插件扩展模块');
+        }
+        const url = URL.createObjectURL(new Blob([response.content], { type: 'text/javascript' }));
+        const loaded = await import(url);
+        const activate = loaded?.activate;
+        if (typeof activate !== 'function') throw new Error('扩展模块未导出 activate');
+        const cleanup = await activate({
+          editor,
+          slots,
+          plugin: { dir: plugin.plugin, extension: module },
+        });
+        if (typeof cleanup === 'function') cleanups.push(cleanup);
+        cleanups.push(() => URL.revokeObjectURL(url));
+      } catch (error) {
+        errors.push({ plugin: plugin.plugin, extension: module.id, error });
+      }
+    }
+  }
+  return {
+    errors,
+    cleanups,
+    unload() {
+      for (const cleanup of cleanups.splice(0).reverse()) {
+        try { cleanup(); } catch {}
+      }
+      for (const style of styles.splice(0)) style.remove?.();
+      slots.clear?.();
+    },
+  };
+}
+
+function renderPluginEditorFields(manifest, values) {
+  const entries = Array.isArray(manifest?.extensions) ? manifest.extensions : [];
+  const saved = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
+  return entries.flatMap(entry => {
+    const fields = Array.isArray(entry.fields) ? entry.fields : [];
+    if (!fields.length) return [];
+    const groups = new Map();
+    for (const field of fields) {
+      const group = typeof field.group === 'string' && field.group.trim() ? field.group : entry.plugin;
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(field);
+    }
+    return [...groups].map(([group, groupFields]) => {
+      const controls = groupFields.map(field => {
+        const id = 'pe-plugin-field-' + entry.plugin + '-' + field.key;
+        const current = saved[entry.plugin] || {};
+        const value = Object.hasOwn(current, field.key)
+          ? current[field.key]
+          : (field.default ?? (field.type === 'checkbox' ? false : field.type === 'number' ? 0 : field.type === 'select' ? field.options?.[0]?.value ?? '' : ''));
+        const description = field.description ? '<div class="hint theme-editor-description">' + escape(field.description) + '</div>' : '';
+        if (field.type === 'checkbox') {
+          return '<div class="theme-editor-field"><label class="check-line theme-editor-checkbox" for="' + escape(id) +
+            '"><input id="' + escape(id) + '" type="checkbox"' + (value === true ? ' checked' : '') + '><span>' + escape(field.label) + '</span></label>' + description + '</div>';
+        }
+        let control;
+        if (field.type === 'textarea') control = '<textarea id="' + escape(id) + '">' + escape(value) + '</textarea>';
+        else if (field.type === 'select') control = '<select id="' + escape(id) + '">' + (field.options || []).map(option =>
+          '<option value="' + escape(option.value) + '"' + (String(option.value) === String(value) ? ' selected' : '') + '>' + escape(option.label) + '</option>').join('') + '</select>';
+        else {
+          const type = ['number', 'url'].includes(field.type) ? field.type : 'text';
+          control = '<input id="' + escape(id) + '" type="' + type + '"' + (type === 'number' ? ' step="any"' : '') + ' value="' + escape(value) + '">';
+        }
+        return '<div class="form-group theme-editor-field"><label for="' + escape(id) + '">' + escape(field.label) + '</label>' + control + description + '</div>';
+      }).join('');
+      return '<section class="side-box theme-editor-group plugin-editor-group" aria-label="' + escape(group) + '">' +
+        '<div class="side-box-title">' + escape(group) + '</div>' + controls + '</section>';
+    });
+  }).join('');
+}
+
+function renderPluginEditorActions(manifest) {
+  const entries = Array.isArray(manifest?.extensions) ? manifest.extensions : [];
+  return entries.map(entry => {
+    const actions = (entry.actions || []).filter(action => action.placement === 'toolbar');
+    if (!actions.length) return '';
+    return '<span class="plugin-editor-actions" id="pe-plugin-actions-' + escape(entry.plugin) + '">' +
+      actions.map(action => '<button type="button" class="tb plugin-editor-action" data-plugin="' + escape(entry.plugin) +
+        '" data-action="' + escape(action.id) + '" onclick="runEditorAction(' + jsArg(entry.plugin) + ',' + jsArg(action.id) + ')">' + escape(action.label) + '</button>').join('') +
+      '</span>';
+  }).join('');
+}
+
+function renderPluginSidebarActions(manifest) {
+  const entries = Array.isArray(manifest?.extensions) ? manifest.extensions : [];
+  return entries.map(entry => {
+    const actions = (entry.actions || []).filter(action => action.placement === 'sidebar');
+    if (!actions.length) return '';
+    return '<div class="plugin-editor-sidebar-actions" data-plugin="' + escape(entry.plugin) + '">' +
+      actions.map(action => '<button type="button" class="btn btn-outline plugin-editor-action" data-plugin="' + escape(entry.plugin) +
+        '" data-action="' + escape(action.id) + '" onclick="runEditorAction(' + jsArg(entry.plugin) + ',' + jsArg(action.id) + ')">' + escape(action.label) + '</button>').join('') +
+      '</div>';
+  }).join('');
+}
+
+function cleanupEditorRuntime() {
+  if (!currentEditorRuntime) return;
+  try { currentEditorRuntime.extensionRuntime?.unload?.(); } catch {}
+  try { currentEditorRuntime.slots?.clear?.(); } catch {}
+  currentEditorRuntime = null;
+}
+
+function syncPluginEditorFields(runtime) {
+  if (!runtime?.manifest?.extensions) return;
+  for (const entry of runtime.manifest.extensions) {
+    const bridge = runtime.editors.get(entry.plugin);
+    for (const field of entry.fields || []) {
+      const input = document.getElementById('pe-plugin-field-' + entry.plugin + '-' + field.key);
+      if (!input || !bridge) continue;
+      const value = field.type === 'checkbox'
+        ? input.checked
+        : field.type === 'number'
+          ? (input.value.trim() === '' ? Number(field.default ?? 0) : Number(input.value))
+          : input.value;
+      try { bridge.setPluginField(field.key, value); } catch {}
+    }
+  }
+}
+
+window.runEditorAction = async (plugin, action) => {
+  const runtime = currentEditorRuntime;
+  const textarea = mdTextarea();
+  if (!runtime || !textarea) return;
+  const bridge = runtime.editors.get(plugin) || runtime.editor;
+  try {
+    const result = await api('/admin/editor-actions/' + encodeURIComponent(plugin) + '/' + encodeURIComponent(action), {
+      method: 'POST',
+      body: { postId: runtime.postId || null, contentType: runtime.type, selection: textarea.value.slice(textarea.selectionStart || 0, textarea.selectionEnd || 0) },
+    });
+    if (result.insertText !== undefined) bridge.insertText(result.insertText);
+    else if (result.replaceSelection !== undefined) bridge.replaceSelection(result.replaceSelection);
+    else if (result.setPluginField) bridge.setPluginField(result.setPluginField.key, result.setPluginField.value);
+  } catch (error) { toast(error.message, 'error'); }
+};
+function renderThemeEditorFields(fields, values) {
+  if (!Array.isArray(fields) || fields.length === 0) return '';
+  const saved = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
+  const groups = new Map();
+  for (const field of fields) {
+    if (!field || typeof field.key !== 'string') continue;
+    const group = typeof field.group === 'string' && field.group.trim() ? field.group : '主题字段';
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(field);
+  }
+  return [...groups].map(([group, groupFields]) => {
+    const controls = groupFields.map(field => {
+      const id = 'pe-theme-field-' + field.key;
+      const value = Object.hasOwn(saved, field.key)
+        ? saved[field.key]
+        : (field.default ?? (field.type === 'checkbox' ? false : field.type === 'number' ? 0 : field.type === 'select' ? field.options?.[0]?.value ?? '' : ''));
+      const description = field.description
+        ? '<div class="hint theme-editor-description">' + escape(field.description) + '</div>'
+        : '';
+      if (field.type === 'checkbox') {
+        return '<div class="theme-editor-field"><label class="check-line theme-editor-checkbox" for="' + escape(id) +
+          '"><input id="' + escape(id) + '" type="checkbox"' + (value === true ? ' checked' : '') + '><span>' +
+          escape(field.label) + '</span></label>' + description + '</div>';
+      }
+      let control;
+      if (field.type === 'textarea') {
+        control = '<textarea id="' + escape(id) + '">' + escape(value) + '</textarea>';
+      } else if (field.type === 'select') {
+        const options = (Array.isArray(field.options) ? field.options : []).map(option =>
+          '<option value="' + escape(option.value) + '"' + (String(option.value) === String(value) ? ' selected' : '') +
+          '>' + escape(option.label) + '</option>').join('');
+        control = '<select id="' + escape(id) + '">' + options + '</select>';
+      } else {
+        const type = ['number', 'url'].includes(field.type) ? field.type : 'text';
+        const step = type === 'number' ? ' step="any"' : '';
+        control = '<input id="' + escape(id) + '" type="' + type + '"' + step + ' value="' + escape(value) + '">';
+      }
+      return '<div class="form-group theme-editor-field"><label for="' + escape(id) + '">' + escape(field.label) +
+        '</label>' + control + description + '</div>';
+    }).join('');
+    if (!controls) return '';
+    return '<section class="side-box theme-editor-group" aria-label="' + escape(group) + '"><div class="side-box-title">' +
+      escape(group) + '</div>' + controls + '</section>';
+  }).join('');
+}
 async function loadPostEditor(type, id, signal) {
   type = type || 'post';
   const isPage = type === 'page';
-  // 四项互不依赖，同时读取；可选信息失败不阻止写作。
-  const [post, cats, templates, options] = await Promise.all([
+  cleanupEditorRuntime();
+  // 各项互不依赖，同时读取；可选信息失败不阻止写作。
+  const [post, cats, templates, options, editorFieldResponse, editorPluginResponse] = await Promise.all([
     id ? api('/admin/posts/' + id, { signal }) : null,
     api('/admin/categories', { signal }).catch(() => []),
     isPage ? api('/admin/page-templates', { signal }).catch(() => null) : null,
     api(user?.role === 'admin' ? '/admin/options' : '/options/public', { signal }).catch(() => null),
+    api('/admin/editor-fields?type=' + (isPage ? 'page' : 'post'), { signal }).catch(error => ({ error })),
+    api('/admin/editor-extensions?type=' + (isPage ? 'page' : 'post'), { signal }).catch(error => ({ error })),
   ]);
   // 请求被切页或另一个编辑器取消后，不再覆盖当前页面。
   if (signal.aborted) return;
+  currentEditorThemeFields = Array.isArray(editorFieldResponse?.fields) ? editorFieldResponse.fields : null;
+  currentEditorPluginManifest = Array.isArray(editorPluginResponse?.extensions) ? editorPluginResponse : null;
+  const themeFieldsMarkup = currentEditorThemeFields === null
+    ? '<div class="side-box theme-editor-warning" role="status">主题字段加载失败，核心编辑器仍可使用；保存不会清除已保存的主题字段。</div>'
+    : renderThemeEditorFields(currentEditorThemeFields, post?.themeFields);
+  const pluginFieldsMarkup = currentEditorPluginManifest
+    ? renderPluginEditorFields(currentEditorPluginManifest, post?.pluginFields)
+    : '<div class="side-box theme-editor-warning plugin-editor-warning" role="status">插件编辑扩展加载失败，核心编辑器仍可使用。</div>';
+  const pluginActionsMarkup = currentEditorPluginManifest ? renderPluginEditorActions(currentEditorPluginManifest) : '';
+  const pluginSidebarActionsMarkup = currentEditorPluginManifest ? renderPluginSidebarActions(currentEditorPluginManifest) : '';
   const pageTpls = templates?.templates || [];
   const permalinkTpl = (isPage ? '/page/{slug}' : (Array.isArray(options)
     ? options.find(o => o.key === 'permalink')?.value : options?.permalink)) || '/archives/{cid}/';
@@ -410,6 +762,7 @@ async function loadPostEditor(type, id, signal) {
             <button type="button" class="tb" title="有序列表" onclick="mdPrefix('1. ')">1. 列表</button>
             <button type="button" class="tb" title="分隔线" onclick="mdInsertHr()">— 分隔</button>
           </div>
+          <div id="pe-plugin-toolbar-slot" class="plugin-editor-toolbar-slot">${pluginActionsMarkup}</div>
           <div class="tb-right">
             <span id="pe-count" class="tb-count">0 字</span>
             <button type="button" class="tb" id="pe-mode-btn" title="写作 / 分屏 / 预览" onclick="mdToggleMode()">分屏</button>
@@ -442,6 +795,9 @@ async function loadPostEditor(type, id, signal) {
           ${tplGroup}
           ${isPage ? '<div class="form-group"><label for="pe-order">页面顺序</label><input id="pe-order" type="number" step="1" value="' + (post?.order || 0) + '"><div class="hint">数字越小越靠前</div></div>' : ''}
         </div>
+        ${themeFieldsMarkup}
+          ${pluginFieldsMarkup}
+          <div id="pe-plugin-sidebar-slot" class="plugin-editor-sidebar-slot">${pluginSidebarActionsMarkup}</div>
       </aside>
     </div>
   </div>`;
@@ -454,6 +810,34 @@ async function loadPostEditor(type, id, signal) {
   const syncExcerptMode = () => { excerptInput.disabled = excerptAuto.checked; };
   excerptAuto.addEventListener('change', syncExcerptMode);
   syncExcerptMode();
+  const pluginEntries = currentEditorPluginManifest?.extensions || [];
+  const pluginEditors = new Map(pluginEntries.map(entry => [entry.plugin, createEditorBridge({
+    post: post || {}, type, pluginDir: entry.plugin, fieldSchema: entry.fields, textarea: ta,
+  })]));
+  const baseEditor = createEditorBridge({ post: post || {}, type, pluginDir: '', fieldSchema: [], textarea: ta });
+  const slots = createEditorSlots({
+    toolbar: document.getElementById('pe-plugin-toolbar-slot'),
+    sidebar: document.getElementById('pe-plugin-sidebar-slot'),
+  });
+  const runtime = {
+    type, postId: id || null, editor: baseEditor, editors: pluginEditors, slots, extensionRuntime: null,
+    manifest: currentEditorPluginManifest,
+    async runSaveBefore(content) {
+      let state = { content };
+      for (const bridge of pluginEditors.values()) state = await bridge.runSaveBefore(state);
+      return state;
+    },
+    emitSaveAfter(state) {
+      for (const bridge of pluginEditors.values()) bridge.emitSaveAfter(state);
+    },
+  };
+  currentEditorRuntime = runtime;
+  loadEditorExtensions(currentEditorPluginManifest, {
+    editor: baseEditor, editors: pluginEditors, slots,
+  }).then(extensionRuntime => {
+    if (currentEditorRuntime === runtime) runtime.extensionRuntime = extensionRuntime;
+    else extensionRuntime.unload?.();
+  }).catch(() => {});
   // 别名联动：新建时跟随标题自动生成；手动改过或编辑旧文后不再自动覆盖
   let slugTouched = !!post;
   const renderSlugHint = () => {
@@ -522,7 +906,16 @@ window.savePost = async (type, id) => {
   if (!titleEl) return;
   const title = titleEl.value.trim();
   if (!title) return toast('请填写标题', 'error');
-  const content = document.getElementById('pe-content').value;
+  let content = document.getElementById('pe-content').value;
+  const runtime = currentEditorRuntime;
+  try {
+    if (runtime && runtime.type === type) {
+      syncPluginEditorFields(runtime);
+      const before = await runtime.runSaveBefore(content);
+      content = before.content;
+      if (content !== document.getElementById('pe-content').value) runtime.editor.replaceContent(content);
+    }
+  } catch (e) { return toast(e.message || '保存前处理失败', 'error'); }
   const body = {
     title, content, type,
     slug: document.getElementById('pe-slug').value.trim(),
@@ -531,6 +924,40 @@ window.savePost = async (type, id) => {
     excerptAuto: document.getElementById('pe-excerpt-auto').checked,
     commentAllowed: document.getElementById('pe-comment-allowed').checked,
   };
+  if (Array.isArray(currentEditorThemeFields) && currentEditorThemeFields.length) {
+    body.themeFields = Object.fromEntries(currentEditorThemeFields.flatMap(field => {
+      const input = document.getElementById('pe-theme-field-' + field.key);
+      if (!input) return [];
+      const value = field.type === 'checkbox'
+        ? input.checked
+        : field.type === 'number'
+          ? (input.value.trim() === '' ? Number(field.default ?? 0) : Number(input.value))
+          : input.value;
+      return [[field.key, value]];
+    }));
+  }
+  if (currentEditorPluginManifest && Array.isArray(currentEditorPluginManifest.extensions)) {
+    const pluginFields = {};
+    for (const entry of currentEditorPluginManifest.extensions) {
+      const fields = Array.isArray(entry.fields) ? entry.fields : [];
+      if (!fields.length) continue;
+      const values = {};
+      for (const field of fields) {
+        const input = document.getElementById('pe-plugin-field-' + entry.plugin + '-' + field.key);
+        const bridgeValue = runtime?.editors.get(entry.plugin)?.getPluginFields?.()[field.key];
+        if (!input && bridgeValue === undefined) continue;
+        values[field.key] = input
+          ? field.type === 'checkbox'
+            ? input.checked
+            : field.type === 'number'
+              ? (input.value.trim() === '' ? Number(field.default ?? 0) : Number(input.value))
+              : input.value
+          : bridgeValue;
+      }
+      if (Object.keys(values).length) pluginFields[entry.plugin] = values;
+    }
+    if (Object.keys(pluginFields).length) body.pluginFields = pluginFields;
+  }
   const published = document.getElementById('pe-published-at');
   if (published.value !== published.defaultValue) body.publishedAt = published.value ? new Date(published.value).toISOString() : null;
   const order = document.getElementById('pe-order');
@@ -548,6 +975,7 @@ window.savePost = async (type, id) => {
   try {
     if (id) await api('/admin/posts/' + id, { method: 'PUT', body });
     else await api('/admin/posts', { method: 'POST', body });
+    if (runtime && runtime.type === type) runtime.emitSaveAfter({ content, pluginFields: body.pluginFields || {}, type, postId: id || null });
     try { localStorage.removeItem('lill:draft:' + type + ':' + (id || 'new')); } catch (e) {}
     toast(id ? '已更新' : '已保存');
     if (activeView === view) return window.navigate(type === 'page' ? 'pages' : 'posts');

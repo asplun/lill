@@ -112,6 +112,7 @@ token 通过 [`POST /auth/login`](#31-登录) 或 [`POST /install`](#42-执行�
 公开内容必须同时满足 `status = published`、`visibility = public`、未设置密码，且发布时间为空（兼容旧记录）或已到当前 UTC 时间。文章列表、详情、页面、bootstrap、导航、归档、RSS、分类/标签计数、评论及点赞入口均遵循此限制。`status=draft` 等查询参数不会放宽访问权限；直接读取受限内容返回 `404`。目前没有访客密码文章解锁接口。
 
 公开文章使用字段白名单，不返回 `password`。bootstrap 的 `theme` 和 `options.theme_config` 均过滤已声明的后端私用配置键。
+公开文章、页面及 bootstrap 内容对象包含 `theme_fields`：仅包含当前启用主题声明的字段，并对缺失值合并默认值；其他主题和未声明的字段不会公开。
 
 ### 2.1 文章列表
 
@@ -369,6 +370,8 @@ Nginx 最终回退必须使用通用前台外壳，参见部署指南；纯静�
 全站 `comments_per_page/comment_display` 为默认。文章页数以全站 `posts_per_page` 为默认，
 主题仅显式保存的有效数值可覆盖，主题清单的默认数值不再覆盖全站。
 
+文章或页面内容对象中的 `theme_fields` 仅投影当前主题 `theme.json` 声明的字段及其默认值。模板可用 `{$post.theme_fields.<key>}` 读取；`$page` 是路由信息对象，不用于访问内容字段。
+
 ### 2.13 点赞 / 取消点赞
 
 | 方法 | 路径 | 说明 |
@@ -527,8 +530,12 @@ GET /api/v1/install/log
 | GET | `/admin/posts` | 文章列表（分页） |
 | GET | `/admin/pages` | 独立页面列表 |
 | GET | `/admin/page-templates` | 当前激活主题提供的页面模板列表 |
+| GET | `/admin/editor-fields?type=post\|page` | 当前主题声明的文章或页面字段 |
+| GET | `/admin/editor-extensions?type=post\|page` | 当前启用插件的编辑器字段、动作和模块清单 |
+| GET | `/admin/editor-assets/:dir?path=...` | 读取启用插件已声明的 `.js` / `.css` 编辑器资源 |
+| POST | `/admin/editor-actions/:plugin/:action` | 执行插件编辑器动作并返回受限编辑器操作 |
 | POST | `/admin/posts` | 新建文章/页面 |
-| GET | `/admin/posts/:id` | 文章详情（含标签） |
+| GET | `/admin/posts/:id` | 文章详情（含标签和当前主题字段） |
 | PUT | `/admin/posts/:id` | 更新文章 |
 | DELETE | `/admin/posts/:id` | 删除文章 |
 | POST | `/admin/posts/batch` | 批量操作 |
@@ -551,7 +558,30 @@ GET /api/v1/install/log
 | `commentAllowed` | bool | 单篇允许评论，默认 `true`；全站关闭评论优先 |
 | `categoryId` | string | 分类 ID |
 | `tagNames` | string[] | 标签名数组（自动创建不存在的标签） |
-| `fields` | object | 自定义字段（主题可扩展） |
+| `themeFields` | object | 当前主题声明的文章/页面字段；缺省时更新不会清除已有主题字段 |
+| `pluginFields` | object | 当前启用插件声明的字段，按插件目录名隔离；缺省时更新不会清除已有插件字段 |
+| `fields` | object | 兼容旧版的通用自定义字段 |
+
+`GET /admin/editor-fields?type=post|page` 需要内容编辑权限，返回当前主题 ID 和对应字段 schema：
+
+```json
+{
+  "themeId": "my-theme",
+  "fields": [
+    {
+      "key": "subtitle",
+      "label": "副标题",
+      "type": "text",
+      "for": "post",
+      "group": "文章信息",
+      "default": "",
+      "description": "显示在文章标题下方"
+    }
+  ]
+}
+```
+
+支持 `text`、`textarea`、`number`、`checkbox`、`select`、`url`。写入时服务端按当前主题 schema 校验字段名、类型和选项；校验失败返回 `400`，不保存内容。管理员文章详情的 `themeFields` 是当前主题字段值；公开响应中的 `theme_fields` 只包含当前主题声明字段。
 
 `type/status` 等非法枚举返回 `400`。未实现私密阅读或密码解锁，因此非 `public` 的
 `visibility` 和非空 `password` 会明确返回 `400`，而非静默保存成公开内容。
@@ -576,6 +606,51 @@ GET /admin/page-templates
 
 > 模板来自当前激活主题目录下的 `page-*.html`，对标 Typecho 的「自定义模板」下拉框。
 > 写入文章的 `template` 字段时会在服务端重新校验，主题切换后失效的模板会自动置空。
+
+插件编辑器清单示例：
+
+```json
+{
+  "extensions": [{
+    "plugin": "image-tools",
+    "fields": [{
+      "key": "image_credit",
+      "label": "图片来源",
+      "type": "text",
+      "for": ["post"],
+      "default": ""
+    }],
+    "actions": [{
+      "id": "insert-image",
+      "label": "插入图片",
+      "placement": "toolbar",
+      "for": ["post"]
+    }],
+    "modules": [{
+      "id": "image-tools",
+      "entry": "/api/v1/admin/editor-assets/image-tools?path=editor%2Findex.js",
+      "styles": [],
+      "slots": ["toolbar", "sidebar"],
+      "apiVersion": 1
+    }]
+  }]
+}
+```
+
+三个编辑器接口都需要内容编辑权限（管理员、编辑、作者、投稿者）和登录会话；
+写动作仍需 `X-CSRF-Token`。动作请求体为
+`{ postId, contentType: "post"|"page", selection }`。服务端校验文章归属、
+内容类型和 handler 返回值，只允许 `insertText`、`replaceSelection` 或当前插件
+已声明字段的 `setPluginField`。动作失败不会修改文章。
+
+文章详情的 `pluginFields` 只投影当前启用插件的声明字段，并合并声明默认值。
+停用插件后投影为空，但数据库中的 `_lillPluginFields` 历史值不删除；重新启用
+后恢复。公开文章、页面和 bootstrap 不自动返回插件后台字段。
+
+资源接口只接受活动插件已声明的相对 `.js` / `.css` 文件，并检查真实路径仍在
+插件目录内；响应为 `{ content, mime }` 且不缓存。插件扩展代码以管理员信任的
+后台 ESM 运行，核心 DOM 不是公共 API，插件必须使用 `toolbar` / `sidebar`
+slot 和 editor bridge。
 
 ### 5.2 分类
 
@@ -967,6 +1042,9 @@ if (body.code !== 0) throw new Error(body.message);
 | 注册后台菜单 | `ctx.addAdminMenu({ id, title, icon, order })` |
 | 读写插件配置 | `ctx.getConfig(key, default)` / `ctx.setConfig(key, value)` |
 | 数据库 | `ctx.db` |
+| 编辑器字段 | `ctx.registerEditorField(field)` |
+| 编辑器动作 | `ctx.registerEditorAction(action)` |
+| 编辑器前端模块 | `ctx.registerEditorExtension(extension)` |
 
 **系统钩子：** `post.saved`、`post.deleted`、`comment.saved`、`comment.status`、`comment.deleted`、`user.created`、`user.login`、`media.uploaded`、`media.deleted`、`theme.activated`、`options.saved`、`plugin.config.saved`。
 

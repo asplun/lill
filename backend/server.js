@@ -21,6 +21,7 @@ import { register as registerAuth } from './routes/auth.js';
 import { register as registerAdmin } from './routes/admin/index.js';
 import { loadThemeRuntime, registerThemeExtension, registerThemeExtensions, resolveActiveThemeId, runActiveThemeHook } from './lib/theme-runtime.js';
 import { loadPlugins, loadPlugin, scanPlugins, activatePlugin, deactivatePlugin, triggerHook, ensureBuiltinPlugin, cleanupPluginLoadCopies } from './lib/plugin-ext.js';
+import { createEditorRegistry } from './lib/plugin-editor-ext.js';
 import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
 import { createSecurity } from './lib/security.js';
@@ -395,7 +396,7 @@ const mail = createMail({ settings });
 const security = createSecurity({ db, settings });
 const core = createCoreProviders({ mail, security, uploadDir: UPLOAD_DIR });
 const themeRuntime = await loadThemeRuntime(THEMES_DIR);
-const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, DB_PATH, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, core, themeRuntime, runActiveThemeHook, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
+const ctx = { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, verifyPwd, signJWT, authenticate, generateCSRFToken, verifyCSRFToken, readThemeManifest, DB_PATH, UPLOAD_DIR, THEMES_DIR, PLUGINS_DIR, ensureBuiltinPlugin, checkRateLimit, loginLimiter, settings, mail, security, core, themeRuntime, runActiveThemeHook, _hooks: new Map(), _adminMenus: [], _activePlugins: new Map(), _editorRegistry: createEditorRegistry(), triggerHook: (name, ...args) => triggerHook(ctx, name, ...args) };
 /* 主题后端扩展：core 启动时扫描 frontend/themes/<id>/backend/index.js。
    主题私有的路由 / 短代码 / 页面模板数据全部由扩展提供，core 不含任何具体主题实现。
    扩展注册的接口只在「该主题为当前激活主题」时生效，切换主题立即生效、无需重启。 */
@@ -461,7 +462,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';");
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');

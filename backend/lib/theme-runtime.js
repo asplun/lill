@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { normalizeEditorFieldSchema } from './theme-editor-fields.js';
 
 function fieldsOf(manifest) {
   if (!manifest || typeof manifest !== 'object') return [];
@@ -136,6 +137,7 @@ function createRuntime(themesDir, manifests, extensions) {
     manifests,
     extensions,
     manifest: id => manifests.get(id) || null,
+    editorFields: (id, contentType) => normalizeEditorFieldSchema(manifests.get(id), contentType),
     config: (id, saved) => mergeThemeConfig(manifests.get(id), saved),
     publicConfig: (id, saved) => publicThemeConfig(manifests.get(id), mergeThemeConfig(manifests.get(id), saved)),
     normalizeConfig: (id, saved) => mergeThemeConfig(manifests.get(id), saved),

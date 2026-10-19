@@ -19,11 +19,34 @@ test('admin entry registers the complete management route set exactly once', () 
   const router = createRouter();
   registerAdmin(router, context());
   const routes = [...router.routes.values()].filter(route => route.pattern.startsWith('/api/v1/admin/'));
-  assert.equal(routes.length, 67);
+  assert.equal(routes.length, 71);
   assert.equal(new Set(router.routes.keys()).size, routes.length);
   for (const route of routes) {
     assert.equal(route.auth, true, route.pattern);
     assert.ok(Array.isArray(route.roles) && route.roles.length, route.pattern);
+  }
+});
+
+test('theme editor field schema is available to all content roles, not only theme managers', () => {
+  const router = createRouter();
+  registerAdmin(router, context());
+  const route = router.routes.get('GET:/api/v1/admin/editor-fields');
+  assert.deepEqual(route.roles, ['admin', 'editor', 'author', 'contributor']);
+  assert.equal(route.auth, true);
+});
+
+test('plugin editor extension routes are available to content roles and remain authenticated', () => {
+  const router = createRouter();
+  registerAdmin(router, context());
+  for (const path of [
+    'GET:/api/v1/admin/editor-extensions',
+    'GET:/api/v1/admin/editor-assets/:dir',
+    'POST:/api/v1/admin/editor-actions/:plugin/:action',
+  ]) {
+    const route = router.routes.get(path);
+    assert.ok(route, path);
+    assert.equal(route.auth, true);
+    assert.deepEqual(route.roles, ['admin', 'editor', 'author', 'contributor']);
   }
 });
 

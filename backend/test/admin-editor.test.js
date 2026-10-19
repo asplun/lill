@@ -66,6 +66,19 @@ async function createAdminApp(options = {}) {
         elements.set(el.id, el);
         this._ownedIds.add(el.id);
       }
+      const textareaRe = /<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g;
+      while ((m = textareaRe.exec(this._html))) {
+        const idMatch = /\bid="([^"]+)"/.exec(m[1] || '');
+        const el = idMatch && elements.get(idMatch[1]);
+        if (el) el.value = decodeEntities(m[2]);
+      }
+      const selectRe = /<select\b([^>]*)>([\s\S]*?)<\/select>/g;
+      while ((m = selectRe.exec(this._html))) {
+        const idMatch = /\bid="([^"]+)"/.exec(m[1] || '');
+        const optionMatch = /<option\b[^>]*\bvalue="([^"]*)"[^>]*\bselected\b/.exec(m[2] || '');
+        const el = idMatch && elements.get(idMatch[1]);
+        if (el && optionMatch) el.value = decodeEntities(optionMatch[1]);
+      }
     }
     addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
     dispatch(type, event = {}) {
@@ -107,6 +120,7 @@ async function createAdminApp(options = {}) {
     newRenderScope: () => new AbortController().signal,
     request: async (path, opts = {}) => {
       apiCalls.push({ path, opts });
+      if (options.errors?.[path]) throw options.errors[path];
       if (path in responses) return responses[path];
       if (path.startsWith('/admin/posts/')) {
         return { id: path.split('/').pop(), title: '已有文章', slug: 'existing-post', content: '旧内容', excerpt: '', status: 'published', tags: ['旧标签'] };
@@ -138,7 +152,7 @@ async function createAdminApp(options = {}) {
   const wrapped = [
     '(async () => {',
     appSource,
-    ';window.__editorInternals = { mdToHtml, mdClientSlug, mdSync, mdInsertText, mdToggleMode, mdEl, paginate, loadPluginMenus };',
+    ';window.__editorInternals = { mdToHtml, mdClientSlug, mdSync, mdInsertText, mdToggleMode, mdEl, paginate, loadPluginMenus, createEditorBridge, createEditorSlots, loadEditorExtensions };',
     'render = async () => {};',
     '})();',
   ].join('\n');
@@ -183,6 +197,113 @@ test('文章编辑器：结构完整、onclick 语法合法、含别名与工具
     assert.doesNotThrow(() => new vm.Script('(function(){' + code + '})'), 'onclick 语法错误: ' + code);
   }
   assert.match(content, /data-mode="split"/);
+});
+
+test('文章编辑器按 schema 渲染已保存主题字段、分组并安全转义用户文本', async () => {
+  const maliciousLabel = '<img id="theme-field-xss" src=x onerror=alert(1)>';
+  const maliciousValue = '<script>alert("value")</script>';
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: {
+      '/admin/editor-fields?type=post': { themeId: 'fixture', fields: [
+        { key: 'subtitle', label: maliciousLabel, type: 'text', for: 'post', group: '展示', default: '默认副标题', description: '<b>说明</b>' },
+        { key: 'body_note', label: '补充说明', type: 'textarea', for: 'post', group: '展示', default: '' },
+        { key: 'layout', label: '版式', type: 'select', for: 'post', group: '显示', default: 'wide', options: [{ value: 'wide', label: '宽屏' }, { value: 'normal', label: '常规' }] },
+        { key: 'show_index', label: '加入目录', type: 'checkbox', for: 'post', default: true },
+        { key: 'reading_time', label: '阅读时长', type: 'number', for: 'post', group: '显示', default: 5 },
+        { key: 'source_url', label: '来源地址', type: 'url', for: 'post', group: '来源', default: '' },
+      ] },
+      '/admin/posts/post-1': {
+        id: 'post-1', title: '已有文章', slug: 'existing-post', content: '旧内容', excerpt: '',
+        status: 'published', tags: [], themeFields: {
+          subtitle: maliciousValue, body_note: '<b>正文备注</b>', layout: 'normal', show_index: false,
+        },
+      },
+    },
+  });
+  await sandbox.openPostEditor('post', 'post-1');
+  const html = elements.get('content').innerHTML;
+  assert.ok(html.includes('id="pe-theme-field-subtitle"'));
+  assert.ok(html.includes('id="pe-theme-field-body_note"'));
+  assert.ok(html.includes('id="pe-theme-field-layout"'));
+  assert.ok(html.includes('id="pe-theme-field-show_index"'));
+  assert.ok(html.includes('id="pe-theme-field-reading_time"'));
+  assert.match(html, /id="pe-theme-field-reading_time" type="number" step="any"/);
+  assert.ok(html.includes('id="pe-theme-field-source_url"'));
+  assert.match(html, /&lt;img id=&quot;theme-field-xss&quot;/);
+  assert.match(html, /&lt;b&gt;说明&lt;\/b&gt;/);
+  assert.doesNotMatch(html, /<img id="theme-field-xss"/);
+  assert.doesNotMatch(html, /<script>alert\("value"\)<\/script>/);
+  assert.equal(elements.get('pe-theme-field-subtitle').value, maliciousValue);
+  assert.equal(elements.get('pe-theme-field-body_note').value, '<b>正文备注</b>');
+  assert.equal(elements.get('pe-theme-field-layout').value, 'normal');
+  assert.equal(elements.get('pe-theme-field-show_index').checked, false);
+  assert.equal(elements.get('pe-theme-field-reading_time').value, '5');
+  assert.equal(elements.get('pe-theme-field-source_url').value, '');
+  assert.equal((html.match(/class="side-box theme-editor-group"/g) || []).length, 4);
+  assert.ok(apiCalls.some(call => call.path === '/admin/editor-fields?type=post'));
+
+  elements.get('pe-theme-field-subtitle').value = '新的副标题';
+  elements.get('pe-theme-field-layout').value = 'wide';
+  elements.get('pe-theme-field-show_index').checked = true;
+  elements.get('pe-theme-field-reading_time').value = '12';
+  elements.get('pe-theme-field-source_url').value = 'https://example.test/source';
+  sandbox.navigate = () => {};
+  await sandbox.savePost('post', 'post-1');
+  const update = apiCalls.find(call => call.path === '/admin/posts/post-1' && call.opts.method === 'PUT');
+  assert.deepEqual(JSON.parse(JSON.stringify(update.opts.body.themeFields)), {
+    subtitle: '新的副标题', body_note: '<b>正文备注</b>', layout: 'wide', show_index: true,
+    reading_time: 12, source_url: 'https://example.test/source',
+  });
+});
+
+test('文章和页面只渲染对应字段并以声明默认值提交', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: {
+      '/admin/editor-fields?type=post': { themeId: 'fixture', fields: [
+        { key: 'post_note', label: '文章备注', type: 'text', for: 'post', default: '文章默认值' },
+      ] },
+      '/admin/editor-fields?type=page': { themeId: 'fixture', fields: [
+        { key: 'page_heading', label: '页面标题', type: 'text', for: 'page', default: '页面默认值' },
+      ] },
+    },
+  });
+  await sandbox.openPostEditor('post', null);
+  assert.equal(elements.get('pe-theme-field-post_note').value, '文章默认值');
+  assert.equal(elements.has('pe-theme-field-page_heading'), false);
+  elements.get('pe-title').value = '主题字段文章';
+  sandbox.navigate = () => {};
+  await sandbox.savePost('post', null);
+  const createPost = apiCalls.find(call => call.path === '/admin/posts' && call.opts.method === 'POST');
+  assert.deepEqual(JSON.parse(JSON.stringify(createPost.opts.body.themeFields)), { post_note: '文章默认值' });
+
+  await sandbox.openPostEditor('page', null);
+  const html = elements.get('content').innerHTML;
+  assert.equal(elements.has('pe-theme-field-post_note'), false);
+  assert.equal(elements.get('pe-theme-field-page_heading').value, '页面默认值');
+  assert.doesNotMatch(html, /文章备注/);
+  elements.get('pe-title').value = '主题字段页面';
+  await sandbox.savePost('page', null);
+  const createPage = apiCalls.find(call => call.path === '/admin/posts' && call.opts.method === 'POST' && call.opts.body.type === 'page');
+  assert.deepEqual(JSON.parse(JSON.stringify(createPage.opts.body.themeFields)), { page_heading: '页面默认值' });
+});
+
+test('主题字段 schema 加载失败时保留核心编辑器并允许不带主题字段保存', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    errors: { '/admin/editor-fields?type=post': new Error('schema unavailable') },
+  });
+  await sandbox.openPostEditor('post', null);
+  const html = elements.get('content').innerHTML;
+  assert.match(html, /主题字段加载失败/);
+  assert.ok(html.includes('id="pe-title"'));
+  assert.ok(html.includes('id="pe-content"'));
+  assert.equal(elements.has('pe-theme-field-subtitle'), false);
+
+  elements.get('pe-title').value = '仍可写作';
+  sandbox.navigate = () => {};
+  await sandbox.savePost('post', null);
+  const create = apiCalls.find(call => call.path === '/admin/posts' && call.opts.method === 'POST');
+  assert.ok(create);
+  assert.equal(Object.hasOwn(create.opts.body, 'themeFields'), false);
 });
 
 test('别名联动：标题自动生成、手动改后不再覆盖、地址预览更新', async () => {
@@ -357,4 +478,118 @@ test('插件菜单刷新后可以删除已停用插件的入口', async () => {
   assert.equal(box.innerHTML, '');
   assert.equal(section.style.display, 'none');
   assert.ok(apiCalls.some(call => call.path === '/admin/plugin-menus'));
+});
+
+test('editor bridge scopes plugin fields and supports content and lifecycle operations', async () => {
+  const { internals } = await createAdminApp();
+  const textarea = {
+    value: '正文',
+    selectionStart: 1,
+    selectionEnd: 1,
+    focus() {},
+    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
+  };
+  const calls = [];
+  const bridge = internals.createEditorBridge({
+    post: { pluginFields: { 'image-tools': { credit: '旧来源' } } },
+    type: 'post',
+    pluginDir: 'image-tools',
+    fieldSchema: [{ key: 'credit', type: 'text', default: '' }],
+    textarea,
+    request: async (method, path, options) => { calls.push([method, path, options]); return { ok: true }; },
+  });
+  assert.equal(bridge.getContent(), '正文');
+  assert.deepEqual(JSON.parse(JSON.stringify(bridge.getPluginFields())), { credit: '旧来源' });
+  bridge.insertText('AB');
+  assert.equal(textarea.value, '正AB文');
+  textarea.setSelectionRange(1, 3);
+  bridge.replaceSelection('替换');
+  assert.equal(textarea.value, '正替换文');
+  bridge.setPluginField('credit', '新来源');
+  assert.deepEqual(JSON.parse(JSON.stringify(bridge.getPluginFields())), { credit: '新来源' });
+  assert.throws(() => bridge.setPluginField('unknown', 'x'), /字段/);
+  assert.throws(() => bridge.on('unsupported:event', () => {}), /事件/);
+  let changed = 0;
+  bridge.on('content:change', () => { changed++; });
+  bridge.insertText('!');
+  assert.equal(changed, 1);
+  assert.equal(typeof bridge.request, 'function');
+  await bridge.request('GET', '/admin/ping');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['GET', '/admin/ping', {}]]);
+});
+
+test('editor bridge runs save hooks in order and emits after only on success', async () => {
+  const { internals } = await createAdminApp();
+  const textarea = { value: '初始', selectionStart: 0, selectionEnd: 0, focus() {}, setSelectionRange() {} };
+  const bridge = internals.createEditorBridge({
+    post: { pluginFields: {} }, type: 'post', pluginDir: 'image-tools',
+    fieldSchema: [], textarea,
+  });
+  const order = [];
+  bridge.on('save:before', ({ content }) => { order.push('first:' + content); return { content: content + ' A' }; });
+  bridge.on('save:before', ({ content }) => { order.push('second:' + content); return { content: content + ' B' }; });
+  bridge.on('save:after', ({ content }) => order.push('after:' + content));
+  const transformed = await bridge.runSaveBefore();
+  assert.equal(transformed.content, '初始 A B');
+  bridge.emitSaveAfter({ content: transformed.content });
+  assert.deepEqual(order, ['first:初始', 'second:初始 A', 'after:初始 A B']);
+  const failing = internals.createEditorBridge({
+    post: { pluginFields: {} }, type: 'post', pluginDir: 'image-tools',
+    fieldSchema: [], textarea: { value: 'x', selectionStart: 0, selectionEnd: 0, focus() {}, setSelectionRange() {} },
+  });
+  failing.on('save:before', () => { throw new Error('stop'); });
+  await assert.rejects(() => failing.runSaveBefore(), /stop/);
+});
+
+test('plugin editor fields and actions render separately and persist with content saves', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: {
+      '/admin/editor-extensions?type=post': {
+        extensions: [{
+          plugin: 'image-tools',
+          fields: [{ key: 'credit', label: '图片来源', type: 'text', for: ['post'], default: '未知' }],
+          actions: [{ id: 'insert-image', label: '插入图片', placement: 'toolbar', for: ['post'] }],
+          modules: [],
+        }],
+      },
+      '/admin/editor-fields?type=post': { themeId: 'fixture', fields: [] },
+      '/admin/posts/post-1': {
+        id: 'post-1', title: '已有文章', slug: 'existing-post', content: '旧内容', excerpt: '',
+        status: 'published', tags: [], themeFields: {},
+        pluginFields: { 'image-tools': { credit: '已有来源' } },
+      },
+    },
+  });
+  await sandbox.openPostEditor('post', 'post-1');
+  const html = elements.get('content').innerHTML;
+  assert.ok(html.includes('id="pe-plugin-field-image-tools-credit"'));
+  assert.ok(html.includes('id="pe-plugin-actions-image-tools"'));
+  assert.equal(elements.get('pe-plugin-field-image-tools-credit').value, '已有来源');
+  elements.get('pe-plugin-field-image-tools-credit').value = '新来源';
+  sandbox.navigate = () => {};
+  await sandbox.savePost('post', 'post-1');
+  const update = apiCalls.find(call => call.path === '/admin/posts/post-1' && call.opts.method === 'PUT');
+  assert.deepEqual(JSON.parse(JSON.stringify(update.opts.body.pluginFields)), { 'image-tools': { credit: '新来源' } });
+});
+
+test('slot mounts are isolated and extension failures do not reject editor loading', async () => {
+  const { internals, elements } = await createAdminApp();
+  const Element = elements.get('content').constructor;
+  const root = new Element('div');
+  const slots = internals.createEditorSlots(root);
+  assert.ok(slots.toolbar && slots.sidebar);
+  const mounted = slots.sidebar.mount(container => { container.textContent = 'plugin panel'; });
+  assert.equal(typeof mounted.unmount, 'function');
+  mounted.unmount();
+  const result = await internals.loadEditorExtensions({
+    extensions: [{
+      plugin: 'broken-tools',
+      fields: [], actions: [],
+      modules: [{ id: 'broken', entry: '/missing.js', styles: [], slots: ['sidebar'], apiVersion: 1 }],
+    }],
+  }, {
+    editor: {}, slots,
+    request: async () => { throw new Error('module unavailable'); },
+  });
+  assert.equal(result.errors.length, 1);
 });

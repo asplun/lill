@@ -219,6 +219,19 @@ td.actions .btn{margin:3px 0}
 .side-box-title{font-size:13px;font-weight:550;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border-light)}
 .side-box .form-group{margin-bottom:12px}
 .side-box .form-group:last-child{margin-bottom:0}
+.theme-editor-field+.theme-editor-field{margin-top:12px}
+.theme-editor-checkbox{align-items:flex-start;margin:0}
+.theme-editor-checkbox input{flex-shrink:0;margin-top:4px}
+.theme-editor-checkbox span{min-width:0;overflow-wrap:anywhere}
+.theme-editor-description{margin-top:5px}
+.theme-editor-warning{border-color:#e5d4a9;background:#fff9e9;color:#74551e;font-size:12px;line-height:1.6}
+.plugin-editor-warning{margin-top:0}
+.plugin-editor-toolbar-slot{display:contents}
+.plugin-editor-sidebar-slot{display:flex;flex-direction:column;gap:12px}
+.plugin-editor-sidebar-actions{display:flex;flex-wrap:wrap;gap:8px}
+.plugin-editor-actions{display:contents}
+.plugin-editor-action{white-space:nowrap}
+.editor-extension-mount{min-width:0}
 .check-line{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin:8px 0}
 .side-actions{margin-top:12px}
 

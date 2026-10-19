@@ -26,7 +26,7 @@ export function createAdminHelpers(ctx, router, options = {}) {
     if (skipped.has(method + ':' + path)) return;
     const resource = path.slice('/api/v1/admin/'.length).split('/')[0];
     let roles = ['admin'];
-    if (['posts', 'pages', 'page-templates', 'media'].includes(resource)) roles = contentRoles;
+    if (['posts', 'pages', 'page-templates', 'editor-fields', 'editor-extensions', 'editor-assets', 'editor-actions', 'media'].includes(resource)) roles = contentRoles;
     if (['categories', 'tags'].includes(resource)) roles = method === 'GET' ? contentRoles : editorRoles;
     if (resource === 'comments') roles = editorRoles;
     router.route(method, path, fn, { auth: true, roles });

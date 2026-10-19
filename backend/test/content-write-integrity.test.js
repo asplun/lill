@@ -1,11 +1,35 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { startApiServer } from './helpers/api-server.js';
 
 const password = 'content-test-password-123';
 let api, db, admin, sequence = 0;
 const headers = session => ({ authorization: `Bearer ${session.token}`, 'x-csrf-token': session.csrfToken });
+async function prepareEditorThemes(themesDir) {
+  const themes = [
+    {
+      id: 'editor-fixture',
+      editorFields: [
+        { key: 'subtitle', label: '副标题', type: 'text', for: 'post', default: '默认副标题' },
+        { key: 'layout', label: '版式', type: 'select', for: 'post', options: [{ value: 'wide', label: '宽屏' }, { value: 'normal', label: '常规' }] },
+        { key: 'show_index', label: '加入目录', type: 'checkbox', for: 'post', default: true },
+        { key: 'hero_title', label: '页面标题', type: 'text', for: 'page' },
+      ],
+    },
+    {
+      id: 'editor-other',
+      editorFields: [{ key: 'other_caption', label: '另一主题字段', type: 'text', for: 'both' }],
+    },
+  ];
+  for (const theme of themes) {
+    const dir = join(themesDir, theme.id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'theme.json'), JSON.stringify({ ...theme, name: theme.id }));
+  }
+}
 const write = (method, path, body, session = admin) => api.request(method, path, { headers: headers(session), body });
 const create = body => write('POST', '/api/v1/admin/posts', {
   title: `Content integrity ${++sequence}`, content: 'Original **body**', ...body,
@@ -28,12 +52,13 @@ async function account(role) {
 }
 
 before(async () => {
-  api = await startApiServer();
+  api = await startApiServer({ prepareThemes: prepareEditorThemes });
   data(await api.request('POST', '/api/v1/install', { body: {
     site_name: 'Content integrity', site_url: 'http://localhost',
     admin_username: 'admin', admin_password: password, admin_email: 'admin@example.test',
   } }));
   admin = data(await api.request('POST', '/api/v1/auth/login', { body: { username: 'admin', password } }));
+  data(await write('POST', '/api/v1/admin/themes/editor-fixture/activate', {}));
   db = new DatabaseSync(api.dbPath);
   db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
 });
@@ -55,6 +80,129 @@ test('article, page and recent lists return the real type for editor round trips
     assert.equal(listed?.type, type, path);
     assert.equal(data(await update(item.id, { title: `${item.title} edited`, type: listed.type })).type, type);
   }
+});
+
+test('editor field schema is authenticated, validates its query, and filters fields by content type', async () => {
+  const unauthenticated = await api.request('GET', '/api/v1/admin/editor-fields?type=post');
+  assert.equal(unauthenticated.status, 401);
+  for (const type of ['post', 'page']) {
+    const result = data(await api.request('GET', `/api/v1/admin/editor-fields?type=${type}`, { headers: headers(admin) }));
+    assert.equal(result.themeId, 'editor-fixture');
+    assert.ok(result.fields.every(field => field.for === type || field.for === 'both'));
+    assert.deepEqual(result.fields.map(field => field.key), type === 'post'
+      ? ['subtitle', 'layout', 'show_index']
+      : ['hero_title']);
+  }
+  for (const role of ['editor', 'author', 'contributor']) {
+    const session = await account(role);
+    assert.equal((await api.request('GET', '/api/v1/admin/editor-fields?type=post', { headers: headers(session) })).status, 200, role);
+  }
+  for (const type of ['', 'comment', 'POST']) {
+    const response = await api.request('GET', `/api/v1/admin/editor-fields?type=${encodeURIComponent(type)}`, { headers: headers(admin) });
+    assert.equal(response.status, 400, JSON.stringify(response.payload));
+  }
+});
+
+test('theme fields persist in their namespace and detail reads retain the generic fields contract', async () => {
+  const post = data(await create({
+    fields: { legacyField: 'preserve me' },
+    themeFields: { subtitle: '文章副标题', layout: 'wide', show_index: false },
+  }), 201);
+  const stored = JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields);
+  assert.deepEqual(stored, {
+    legacyField: 'preserve me',
+    _lillThemeFields: {
+      'editor-fixture': { subtitle: '文章副标题', layout: 'wide', show_index: false },
+    },
+  });
+  const detail = data(await api.request('GET', `/api/v1/admin/posts/${post.id}`, { headers: headers(admin) }));
+  assert.deepEqual(detail.themeFields, { subtitle: '文章副标题', layout: 'wide', show_index: false });
+  assert.equal(typeof detail.fields, 'string');
+  assert.deepEqual(JSON.parse(detail.fields), stored);
+
+  const page = data(await create({ type: 'page', themeFields: { hero_title: '关于我们' } }), 201);
+  assert.deepEqual(data(await api.request('GET', `/api/v1/admin/posts/${page.id}`, { headers: headers(admin) })).themeFields, {
+    hero_title: '关于我们',
+  });
+});
+
+test('invalid theme field writes return 400 before changing posts or creating versions', async () => {
+  const post = data(await create({ themeFields: { subtitle: 'original' } }), 201);
+  const invalidValues = [
+    { unknown: 'field' },
+    { subtitle: 42 },
+    { layout: 'compact' },
+    { show_index: 'true' },
+    null,
+    [],
+    'not an object',
+  ];
+  for (const themeFields of invalidValues) {
+    const beforeWrite = snapshot();
+    const response = await update(post.id, { title: 'Must not persist', themeFields });
+    assert.equal(response.status, 400, JSON.stringify(response.payload));
+    assert.deepEqual(snapshot(), beforeWrite);
+  }
+  const beforeCreate = snapshot();
+  const rejectedCreate = await create({ themeFields: { layout: 'compact' } });
+  assert.equal(rejectedCreate.status, 400, JSON.stringify(rejectedCreate.payload));
+  assert.deepEqual(snapshot(), beforeCreate);
+});
+
+test('partial and legacy updates preserve generic fields and every theme namespace', async () => {
+  const post = data(await create({ themeFields: { subtitle: 'original' } }), 201);
+  db.prepare('UPDATE posts SET fields = ? WHERE id = ?').run(JSON.stringify({
+    legacy: { kept: true },
+    _lillThemeFields: {
+      'editor-fixture': { subtitle: 'original', retired: 'keep for later' },
+      'editor-other': { other_caption: 'other theme value' },
+    },
+  }), post.id);
+
+  data(await update(post.id, { themeFields: { subtitle: 'updated' } }));
+  let stored = JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields);
+  assert.deepEqual(stored, {
+    legacy: { kept: true },
+    _lillThemeFields: {
+      'editor-fixture': { subtitle: 'updated', retired: 'keep for later' },
+      'editor-other': { other_caption: 'other theme value' },
+    },
+  });
+
+  data(await update(post.id, { title: 'Updated by an older client' }));
+  stored = JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields);
+  assert.deepEqual(stored, {
+    legacy: { kept: true },
+    _lillThemeFields: {
+      'editor-fixture': { subtitle: 'updated', retired: 'keep for later' },
+      'editor-other': { other_caption: 'other theme value' },
+    },
+  });
+
+  data(await update(post.id, { fields: { replacement: 'generic update' } }));
+  stored = JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields);
+  assert.deepEqual(stored, {
+    replacement: 'generic update',
+    _lillThemeFields: {
+      'editor-fixture': { subtitle: 'updated', retired: 'keep for later' },
+      'editor-other': { other_caption: 'other theme value' },
+    },
+  });
+});
+
+test('switching active themes edits only that theme namespace and preserves values when switching back', async () => {
+  const post = data(await create({ themeFields: { subtitle: 'fixture value' } }), 201);
+  data(await write('POST', '/api/v1/admin/themes/editor-other/activate', {}));
+  data(await update(post.id, { themeFields: { other_caption: 'other value' } }));
+  let stored = JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields);
+  assert.deepEqual(stored._lillThemeFields, {
+    'editor-fixture': { subtitle: 'fixture value' },
+    'editor-other': { other_caption: 'other value' },
+  });
+
+  data(await write('POST', '/api/v1/admin/themes/editor-fixture/activate', {}));
+  const detail = data(await api.request('GET', `/api/v1/admin/posts/${post.id}`, { headers: headers(admin) }));
+  assert.deepEqual(detail.themeFields, { subtitle: 'fixture value', layout: 'wide', show_index: true });
 });
 
 const invalidEnums = [

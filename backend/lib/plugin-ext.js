@@ -122,6 +122,7 @@ export function createPluginContext(ctx, pluginDir) {
   const pluginsDir = ctx.PLUGINS_DIR || ctx.pluginsDir;
 
   const registeredRoutes = [];
+  const editorCleanup = [];
 
   return {
     // 路由注册（记录以便停用时摘除）
@@ -137,6 +138,13 @@ export function createPluginContext(ctx, pluginDir) {
     // 内部：停用清理用
     __core: ctx,
     __routes: registeredRoutes,
+    __editorRegistrations: {
+      cleanup: () => {
+        let removed = false;
+        for (const cleanup of editorCleanup.splice(0).reverse()) removed = cleanup() || removed;
+        return removed;
+      },
+    },
 
     // 常用工具透传
     json: ctx.json,
@@ -161,6 +169,25 @@ export function createPluginContext(ctx, pluginDir) {
     addAdminMenu: (item) => {
       if (!ctx._adminMenus) ctx._adminMenus = [];
       ctx._adminMenus.push({ plugin: pluginDir, ...item });
+    },
+
+    registerEditorField: (field) => {
+      if (!ctx._editorRegistry) throw new Error('编辑器插件注册表不可用');
+      const cleanup = ctx._editorRegistry.registerField(field, pluginDir);
+      editorCleanup.push(cleanup);
+      return cleanup;
+    },
+    registerEditorAction: (action) => {
+      if (!ctx._editorRegistry) throw new Error('编辑器插件注册表不可用');
+      const cleanup = ctx._editorRegistry.registerAction(action, pluginDir);
+      editorCleanup.push(cleanup);
+      return cleanup;
+    },
+    registerEditorExtension: (extension) => {
+      if (!ctx._editorRegistry) throw new Error('编辑器插件注册表不可用');
+      const cleanup = ctx._editorRegistry.registerExtension(extension, pluginDir);
+      editorCleanup.push(cleanup);
+      return cleanup;
     },
 
     // 配置存储（插件独立命名空间）
@@ -257,6 +284,7 @@ export async function activatePlugin(dir, pluginsDir, ctx) {
 /** 回收核心管理的注册项；逆序恢复被覆盖的路由，避免失败插件破坏原有入口。 */
 function clearPluginRegistrations(dir, pctx) {
   const core = pctx.__core;
+  pctx.__editorRegistrations?.cleanup?.();
   for (const r of [...(pctx.__routes || [])].reverse()) {
     r.removed = true;
     const routes = core?.router?.routes;

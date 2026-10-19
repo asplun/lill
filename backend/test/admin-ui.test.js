@@ -24,6 +24,17 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
       settingsPage: 'settings/editor.html',
       settings: [{ key: 'label', type: 'text', default: 'Initial label' }],
     }));
+    const editorDir = join(target, 'editor-fixture');
+    await mkdir(editorDir, { recursive: true });
+    await writeFile(join(editorDir, 'theme.json'), JSON.stringify({
+      id: 'editor-fixture', name: 'Editor fields fixture', version: '1.0.0',
+      editorFields: [
+        { key: 'subtitle', label: '<img id="theme-field-xss" src=x onerror=window.__themeFieldXss=1>副标题', type: 'text', for: 'post', group: '文章信息' },
+        { key: 'layout', label: '布局', type: 'select', for: 'post', default: 'wide', options: [{ value: 'wide', label: '宽屏' }, { value: 'normal', label: '常规' }] },
+        { key: 'show_index', label: '加入目录', type: 'checkbox', for: 'post', default: true },
+        { key: 'hero_title', label: '页面标题', type: 'text', for: 'page', default: '默认页面标题' },
+      ],
+    }));
     await writeFile(join(dir, 'settings/editor.html'), `<!doctype html><html lang="en">
       <meta charset="utf-8"><title>Custom theme settings</title>
       <label>Label <input id="label"></label><button id="save">Save theme</button><output id="result"></output>
@@ -38,6 +49,29 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
           document.body.dataset.ready = 'true';
         });
       </script></html>`);
+  }, preparePlugins: async target => {
+    const dir = join(target, 'ui-editor-tools');
+    await mkdir(join(dir, 'editor'), { recursive: true });
+    await writeFile(join(dir, 'plugin.json'), JSON.stringify({
+      name: 'UI editor tools', version: '1.0.0',
+    }));
+    await writeFile(join(dir, 'editor', 'styles.css'), '.ui-editor-tools { border-left: 2px solid #789; padding-left: 8px; }');
+    await writeFile(join(dir, 'editor', 'index.js'), `export function activate({ editor, slots }) {
+      const mounted = slots.sidebar.mount(container => {
+        container.className += ' ui-editor-tools';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = '扩展面板';
+        button.onclick = () => editor.insertText('PLUGIN');
+        container.appendChild(button);
+      });
+      return () => mounted.unmount();
+    }`);
+    await writeFile(join(dir, 'index.js'), `export function activate(ctx) {
+      ctx.registerEditorField({ key: 'credit', label: '图片来源', type: 'text', for: 'post', default: '未填写' });
+      ctx.registerEditorAction({ id: 'insert-plugin-text', label: '插入插件文本', placement: 'toolbar', for: 'post', handler: () => ({ insertText: 'ACTION' }) });
+      ctx.registerEditorExtension({ id: 'ui-editor-tools', entry: 'editor/index.js', styles: ['editor/styles.css'], for: ['post'], slots: ['sidebar'], apiVersion: 1 });
+    }`);
   } });
   let server, browser;
   t.after(async () => {
@@ -56,6 +90,10 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
   assert.equal(install.status, 200, JSON.stringify(install.payload));
   const session = install.payload.data;
   const headers = { authorization: 'Bearer ' + session.token, 'x-csrf-token': session.csrfToken };
+  const pluginToggle = await api.request('POST', '/api/v1/admin/plugins/toggle', {
+    headers, body: { dir: 'ui-editor-tools' },
+  });
+  assert.equal(pluginToggle.status, 200, JSON.stringify(pluginToggle.payload));
   const write = async (path, body) => {
     const result = await api.request('POST', '/api/v1/admin' + path, { headers, body });
     assert.ok(result.status < 300, JSON.stringify(result.payload));
@@ -287,6 +325,82 @@ test('admin UI browser regressions', { skip: !process.env.LILL_UI_PLAYWRIGHT }, 
       assert.ok(requested.has('/api/v1/admin/options'), 'options must start while categories is still pending');
     } finally { release.resolve(); }
     await page.locator('#pe-content').waitFor();
+  });
+
+  await t.test('theme editor fields save and reopen separately for articles and pages', async subtest => {
+    await write('/themes/editor-fixture/activate', {});
+    const page = await openAdmin(subtest);
+    try {
+      await page.evaluate(() => window.navigate('posts'));
+      await page.getByRole('button', { name: '+ 写文章', exact: true }).click();
+      await page.locator('#pe-theme-field-subtitle').waitFor();
+      assert.equal(await page.locator('#pe-theme-field-hero_title').count(), 0);
+      assert.equal(await page.locator('#theme-field-xss').count(), 0, 'manifest labels must render as text, not elements');
+      assert.ok((await page.locator('.theme-editor-field').first().innerText()).includes('<img id="theme-field-xss"'));
+
+      const hostileValue = '<script>window.__themeFieldValueXss=1</script>';
+      await page.locator('#pe-title').fill('Theme field article');
+      await page.locator('#pe-content').fill('Article body');
+      await page.locator('#pe-theme-field-subtitle').fill(hostileValue);
+      await page.locator('#pe-theme-field-layout').selectOption('normal');
+      await page.locator('#pe-theme-field-show_index').uncheck();
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await page.locator('.filter-tabs').waitFor();
+      const posts = await api.request('GET', '/api/v1/admin/posts?keyword=Theme%20field%20article', { headers });
+      const article = posts.payload.data.items.find(item => item.title === 'Theme field article');
+      assert.ok(article);
+      let detail = await api.request('GET', '/api/v1/admin/posts/' + article.id, { headers });
+      assert.deepEqual(detail.payload.data.themeFields, { subtitle: hostileValue, layout: 'normal', show_index: false });
+      await page.evaluate(id => window.openPostEditor('post', id), article.id);
+      assert.equal(await page.locator('#pe-theme-field-subtitle').inputValue(), hostileValue);
+      assert.equal(await page.locator('#pe-theme-field-layout').inputValue(), 'normal');
+      assert.equal(await page.locator('#pe-theme-field-show_index').isChecked(), false);
+      assert.equal(await page.evaluate(() => window.__themeFieldValueXss), undefined);
+      assert.equal(await page.locator('#content script').count(), 0);
+
+      await page.evaluate(() => window.navigate('pages'));
+      await page.getByRole('button', { name: '+ 新建页面', exact: true }).click();
+      await page.locator('#pe-theme-field-hero_title').waitFor();
+      assert.equal(await page.locator('#pe-theme-field-subtitle').count(), 0);
+      assert.equal(await page.locator('#pe-theme-field-layout').count(), 0);
+      await page.locator('#pe-title').fill('Theme field page');
+      await page.locator('#pe-theme-field-hero_title').fill('独立页面标题');
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await page.locator('#content table').waitFor();
+      const pages = await api.request('GET', '/api/v1/admin/pages?keyword=Theme%20field%20page', { headers });
+      const createdPage = pages.payload.data.items.find(item => item.title === 'Theme field page');
+      assert.ok(createdPage);
+      detail = await api.request('GET', '/api/v1/admin/posts/' + createdPage.id, { headers });
+      assert.deepEqual(detail.payload.data.themeFields, { hero_title: '独立页面标题' });
+    } finally {
+      await write('/themes/default/activate', {});
+    }
+  });
+
+  await t.test('plugin editor fields, actions and sidebar modules survive a real browser round trip', async subtest => {
+    const page = await openAdmin(subtest);
+    const errors = [];
+    page.on('pageerror', error => errors.push('pageerror: ' + error.message));
+    page.on('console', message => { if (message.type() === 'error') errors.push('console: ' + message.text()); });
+    await page.evaluate(() => window.navigate('posts'));
+    await page.getByRole('button', { name: '+ 写文章', exact: true }).click();
+    await page.locator('#pe-plugin-field-ui-editor-tools-credit').waitFor();
+    await page.locator('#pe-plugin-field-ui-editor-tools-credit').fill('UI 来源');
+    const actionResponse = page.waitForResponse(response => response.url().includes('/admin/editor-actions/ui-editor-tools/insert-plugin-text'));
+    await page.getByRole('button', { name: '插入插件文本', exact: true }).click();
+    const actionResult = await actionResponse;
+    assert.equal(actionResult.status(), 200, await actionResult.text());
+    assert.equal(await page.locator('#pe-content').inputValue(), 'ACTION', errors.join(' | '));
+    await page.getByRole('button', { name: '扩展面板', exact: true }).click();
+    assert.equal(await page.locator('#pe-content').inputValue(), 'ACTIONPLUGIN');
+    await page.locator('#pe-title').fill('Plugin editor browser');
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.locator('#content table').waitFor();
+    const posts = await api.request('GET', '/api/v1/admin/posts?keyword=Plugin%20editor%20browser', { headers });
+    const post = posts.payload.data.items.find(item => item.title === 'Plugin editor browser');
+    assert.ok(post);
+    const detail = await api.request('GET', '/api/v1/admin/posts/' + post.id, { headers });
+    assert.deepEqual(detail.payload.data.pluginFields, { 'ui-editor-tools': { credit: 'UI 来源' } });
   });
 
   await t.test('repeating the current destination keeps its in-flight request', async subtest => {

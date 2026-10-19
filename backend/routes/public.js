@@ -11,6 +11,7 @@ import { listNavigationItems } from '../lib/navigation.js';
 import { PUBLIC_POST_WHERE, publicOptions } from '../lib/public-content.js';
 import { readingPolicy, postsOrderSql, excerptFor, commentPagination } from '../lib/reading-policy.js';
 import { readPermalinkOptions, permalinkPath, resolvePermalink } from '../lib/permalinks.js';
+import { readThemeEditorFields } from '../lib/theme-editor-fields.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
@@ -30,6 +31,39 @@ export function register(router, ctx) {
   const activeThemeId = () => {
     const row = db.prepare('SELECT theme_id FROM themes WHERE active = 1 ORDER BY created_at ASC LIMIT 1').get();
     return row?.theme_id || 'default';
+  };
+  const editorFieldSchema = (themeId, type) => {
+    if (!['post', 'page'].includes(type)) return [];
+    try { return themeRuntime?.editorFields?.(themeId, type) || []; }
+    catch (error) {
+      console.warn(`主题内容字段定义无效，公开字段已忽略：${error.message}`);
+      return [];
+    }
+  };
+  const publicGenericFields = value => {
+    if (typeof value !== 'string') return value;
+    let parsed;
+    try { parsed = JSON.parse(value); }
+    catch { return '{}'; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+        !Object.hasOwn(parsed, '_lillThemeFields')) return value;
+    const generic = { ...parsed };
+    delete generic._lillThemeFields;
+    return JSON.stringify(generic);
+  };
+  const projectPublicThemeFields = (post, themeId = activeThemeId(), schema = null) => {
+    try {
+      post.theme_fields = readThemeEditorFields(post.fields, themeId, schema || editorFieldSchema(themeId, post.type));
+    } catch {
+      post.theme_fields = {};
+    }
+    post.fields = publicGenericFields(post.fields);
+    return post;
+  };
+  const projectPublicListItem = (post, themeId, schema) => {
+    projectPublicThemeFields(post, themeId, schema);
+    delete post.fields;
+    return post;
   };
   const activeThemeExt = () => (ctx.themeExt && typeof ctx.themeExt.active === 'function') ? ctx.themeExt.active() : null;
   async function runThemeHook(name, ...args) {
@@ -134,11 +168,16 @@ function decoratePost(p, knownSiteUrl = null, knownOptions = null) {
 function adjacentPosts(post) {
   const baseUrl = siteBaseUrl();
   const permalinkOptions = readPermalinkOptions(db);
+  const themeId = activeThemeId();
+  const schema = editorFieldSchema(themeId, post.type);
   for (const [key, comparison, direction] of [['prev', '<', 'DESC'], ['next', '>', 'ASC']]) {
-    post[key] = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.published_at, p.created_at, c.slug AS category_slug
+    post[key] = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.fields, p.published_at, p.created_at, c.slug AS category_slug
       FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = ? AND ${PUBLIC_POST_WHERE}
       AND p.published_at ${comparison} ? ORDER BY p.published_at ${direction} LIMIT 1`).get(post.type, post.published_at) || null;
-    if (post[key]) decoratePost(post[key], baseUrl, permalinkOptions);
+    if (post[key]) {
+      projectPublicListItem(post[key], themeId, schema);
+      decoratePost(post[key], baseUrl, permalinkOptions);
+    }
   }
 }
 
@@ -150,6 +189,8 @@ function listPosts(o) {
     page: o.page ?? '', pageSize: o.pageSize ?? '',
   }), policy.postsPerPage, 100);
   const typeFilter = o.type || 'post';
+  const themeId = activeThemeId();
+  const schema = editorFieldSchema(themeId, typeFilter);
   let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
   const params = [typeFilter];
   if (o.categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(o.categorySlug); }
@@ -159,7 +200,7 @@ function listPosts(o) {
   if (o.month) { where += " AND strftime('%Y-%m', p.published_at) = ?"; params.push(o.month); }
   const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
   const items = db.prepare(`
-    SELECT p.id, p.title, p.slug, p.type, p.content, p.excerpt_auto, p.excerpt, p.cover_image, p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
+    SELECT p.id, p.title, p.slug, p.type, p.content, p.fields, p.excerpt_auto, p.excerpt, p.cover_image, p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
            u.nickname as author_nickname, c.name as category_name, c.slug as category_slug,
            (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id AND cm.status = 'approved') as comment_count${o.full ? ', p.html_content' : ''}
     FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id
@@ -168,6 +209,7 @@ function listPosts(o) {
   items.forEach(post => {
     Object.assign(post, excerptFor(post, policy));
     delete post.content;
+    projectPublicListItem(post, themeId, schema);
     decoratePost(post, baseUrl, permalinkOptions);
   });
   return { items, meta: { total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)), hasNext: page * pageSize < total, hasPrev: page > 1 } };
@@ -178,11 +220,13 @@ function listArchivePosts(month) {
   const policy = readingPolicy(db);
   const baseUrl = siteBaseUrl();
   const permalinkOptions = readPermalinkOptions(db);
+  const themeId = activeThemeId();
+  const schema = editorFieldSchema(themeId, 'post');
   let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post'`;
   const params = [];
   if (month) { where += " AND strftime('%Y-%m', p.published_at) = ?"; params.push(month); }
   const items = db.prepare(`
-    SELECT p.id, p.title, p.slug, p.type, p.content, p.html_content, p.excerpt_auto, p.excerpt, p.cover_image,
+    SELECT p.id, p.title, p.slug, p.type, p.content, p.fields, p.html_content, p.excerpt_auto, p.excerpt, p.cover_image,
            p.view_count, p.likes, p.sticky, p.published_at, p.created_at, p.category_id,
            u.nickname as author_nickname, c.name as category_name, c.slug as category_slug,
            (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id AND cm.status = 'approved') as comment_count
@@ -196,6 +240,7 @@ function listArchivePosts(month) {
     Object.assign(post, excerptFor(post, policy));
     delete post.content;
     delete post.html_content;
+    projectPublicListItem(post, themeId, schema);
     decoratePost(post, baseUrl, permalinkOptions);
   });
   return { items, words };
@@ -286,15 +331,19 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const decorateWidgets = (themeExt && typeof themeExt.decorateWidgets === 'function')
     ? themeExt.decorateWidgets
     : () => [];
+  const postEditorSchema = editorFieldSchema(activeThemeId, 'post');
   const sidebar = {
     recentPosts: listPosts({ pageSize: 5, order: 'date' }).items,
     categories: cats,
     tags: listTags(),
     archives: listArchives(),
     recentComments: listRecentComments(5),
-    hotPosts: db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.view_count, p.likes, p.published_at, p.created_at, c.slug AS category_slug
+    hotPosts: db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.fields, p.view_count, p.likes, p.published_at, p.created_at, c.slug AS category_slug
       FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE ${PUBLIC_POST_WHERE} AND p.type = 'post'
-      ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(post => decoratePost(post, sidebarSiteUrl, sidebarPermalinkOptions)),
+      ORDER BY p.view_count DESC, p.likes DESC, p.published_at DESC LIMIT 5`).all().map(post => {
+        projectPublicListItem(post, activeThemeId, postEditorSchema);
+        return decoratePost(post, sidebarSiteUrl, sidebarPermalinkOptions);
+      }),
     hotTags: listTags().slice().sort((a, b) => b.post_count - a.post_count).slice(0, 10),
     widgets: {
       left: decorateWidgets(cfg.leftWidgets),
@@ -322,6 +371,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
       WHERE p.slug = ? AND p.type = ? AND ${PUBLIC_POST_WHERE}
     `).get(slug, type);
     if (!post) return error(res, '内容不存在', 404);
+    projectPublicThemeFields(post, activeThemeId);
     post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
     adjacentPosts(post);
     decoratePost(post, null, readPermalinkOptions(db));
@@ -496,8 +546,14 @@ route('GET', '/api/v1/posts', async (req, res) => {
 route('GET', '/api/v1/pages', async (req, res) => {
   const baseUrl = siteBaseUrl();
   const permalinkOptions = readPermalinkOptions(db);
-  const pages = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.created_at FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
-  json(res, pages.map(page => decoratePost({ ...page, type: 'page' }, baseUrl, permalinkOptions)));
+  const themeId = activeThemeId();
+  const schema = editorFieldSchema(themeId, 'page');
+  const pages = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.fields, p.created_at FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
+  json(res, pages.map(page => {
+    const item = { ...page, type: 'page' };
+    projectPublicListItem(item, themeId, schema);
+    return decoratePost(item, baseUrl, permalinkOptions);
+  }));
 });
 
 // 归档（按年月分组，侧边栏 Widget）
@@ -526,6 +582,7 @@ route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
     WHERE p.slug = ? AND p.type = 'post' AND ${PUBLIC_POST_WHERE}
   `).get(params.slug);
   if (!post) return error(res, '文章不存在', 404);
+  projectPublicThemeFields(post);
   post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
   adjacentPosts(post);
   db.prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?').run(post.id);

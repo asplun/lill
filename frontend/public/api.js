@@ -72,7 +72,8 @@ window.lillAPI = (() => {
       try {
         let res, text;
         try {
-          res = await fetch(BASE + path, config);
+          const requestPath = String(path).startsWith(BASE + '/') ? path : BASE + path;
+          res = await fetch(requestPath, config);
           text = await res.text();
         } catch (e) {
           if (scope && scope.aborted) throw new Error('请求已取消');
