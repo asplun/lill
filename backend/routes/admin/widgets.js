@@ -47,4 +47,25 @@ export function register(router, ctx, helpers) {
     db.prepare('DELETE FROM widgets WHERE id = ?').run(params.id);
     json(res, { message: '删除成功' });
   });
+
+  route('POST', '/api/v1/admin/widgets/batch', async (req, res) => {
+    await authenticate(req);
+    const body = await parseBody(req);
+    if (!body || !Array.isArray(body.ids) || !body.ids.length) return error(res, '缺少小工具ID列表', 400);
+    if (!['enable', 'disable', 'delete'].includes(body.action)) return error(res, '无效操作', 400);
+    const ids = [...new Set(body.ids.filter(id => typeof id === 'string' && id.trim()))];
+    if (!ids.length) return error(res, '缺少小工具ID列表', 400);
+    const skipped = [];
+    let updated = 0;
+    for (const id of ids) {
+      if (!findWidget(id)) {
+        skipped.push({ id, reason: '组件不存在' });
+        continue;
+      }
+      if (body.action === 'delete') db.prepare('DELETE FROM widgets WHERE id = ?').run(id);
+      else db.prepare('UPDATE widgets SET enabled = ? WHERE id = ?').run(body.action === 'enable' ? 1 : 0, id);
+      updated++;
+    }
+    json(res, { updated, skipped });
+  });
 }

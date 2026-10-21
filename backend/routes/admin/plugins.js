@@ -1,5 +1,5 @@
 /** Plugin lifecycle, menus, configuration, install, and uninstall routes. */
-import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
 import { rollbackPluginActivation } from '../../lib/plugin-ext.js';
@@ -85,6 +85,57 @@ export function register(router, ctx, helpers) {
       logAction(auth.id, active ? 'plugin.enable' : 'plugin.disable', body.dir, req);
       json(res, { dir: body.dir, active, hot: 'ok', message: active ? '插件已启用' : '插件已禁用' });
     });
+  });
+
+  route('POST', '/api/v1/admin/plugins/batch', async (req, res) => {
+    const auth = await authenticate(req);
+    const body = await parseBody(req);
+    if (!Array.isArray(body.dirs) || !body.dirs.length) return error(res, '请选择插件', 400);
+    if (!['activate', 'deactivate', 'uninstall'].includes(body.action)) return error(res, '无效操作', 400);
+    const updated = [];
+    const skipped = [];
+    for (const rawDir of [...new Set(body.dirs)]) {
+      const dir = typeof rawDir === 'string' ? rawDir : '';
+      if (!PLUGIN_DIR_PATTERN.test(dir) || dir.includes('..')) {
+        skipped.push({ dir, reason: '非法插件目录名' });
+        continue;
+      }
+      const pluginPath = join(PLUGINS_DIR, dir);
+      if (!existsSync(manifestPath(dir))) {
+        skipped.push({ dir, reason: '插件不存在' });
+        continue;
+      }
+      if (pending.has(dir)) {
+        skipped.push({ dir, reason: '插件操作正在进行' });
+        continue;
+      }
+      pending.add(dir);
+      try {
+        const current = !!db.prepare('SELECT active FROM plugins WHERE dir = ?').get(dir)?.active;
+        if (body.action === 'activate') {
+          if (current) { skipped.push({ dir, reason: '插件已启用' }); continue; }
+          const entry = await activatePlugin(dir);
+          if (!entry) throw new Error('插件未成功加载或未导出 activate');
+          const manifest = JSON.parse(readFileSync(manifestPath(dir), 'utf8'));
+          db.prepare('INSERT INTO plugins (id, dir, name, version, description, active) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(dir) DO UPDATE SET active = 1')
+            .run(uid(), dir, manifest.name || dir, manifest.version || '1.0.0', manifest.description || '');
+        } else if (body.action === 'deactivate') {
+          if (!current) { skipped.push({ dir, reason: '插件已禁用' }); continue; }
+          await deactivatePlugin(dir);
+          db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run(dir);
+        } else {
+          await deactivatePlugin(dir);
+          db.prepare('UPDATE plugins SET active = 0 WHERE dir = ?').run(dir);
+          rmSync(pluginPath, { recursive: true, force: true });
+          db.prepare('DELETE FROM plugins WHERE dir = ?').run(dir);
+        }
+        updated.push(dir);
+        logAction(auth.id, 'plugin.batch-' + body.action, dir, req);
+      } catch (e) {
+        skipped.push({ dir, reason: e.message });
+      } finally { pending.delete(dir); }
+    }
+    json(res, { updated, skipped });
   });
 
   route('GET', '/api/v1/admin/plugin-menus', async (req, res) => {

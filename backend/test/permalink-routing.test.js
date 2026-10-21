@@ -54,6 +54,34 @@ test('configured article links generate and resolve the same path through bootst
   }
 });
 
+test('legacy html page paths resolve to their page slug through bootstrap', async t => {
+  const { api, db, set } = await setup(t);
+  assert.equal((await set([{ key: 'page_pattern', value: '/page/{slug}' }])).status, 200);
+  db.prepare(`INSERT INTO posts (id, title, slug, content, html_content, type, status, published_at, author_id)
+    SELECT 'music-page', '歌单', 'music', 'Playlist', '<p>Playlist</p>', 'page', 'published', '2020-06-01 12:00:00', author_id
+    FROM posts WHERE id = 'post-id'`).run();
+
+  for (const path of ['/music.html', '/index.php/music.html']) {
+    const boot = await api.request('GET', '/api/v1/site/bootstrap?type=index&slug=&path=' + encodeURIComponent(path));
+    assert.equal(boot.status, 200, path + ': ' + JSON.stringify(boot.payload));
+    assert.equal(boot.payload.data.page.type, 'page');
+    assert.equal(boot.payload.data.page.slug, 'music');
+    assert.equal(boot.payload.data.data.post.id, 'music-page');
+  }
+});
+
+test('legacy page aliases without html resolve through bootstrap when the page exists', async t => {
+  const { api, db, set } = await setup(t);
+  assert.equal((await set([{ key: 'page_pattern', value: '/page/{slug}' }])).status, 200);
+  db.prepare(`INSERT INTO posts (id, title, slug, content, html_content, type, status, published_at, author_id)
+    SELECT 'music-page', '歌单', 'music', 'Playlist', '<p>Playlist</p>', 'page', 'published', '2020-06-01 12:00:00', author_id
+    FROM posts WHERE id = 'post-id'`).run();
+  const boot = await api.request('GET', '/api/v1/site/bootstrap?type=page&slug=music&path=%2Fmusic');
+  assert.equal(boot.status, 200);
+  assert.equal(boot.payload.data.page.type, 'page');
+  assert.equal(boot.payload.data.page.slug, 'music');
+});
+
 test('taxonomy ID paths and encoded Unicode names resolve through the same public policy', async t => {
   const { api, db, set } = await setup(t);
   assert.equal((await set([

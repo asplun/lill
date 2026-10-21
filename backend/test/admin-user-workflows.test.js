@@ -220,6 +220,21 @@ test('malformed JSON is a client error with a useful message', async t => {
   assert.match((await response.json()).message, /JSON/);
 });
 
+test('authenticated writes require the CSRF token bound to the session', async t => {
+  const { api, headers } = await setup(t);
+  const forged = await api.request('POST', '/api/v1/admin/tags', {
+    headers: { ...headers, 'x-csrf-token': 'forged-token' },
+    body: { name: 'Forged tag' },
+  });
+  assert.equal(forged.status, 403, JSON.stringify(forged.payload));
+
+  const valid = await api.request('POST', '/api/v1/admin/tags', {
+    headers,
+    body: { name: 'Valid tag' },
+  });
+  assert.equal(valid.status, 201, JSON.stringify(valid.payload));
+});
+
 test('startup does not recreate the welcome article after an administrator deletes all content', async t => {
   const api = await startApiServer();
   t.after(api.stop);

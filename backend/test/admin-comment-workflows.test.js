@@ -99,3 +99,26 @@ test('batch comment moderation updates only real comments atomically', async t =
   assert.equal(result.payload.data.updated, 2);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM comments WHERE status = 'approved'").get().count, 2);
 });
+
+test('comment moderation and deletion keep the post comment count synchronized', async t => {
+  const { api, db, post, headers } = await setup(t);
+  db.prepare("UPDATE posts SET comment_count = 0 WHERE id = ?").run(post.id);
+
+  assert.equal((await api.request('PATCH', '/api/v1/admin/comments/comment-one/status', {
+    headers, body: { status: 'approved' },
+  })).status, 200);
+  assert.equal(db.prepare('SELECT comment_count FROM posts WHERE id = ?').get(post.id).comment_count, 1);
+
+  assert.equal((await api.request('PATCH', '/api/v1/admin/comments/comment-two/status', {
+    headers, body: { status: 'approved' },
+  })).status, 200);
+  assert.equal(db.prepare('SELECT comment_count FROM posts WHERE id = ?').get(post.id).comment_count, 2);
+
+  assert.equal((await api.request('PATCH', '/api/v1/admin/comments/comment-one/status', {
+    headers, body: { status: 'spam' },
+  })).status, 200);
+  assert.equal(db.prepare('SELECT comment_count FROM posts WHERE id = ?').get(post.id).comment_count, 1);
+
+  assert.equal((await api.request('DELETE', '/api/v1/admin/comments/comment-two', { headers })).status, 200);
+  assert.equal(db.prepare('SELECT comment_count FROM posts WHERE id = ?').get(post.id).comment_count, 0);
+});

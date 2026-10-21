@@ -1,0 +1,215 @@
+.trim3-editor-upload-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trim3-editor-previews {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.trim3-editor-image-item {
+  position: relative;
+  display: inline-flex;
+}
+
+.trim3-editor-image {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line, #d9dce3);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  cursor: pointer;
+}
+
+.trim3-editor-image.is-error {
+  width: auto;
+  max-width: 220px;
+  padding: 4px 8px;
+  color: #b42318;
+  font-size: 12px;
+  cursor: default;
+}
+
+.trim3-editor-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.trim3-editor-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #343a40;
+  color: #fff;
+  font-size: 13px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.trim3-editor-shortcode-tools {
+  display: contents;
+}
+
+.trim3-editor-shortcode-panel {
+  position: relative;
+}
+
+.trim3-editor-shortcode-toggle {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.trim3-editor-shortcode-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.trim3-editor-shortcode-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  left: 0;
+  display: none;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(62vh, 460px);
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border, #d8dee4);
+  border-radius: 14px;
+  background: var(--surface, #fff);
+  box-shadow: 0 12px 36px #17212b2b;
+}
+
+.trim3-editor-shortcode-panel[open] .trim3-editor-shortcode-menu {
+  display: grid;
+}
+
+.trim3-editor-shortcode-group {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.trim3-editor-shortcode-group h4 {
+  margin: 0 0 4px;
+  color: var(--muted, #667085);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.trim3-editor-insert {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text, #202b33);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trim3-editor-insert:hover,
+.trim3-editor-insert:focus-visible {
+  outline: 0;
+  background: color-mix(in srgb, var(--primary, #526cfe) 10%, transparent);
+}
+
+.trim3-editor-music-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border, #d8dee4);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+  color: var(--text, #202b33);
+  box-shadow: 0 18px 54px #17212b38;
+}
+
+.trim3-editor-music-dialog::backdrop {
+  background: #10182070;
+  backdrop-filter: blur(2px);
+}
+
+.trim3-editor-music-form {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+}
+
+.trim3-editor-music-form h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.trim3-editor-music-form > label:not(.trim3-editor-music-autoplay-label) {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted, #667085);
+}
+
+.trim3-editor-music-form input:not([type="checkbox"]),
+.trim3-editor-music-form select {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #d8dee4);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text, #202b33);
+  font: inherit;
+}
+
+.trim3-editor-music-form input[type="color"] {
+  width: 56px !important;
+  min-height: 34px;
+  padding: 3px !important;
+}
+
+.trim3-editor-music-autoplay-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.trim3-editor-music-error {
+  color: #b42318;
+  font-size: 12px;
+}
+
+.trim3-editor-music-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 520px) {
+  .trim3-editor-shortcode-menu {
+    grid-template-columns: 1fr 1fr;
+    width: min(360px, calc(100vw - 24px));
+    max-height: 55vh;
+    padding: 12px;
+  }
+  .trim3-editor-music-form {
+    padding: 18px;
+  }
+}

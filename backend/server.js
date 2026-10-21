@@ -45,7 +45,7 @@ mkdirSync(UPLOAD_DIR, { recursive: true });
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;');
 
-db.exec(`
+const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL, nickname TEXT, avatar TEXT, bio TEXT,
@@ -56,10 +56,10 @@ db.exec(`
     id TEXT PRIMARY KEY, title TEXT NOT NULL, slug TEXT UNIQUE NOT NULL,
     content TEXT NOT NULL DEFAULT '', html_content TEXT, excerpt TEXT, excerpt_auto INTEGER, cover_image TEXT,
     type TEXT DEFAULT 'post', status TEXT DEFAULT 'draft', visibility TEXT DEFAULT 'public',
-    password TEXT, comment_allowed INTEGER DEFAULT 1, view_count INTEGER DEFAULT 0,
+    password TEXT, comment_allowed INTEGER DEFAULT 1, allow_ping INTEGER DEFAULT 1, allow_feed INTEGER DEFAULT 1, view_count INTEGER DEFAULT 0,
     comment_count INTEGER DEFAULT 0, sticky INTEGER DEFAULT 0, "order" INTEGER DEFAULT 0,
     published_at TEXT, author_id TEXT NOT NULL, category_id TEXT, fields TEXT DEFAULT '{}',
-    template TEXT DEFAULT '',
+    template TEXT DEFAULT '', parent_id TEXT,
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_posts_slug ON posts(slug);
@@ -69,6 +69,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at);
   CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
   CREATE INDEX IF NOT EXISTS idx_posts_type_status ON posts(type, status);
+  CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent_id);
   CREATE INDEX IF NOT EXISTS idx_posts_author_status ON posts(author_id, status);
 
   CREATE TABLE IF NOT EXISTS post_versions (
@@ -77,6 +78,13 @@ db.exec(`
     created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
     FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
     FOREIGN KEY (author_id) REFERENCES users(id)
+  );
+
+  -- 服务器自动草稿：一篇文章一条（post_id UNIQUE），随保存清除；老库靠 IF NOT EXISTS 自动补齐。
+  CREATE TABLE IF NOT EXISTS post_drafts (
+    id TEXT PRIMARY KEY, post_id TEXT UNIQUE NOT NULL, title TEXT, content TEXT,
+    excerpt TEXT, author_id TEXT, updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS categories (
@@ -88,11 +96,15 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS tags (
     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
+    sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(slug);
   CREATE TABLE IF NOT EXISTS post_tags (post_id TEXT, tag_id TEXT, PRIMARY KEY (post_id, tag_id));
   CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+  -- 一篇文章可属于多个分类；posts.category_id 保留为「主分类」，供 {category} 永久链接使用。
+  CREATE TABLE IF NOT EXISTS post_categories (post_id TEXT NOT NULL, category_id TEXT NOT NULL, PRIMARY KEY (post_id, category_id));
+  CREATE INDEX IF NOT EXISTS idx_post_categories_category ON post_categories(category_id);
   CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY, content TEXT NOT NULL, status TEXT DEFAULT 'pending',
     user_agent TEXT, ip TEXT, parent_id TEXT, author_name TEXT, author_email TEXT, author_url TEXT,
@@ -105,7 +117,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, url TEXT NOT NULL,
     mime_type TEXT NOT NULL, size INTEGER DEFAULT 0, width INTEGER, height INTEGER,
-    alt TEXT, post_id TEXT, uploader_id TEXT, created_at TEXT DEFAULT (datetime('now'))
+    alt TEXT, slug TEXT, description TEXT, post_id TEXT, uploader_id TEXT, created_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_media_uploader ON media(uploader_id);
   CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
@@ -135,25 +147,96 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_widgets_position_order ON widgets(position, sort_order);
-`);
+`;
+
+// ════════════════════════════════════════════════════════════
+// 启动前幂等迁移（必须跑在建表 DDL 之前）
+// 老站点里表已存在时，CREATE TABLE IF NOT EXISTS 不会补列；此时 DDL 里的
+// CREATE INDEX 一旦引用缺失列（例如 posts.parent_id），整块 db.exec 会抛
+// "no such column" 中断，进程启动即崩（pm2 无限重启 → 全站 502）。
+// 这里从 DDL 文本解析出所有 CREATE INDEX 引用的列，逐列用 PRAGMA table_info
+// 核对，缺哪列就先 ALTER TABLE 补哪列，保证任何缺列都不会让 DDL 中断。
+// ════════════════════════════════════════════════════════════
+// 补列类型：默认 TEXT；已知数值列给出正确亲和性，避免老库被补成文本列后比较/排序异常。
+const COLUMN_DDL = {
+  'posts.likes': 'likes INTEGER DEFAULT 0',
+  'posts.sticky': 'sticky INTEGER DEFAULT 0',
+  'posts.order': '"order" INTEGER DEFAULT 0',
+  'posts.view_count': 'view_count INTEGER DEFAULT 0',
+  'posts.comment_count': 'comment_count INTEGER DEFAULT 0',
+  'posts.status': "status TEXT DEFAULT 'draft'",
+  'posts.type': "type TEXT DEFAULT 'post'",
+  'comments.likes': 'likes INTEGER DEFAULT 0',
+  // 与 trim3 主题 ensureMomentsSchema 的列类型保持一致，避免主题跳过补列后类型跑偏
+  'moment_comments.parent_id': 'parent_id TEXT',
+  'moment_comments.likes': 'likes INTEGER DEFAULT 0',
+  'comments.status': "status TEXT DEFAULT 'pending'",
+  'categories.sort_order': 'sort_order INTEGER DEFAULT 0',
+  'widgets.position': "position TEXT DEFAULT 'sidebar'",
+  'widgets.sort_order': 'sort_order INTEGER DEFAULT 0',
+  'tags.sort_order': 'sort_order INTEGER DEFAULT 0',
+};
+function tableExists(table) {
+  return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+}
+function tableColumns(table) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || !tableExists(table)) return null;
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+}
+function ensureColumn(table, column, ddl) {
+  try {
+    const cols = tableColumns(table);
+    // 表还不存在（全新库）：下面的 DDL 会按最新结构建表，无需补列。
+    if (!cols || cols.has(column)) return;
+    const def = ddl || COLUMN_DDL[`${table}.${column}`] || `${column} TEXT`;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+    console.log(`✓ 迁移：${table}.${column} 已添加`);
+  } catch (e) { console.warn(`⚠ 迁移 ${table}.${column} 失败：${e.message}`); }
+}
+function ensureColumns(table, columns) {
+  for (const col of columns) ensureColumn(table, col);
+}
+{
+  const indexRe = /CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?(\w+)["'`]?\s+ON\s+["'`]?(\w+)["'`]?\s*\(([^)]*)\)/gi;
+  let match;
+  while ((match = indexRe.exec(SCHEMA_SQL))) {
+    const table = match[2];
+    for (const raw of match[3].split(',')) {
+      const col = raw.trim().replace(/^["'`]|["'`]$/g, '').split(/\s+/)[0];
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(col)) ensureColumn(table, col);
+    }
+  }
+}
+// 主题/插件扩展表不在 SCHEMA_SQL 里（如 moment_comments），按需补；表不存在时直接跳过。
+ensureColumns('moment_comments', ['parent_id', 'likes']);
+db.exec(SCHEMA_SQL);
 
 // ════════════════════════════════════════════════════════════
 // 结构迁移（幂等）：为历史数据库补齐新增列，老站点升级后自动生效
 // 对标 Typecho 的「独立页面自定义模板」：posts.template 保存所选模板 key（page-xxx）
+// （ensureColumn/tableColumns 已在建表 DDL 之前定义，见上方「启动前幂等迁移」）
 // ════════════════════════════════════════════════════════════
-function ensureColumn(table, column, ddl) {
-  try {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-    if (!cols.some(c => c.name === column)) {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
-      console.log(`✓ 迁移：${table}.${column} 已添加`);
-    }
-  } catch (e) { console.warn(`⚠ 迁移 ${table}.${column} 失败：${e.message}`); }
-}
 ensureColumn('posts', 'template', "template TEXT DEFAULT ''");
 ensureColumn('posts', 'cover_image', 'cover_image TEXT');
 ensureColumn('posts', 'sticky', 'sticky INTEGER DEFAULT 0');
 ensureColumn('posts', 'excerpt_auto', 'excerpt_auto INTEGER');
+// 独立页面的父子层级：目录路由由 parent_id 推导，历史库用迁移补列。
+ensureColumn('posts', 'parent_id', 'parent_id TEXT');
+// 单篇接收与输出开关（对标 Typecho allowPing/allowFeed）：老库升级后补列，默认开启。
+ensureColumn('posts', 'allow_ping', 'allow_ping INTEGER DEFAULT 1');
+ensureColumn('posts', 'allow_feed', 'allow_feed INTEGER DEFAULT 1');
+// 多分类关系表回填：老库只有 posts.category_id，升级后把它同步成一条主分类关系。
+{
+  const rows = db.prepare(`SELECT id, category_id FROM posts WHERE category_id IS NOT NULL AND category_id != ''`).all();
+  if (rows.length) {
+    const insert = db.prepare('INSERT OR IGNORE INTO post_categories (post_id, category_id) VALUES (?, ?)');
+    db.exec('BEGIN');
+    try {
+      for (const row of rows) insert.run(row.id, row.category_id);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+}
 // Legacy rows have no mode: classify once, never reinterpret explicitly saved modes.
 {
   const rows = db.prepare('SELECT id, content, excerpt FROM posts WHERE excerpt_auto IS NULL').all();
@@ -171,7 +254,11 @@ ensureColumn('posts', 'likes', 'likes INTEGER DEFAULT 0');
 ensureColumn('comments', 'likes', 'likes INTEGER DEFAULT 0');
 ensureColumn('comments', 'author_qq', 'author_qq TEXT');
 ensureColumn('media', 'thumbnail_url', 'thumbnail_url TEXT');
+ensureColumn('media', 'slug', 'slug TEXT');
+ensureColumn('media', 'description', 'description TEXT');
 ensureColumn('widgets', 'updated_at', "updated_at TEXT DEFAULT (datetime('now'))");
+// 标签排序（对标分类 sort_order）：老库升级后补齐列，默认 0
+ensureColumn('tags', 'sort_order', 'sort_order INTEGER DEFAULT 0');
 
 // ════════════════════════════════════════════════════════════
 // 一次性修复：旧版 Markdown 渲染器「先渲染后转义」，把已生成的 <h2>/<ul>/<strong>
@@ -289,7 +376,7 @@ function readThemeManifest(themeId) {
 
 // 必要配置项（幂等，兼容已有数据库）
 {
-  const defaults = { site_name: 'lill 博客', site_description: '一个轻量可扩展的博客系统', site_url: 'http://test.abohe.cn', posts_per_page: '10', allow_register: 'false', comment_moderation: 'true', active_theme: 'default', permalink: '/archives/{cid}/', category_prefix: '/category/{slug}/', tag_prefix: '/tag/{slug}/' };
+  const defaults = { site_name: 'lill 博客', site_description: '一个轻量可扩展的博客系统', site_url: 'http://test.abohe.cn', posts_per_page: '10', allow_register: 'false', comment_moderation: 'true', active_theme: 'default', permalink: '/archives/{cid}/', page_pattern: '/page/{slug}', category_prefix: '/category/{slug}/', tag_prefix: '/tag/{slug}/' };
   let seeded = 0;
   for (const [k, v] of Object.entries(defaults)) {
     if (!db.prepare('SELECT id FROM options WHERE key = ?').get(k)) {
@@ -372,6 +459,7 @@ function getClientIP(req) {
 const { hashPwd, verifyPwd, signJWT, verifyJWT, authenticate: authenticateToken, generateCSRFToken, verifyCSRFToken } = createAuth(JWT_SECRET);
 // 一个请求只解析一次身份；权限始终来自当前数据库记录。
 const requestPrincipals = new WeakMap();
+const requestClaims = new WeakMap();
 async function authenticate(req) {
   if (requestPrincipals.has(req)) return requestPrincipals.get(req);
   let claims;
@@ -383,6 +471,7 @@ async function authenticate(req) {
   }
   const user = db.prepare("SELECT id, username, nickname, email, avatar, bio, role, status FROM users WHERE id = ? AND status = 'active'").get(claims.id);
   if (!user) throw new Error('未登录');
+  requestClaims.set(req, claims);
   requestPrincipals.set(req, user);
   return user;
 }
@@ -502,11 +591,23 @@ const server = http.createServer(async (req, res) => {
       if (matched.roles && !matched.roles.includes(principal.role)) return error(res, '权限不足', 403);
       // CSRF 验证：写操作必须携带 CSRF token
       if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
-        const csrfToken = req.headers['x-csrf-token'];
-        if (!csrfToken || !verifyCSRFToken(req, csrfToken)) {
+        const expected = requestClaims.get(req)?.csrf;
+        if (!expected) return error(res, '登录会话已升级，请重新登录', 401);
+        if (!verifyCSRFToken(req, expected)) {
           return error(res, 'CSRF 验证失败，请刷新页面重试', 403);
         }
       }
+    }
+    if (path === '/api/v1/site/bootstrap' && req.method === 'GET') {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const frontPath = url.searchParams.get('path') || '';
+      const legacyPage = frontPath.match(/^\/(?:index\.php\/)?([\w-]+)\.html$/i);
+      if (legacyPage) {
+        url.searchParams.set('type', 'page');
+        url.searchParams.set('slug', legacyPage[1]);
+        url.searchParams.delete('path');
+      }
+      req.url = url.pathname + url.search;
     }
     await matched.fn(req, res, matched.params);
     if (!timedOut) logRequest(req.method, path, 200, Date.now() - startTime);

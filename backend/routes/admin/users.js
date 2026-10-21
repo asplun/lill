@@ -1,5 +1,6 @@
 /** User management routes. */
 import { boundedPagination, inputError } from '../../lib/http.js';
+import { withTransaction } from './shared.js';
 
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, validators, uid, hashPwd, authenticate, triggerHook } = ctx;
@@ -18,8 +19,12 @@ export function register(router, ctx, helpers) {
     await authenticate(req);
     const url = new URL(req.url, `http://${req.headers.host}`);
     const { page, pageSize, offset } = boundedPagination(url.searchParams, 20, 100);
-    const total = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
-    const items = db.prepare('SELECT id, username, nickname, email, avatar, role, status, created_at, (SELECT COUNT(*) FROM posts WHERE author_id = users.id) as post_count FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?').all(pageSize, offset);
+    const rawKeyword = (url.searchParams.get('keyword') || '').trim();
+    const keyword = rawKeyword.length >= 1 && rawKeyword.length <= 100 ? rawKeyword : '';
+    const where = keyword ? ' WHERE username LIKE ? OR nickname LIKE ? OR email LIKE ?' : '';
+    const params = keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : [];
+    const total = db.prepare(`SELECT COUNT(*) as c FROM users${where}`).get(...params).c;
+    const items = db.prepare(`SELECT id, username, nickname, email, avatar, role, status, created_at, (SELECT COUNT(*) FROM posts WHERE author_id = users.id) as post_count FROM users${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
     json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
   });
 
@@ -111,5 +116,55 @@ export function register(router, ctx, helpers) {
     db.prepare('DELETE FROM users WHERE id = ?').run(params.id);
     logAction(auth.id, 'user.delete', '删除用户: ' + current.username, req);
     json(res, { id: params.id });
+  });
+
+  route('POST', '/api/v1/admin/users/batch', async (req, res) => {
+    const auth = await authenticate(req);
+    if (auth.role !== 'admin') return error(res, '权限不足', 403);
+    const body = await parseBody(req);
+    const action = body.action;
+    if (!['delete', 'activate', 'ban'].includes(action)) return error(res, '无效操作', 400);
+    const rawIds = Array.isArray(body.ids) ? body.ids : [];
+    const ids = [...new Set(rawIds.map(value => String(value == null ? '' : value).trim()).filter(Boolean))].slice(0, 100);
+    if (!ids.length) return error(res, '请选择用户', 400);
+    const skipped = [];
+    const targets = [];
+    for (const id of ids) {
+      const target = db.prepare('SELECT id, username, role, status FROM users WHERE id = ?').get(id);
+      if (!target) skipped.push({ id, reason: '用户不存在' });
+      else targets.push(target);
+    }
+    let deleted = 0;
+    let updated = 0;
+    const runBatch = () => {
+      for (const target of targets) {
+        if (action === 'delete') {
+          if (target.id === auth.id) { skipped.push({ id: target.id, reason: '不能删除自己' }); continue; }
+          if (target.role === 'admin' && target.status === 'active' && activeAdminCount() <= 1) {
+            skipped.push({ id: target.id, reason: '至少需要保留一个有效管理员' }); continue;
+          }
+          if (db.prepare('SELECT id FROM posts WHERE author_id = ? LIMIT 1').get(target.id)) {
+            skipped.push({ id: target.id, reason: '该用户仍有文章' }); continue;
+          }
+          db.prepare('DELETE FROM users WHERE id = ?').run(target.id);
+          deleted += 1;
+          continue;
+        }
+        const nextStatus = action === 'ban' ? 'banned' : 'active';
+        if (nextStatus === 'banned' && target.id === auth.id) {
+          skipped.push({ id: target.id, reason: '不能禁用自己' }); continue;
+        }
+        if (target.status === nextStatus) { skipped.push({ id: target.id, reason: '状态未变化' }); continue; }
+        if (nextStatus === 'banned' && target.role === 'admin' && target.status === 'active' && activeAdminCount() <= 1) {
+          skipped.push({ id: target.id, reason: '至少需要保留一个有效管理员' }); continue;
+        }
+        db.prepare("UPDATE users SET status = ?, updated_at = datetime('now') WHERE id = ?").run(nextStatus, target.id);
+        updated += 1;
+      }
+    };
+    withTransaction(db, runBatch);
+    const label = action === 'delete' ? '删除' : action === 'ban' ? '禁用' : '启用';
+    logAction(auth.id, 'user.batch-' + action, '批量' + label + '用户: ' + ids.length + ' 个', req);
+    json(res, { action, deleted, updated, skipped });
   });
 }

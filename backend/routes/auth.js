@@ -2,13 +2,15 @@
  * lill 认证 API（登录 / 当前用户 / 资料）
  * 由 server.js 调用 register(router, ctx) 装配
  */
+import { clientIp } from '../lib/http.js';
+
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, hashPwd, verifyPwd, signJWT, authenticate, loginLimiter, generateCSRFToken, triggerHook } = ctx;
   const route = router.route;
 
 route('POST', '/api/v1/auth/login', async (req, res) => {
   const body = await parseBody(req);
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  const ip = clientIp(req) || 'unknown';
   const key = 'login:' + ip;
 
   // 达到失败上限则锁定
@@ -32,8 +34,8 @@ route('POST', '/api/v1/auth/login', async (req, res) => {
 
   loginLimiter.reset(key);
   const rememberMe = body?.rememberMe === true;
-  const token = signJWT({ id: user.id, username: user.username, role: user.role }, rememberMe ? '30d' : '2h');
   const csrfToken = generateCSRFToken();
+  const token = signJWT({ id: user.id, username: user.username, role: user.role, csrf: csrfToken }, rememberMe ? '30d' : '2h');
   try { if (typeof triggerHook === 'function') triggerHook('user.login', { id: user.id, username: user.username, role: user.role, ip }); } catch {}
   json(res, { token, csrfToken, user: { id: user.id, username: user.username, nickname: user.nickname, email: user.email, role: user.role } });
 });
@@ -74,8 +76,8 @@ route('POST', '/api/v1/auth/register', async (req, res) => {
   const id = uid();
   db.prepare('INSERT INTO users (id, username, email, password, nickname, role) VALUES (?, ?, ?, ?, ?, ?)')
     .run(id, body.username, body.email, hashPwd(body.password), body.username, 'subscriber');
-  const token = signJWT({ id, username: body.username, role: 'subscriber' });
   const csrfToken = generateCSRFToken();
+  const token = signJWT({ id, username: body.username, role: 'subscriber', csrf: csrfToken });
   json(res, { token, csrfToken, user: { id, username: body.username, nickname: body.username, email: body.email, role: 'subscriber' } }, 201);
 });
 

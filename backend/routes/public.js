@@ -8,9 +8,9 @@ import { scanThemeAssets, scanPageTemplates } from '../lib/themes.js';
 import { orderBy, normQQ, shapeComment } from '../lib/comment-util.js';
 import { clientIp, boundedPagination } from '../lib/http.js';
 import { listNavigationItems } from '../lib/navigation.js';
-import { PUBLIC_POST_WHERE, publicOptions } from '../lib/public-content.js';
+import { PUBLIC_POST_WHERE, PUBLISHED_POST_WHERE, publicOptions, isUnlocked, unlockToken } from '../lib/public-content.js';
 import { readingPolicy, postsOrderSql, excerptFor, commentPagination } from '../lib/reading-policy.js';
-import { readPermalinkOptions, permalinkPath, resolvePermalink } from '../lib/permalinks.js';
+import { pagePath, readPermalinkOptions, permalinkPath, resolvePermalink } from '../lib/permalinks.js';
 import { readThemeEditorFields } from '../lib/theme-editor-fields.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
@@ -18,12 +18,12 @@ const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'fr
 // 访客只能看到已发布、公开且未设置密码的内容。密码文章暂不提供访客验证流程。
 const PUBLIC_POST_FIELDS = `
   p.id, p.title, p.slug, p.content, p.html_content, p.excerpt, p.cover_image,
-  p.type, p.status, p.visibility, p.comment_allowed, p.view_count, p.comment_count,
+  p.type, p.status, p.visibility, p.comment_allowed, p.allow_ping, p.allow_feed, p.view_count, p.comment_count,
   p.sticky, p."order", p.likes, p.published_at, p.author_id, p.category_id,
   p.template, p.fields, p.created_at, p.updated_at`;
 
 export function register(router, ctx) {
-  const { db, json, error, parseBody, validators, uid, authenticate, readThemeManifest, triggerHook, themeRuntime, runActiveThemeHook } = ctx;
+  const { db, json, error, parseBody, validators, uid, authenticate, verifyPwd, readThemeManifest, triggerHook, themeRuntime, runActiveThemeHook } = ctx;
   const { security, mail } = ctx;
   const route = router.route;
 
@@ -110,8 +110,15 @@ function siteBaseUrl() {
 function getPermalinkUrl(type, post, category, tag, knownSiteUrl = null, knownOptions = null) {
   const siteUrl = knownSiteUrl === null ? siteBaseUrl() : knownSiteUrl;
   const item = type === 'category' ? category : type === 'tag' ? tag : post;
+  const options = knownOptions || readPermalinkOptions(db);
   let path;
-  try { path = permalinkPath(type, item, category, knownOptions || readPermalinkOptions(db)); }
+  try {
+    // 独立页面有父级时，公开路径由目录层级推导，其余类型仍走永久链接模板。
+    const page = type === 'page' && item?.id
+      ? db.prepare('SELECT id, slug, parent_id, published_at, created_at FROM posts WHERE id = ?').get(item.id)
+      : null;
+    path = page ? pagePath(db, page, options) : permalinkPath(type, item, category, options);
+  }
   catch { path = '/' + type + '/' + encodeURIComponent(item.slug); } // Legacy slug routes remain readable even with invalid saved rules.
   return { url: siteUrl + path, route: path };
 }
@@ -193,8 +200,10 @@ function listPosts(o) {
   const schema = editorFieldSchema(themeId, typeFilter);
   let where = `WHERE ${PUBLIC_POST_WHERE} AND p.type = ?`;
   const params = [typeFilter];
-  if (o.categorySlug) { where += ' AND p.category_id = (SELECT id FROM categories WHERE slug = ?)'; params.push(o.categorySlug); }
-  if (o.categoryId) { where += ' AND p.category_id = ?'; params.push(o.categoryId); }
+  // 多分类：分类页和筛选都按关系表匹配，命中任意一个关联分类即可。
+  // 同时兼容只写了 posts.category_id 的旧数据（关系表回填之前的行或直接 SQL 写入的夹具）。
+  if (o.categorySlug) { where += ' AND (p.category_id = (SELECT id FROM categories WHERE slug = ?) OR p.id IN (SELECT pc.post_id FROM post_categories pc JOIN categories c ON c.id = pc.category_id WHERE c.slug = ?))'; params.push(o.categorySlug, o.categorySlug); }
+  if (o.categoryId) { where += ' AND (p.category_id = ? OR p.id IN (SELECT post_id FROM post_categories WHERE category_id = ?))'; params.push(o.categoryId, o.categoryId); }
   if (o.tag) { where += ' AND p.id IN (SELECT post_id FROM post_tags WHERE tag_id = (SELECT id FROM tags WHERE slug = ?))'; params.push(o.tag); }
   if (o.keyword) { where += ' AND (p.title LIKE ? OR p.excerpt LIKE ? OR p.content LIKE ?)'; params.push(`%${o.keyword}%`, `%${o.keyword}%`, `%${o.keyword}%`); }
   if (o.month) { where += " AND strftime('%Y-%m', p.published_at) = ?"; params.push(o.month); }
@@ -250,7 +259,7 @@ function listCategories() {
   const baseUrl = siteBaseUrl();
   const permalinkOptions = readPermalinkOptions(db);
   const cats = db.prepare(`SELECT c.*,
-      (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count
+      (SELECT COUNT(DISTINCT p.id) FROM posts p WHERE (p.category_id = c.id OR p.id IN (SELECT post_id FROM post_categories WHERE category_id = c.id)) AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count
     FROM categories c ORDER BY c.sort_order, c.name`).all();
   cats.forEach(c => { const r = getPermalinkUrl('category', null, c, null, baseUrl, permalinkOptions); c.permalink = r.url; c.route = r.route; c.url = r.route; });
   return cats;
@@ -294,16 +303,37 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   let slug = url.searchParams.get('slug') || '';
   const frontPath = url.searchParams.get('path') || '';
   if (frontPath) {
-    const builtin = { '/': 'index', '/archive': 'archive', '/archive/': 'archive', '/search': 'search', '/search/': 'search' }[frontPath];
+    const pathOptions = readPermalinkOptions(db);
+    const archivePath = pathOptions.archive_path || '/archive';
+    const searchPath = pathOptions.search_path || '/search';
+    const builtin = new Map([
+      ['/', 'index'], [archivePath, 'archive'], [archivePath.replace(/\/$/, '') + '/', 'archive'],
+      [searchPath, 'search'], [searchPath.replace(/\/$/, '') + '/', 'search'],
+      ['/archive', 'archive'], ['/archive/', 'archive'], ['/search', 'search'], ['/search/', 'search'],
+    ]).get(frontPath);
     if (builtin) { type = builtin; slug = ''; }
     else {
-      let resolved = resolvePermalink(db, frontPath);
+      const legacyHtmlPage = frontPath.match(/^\/(?:index\.php\/)?([\w-]+)\.html$/);
+      let resolved = legacyHtmlPage
+        ? { type: 'page', slug: legacyHtmlPage[1] }
+        : resolvePermalink(db, frontPath);
       // A proxy may rewrite a one-segment page alias to the page shell.
       if (!resolved && type === 'page' && /^\/[^/]+\/?$/.test(frontPath)) {
-        resolved = resolvePermalink(db, '/page/' + frontPath.split('/')[1]);
+        const seg = frontPath.split('/')[1];
+        resolved = resolvePermalink(db, '/page/' + seg);
+        if (!resolved) {
+          try {
+            const pattern = readPermalinkOptions(db).page_pattern || '';
+            if (pattern.includes('{slug}')) resolved = resolvePermalink(db, pattern.replace(/\{slug\}/g, seg));
+          } catch { /* 配置异常时回退到旧路径 */ }
+        }
       }
-      if (!resolved) return error(res, '内容不存在', 404);
-      ({ type, slug } = resolved);
+      if (!resolved) {
+        type = '404';
+        slug = '';
+      } else {
+        ({ type, slug } = resolved);
+      }
     }
     url.searchParams.set('type', type);
     url.searchParams.set('slug', slug);
@@ -311,6 +341,17 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
   const page = parseInt(url.searchParams.get('page')) || 1;
   const q = url.searchParams.get('q') || '';
   const month = url.searchParams.get('month') || '';
+
+  /* 归档独立页：原版 Typecho 把「归档」存成一条 page 记录（slug=archives，模板
+     page-articles），输出的却是 archive.php 的归档视图。这里把这条记录并回归档分支，
+     与 /archive 共用同一套数据与模板（页头的 badge/h1/rule、统计柱、时间线都来自
+     archive.html）。
+     判据里带 `!frontPath` 是为了兼容 server.js 的 legacy 重写：它把 /archives.html
+     转成 type=page&slug=archives 并删掉 path；/page/archives 这类真·页面路由因此
+     仍按页面渲染，不受影响。 */
+  const archivesHtmlPath = /^\/(?:index\.php\/)?archives\.html$/i.test(frontPath || '');
+  const isArchivesPage = type === 'page' && slug === 'archives' && (!frontPath || archivesHtmlPath);
+  if (isArchivesPage) { type = 'archive'; slug = ''; }
 
   const options = buildThemeOptions();
   const cfg = options.theme_config || {};
@@ -353,6 +394,14 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
 
   const pageInfo = { type, slug, url: frontPath || ('/' + (type === 'index' ? '' : type + '/')), title: '', query: { page, q, month } };
   let data = {};
+  // 归档独立页（原版 /archives.html）标记：模板据此把页头内边距还原成基准的 10px。
+  data.legacyArchives = isArchivesPage;
+  if (isArchivesPage) {
+    // 沿用原版 URL（/archives.html），主题据此还原基准的页头内边距（见 style.css）；
+    // template 落成 'archive'：页面记录里的 page-articles 不再生效，前台按归档渲染。
+    pageInfo.url = frontPath || '/archives.html';
+    pageInfo.template = 'archive';
+  }
   try {
     data.commentTotal = db.prepare(`SELECT COUNT(*) as c FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.status = 'approved' AND ${PUBLIC_POST_WHERE}`).get().c;
     data.postTotal = db.prepare(`SELECT COUNT(*) as c FROM posts p WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE}`).get().c;
@@ -362,65 +411,88 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
 
   if (type === 'post' || type === 'page') {
     const post = db.prepare(`
-      SELECT ${PUBLIC_POST_FIELDS},
+      SELECT ${PUBLIC_POST_FIELDS}, p.password,
              u.nickname as author_nickname, u.avatar as author_avatar,
              c.name as category_name, c.slug as category_slug
       FROM posts p
       LEFT JOIN users u ON p.author_id = u.id
       LEFT JOIN categories c ON p.category_id = c.id
-      WHERE p.slug = ? AND p.type = ? AND ${PUBLIC_POST_WHERE}
+      WHERE p.slug = ? AND p.type = ? AND ${PUBLISHED_POST_WHERE}
     `).get(slug, type);
-    if (!post) return error(res, '内容不存在', 404);
-    projectPublicThemeFields(post, activeThemeId);
-    post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
-    adjacentPosts(post);
-    decoratePost(post, null, readPermalinkOptions(db));
-    post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
+    // 私密内容沿用详情页口径：文章对作者与管理员/编辑可见，其余身份按不存在处理；
+    // 页面保持原有公开边界（私密页面任何身份都不下发）。
+    let privateHidden = false;
+    if (post && post.visibility === 'private') {
+      const viewer = await optionalUser(req);
+      const allowed = !!viewer && (viewer.id === post.author_id || ['admin', 'editor'].includes(viewer.role));
+      privateHidden = type === 'page' || !allowed;
+    }
+    if (!post || privateHidden) {
+      if (!frontPath) return error(res, '内容不存在', 404);
+      type = '404';
+      slug = '';
+      pageInfo.type = '404';
+      pageInfo.slug = '';
+      pageInfo.title = '页面没找到';
+      pageInfo.url = frontPath || '/404';
+      data.notFound = true;
+    } else if (post.password && !isUnlocked(req, post)) {
+      // 密码文章未解锁：只下发渲染解锁表单所需的最小视图模型，正文/摘要/字段一律不下发。
+      pageInfo.title = post.title;
+      data.post = { id: post.id, title: post.title, slug: post.slug, passwordRequired: true };
+    } else {
+      delete post.password;
+      projectPublicThemeFields(post, activeThemeId);
+      post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
+      adjacentPosts(post);
+      decoratePost(post, null, readPermalinkOptions(db));
+      post.comment_count = db.prepare(`SELECT COUNT(*) as c FROM comments WHERE post_id = ? AND status = 'approved'`).get(post.id).c;
     /* 阅读时长：原版 post.php 的元信息行显示「N 分钟」而不是阅读量。
        按正文估算：中日韩字符按 1 字计，拉丁词按 1.5 计，300 字/分钟。 */
-    post.readTime = (function () {
-      try {
-        const text = String(post.html_content || '')
-          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-          .replace(/<[^>]*>/g, ' ');
-        const reCjk = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g;
-        const cjk = (text.match(reCjk) || []).length;
-        const latin = (text.replace(reCjk, ' ').match(/[A-Za-z0-9_'-]+/g) || []).length;
-        return Math.max(1, Math.round((cjk + latin * 1.5) / 300));
-      } catch (e) { return 1; }
-    })();
-    pageInfo.title = post.title;
-    data.post = post;
+      post.readTime = (function () {
+        try {
+          const text = String(post.html_content || '')
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]*>/g, ' ');
+          const reCjk = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g;
+          const cjk = (text.match(reCjk) || []).length;
+          const latin = (text.replace(reCjk, ' ').match(/[A-Za-z0-9_'-]+/g) || []).length;
+          return Math.max(1, Math.round((cjk + latin * 1.5) / 300));
+        } catch (e) { return 1; }
+      })();
+      pageInfo.title = post.title;
+      data.post = post;
     /* 正文输出钩子：主题短代码（如 {hide} 回复可见）按本次访客身份在输出时转换，
        而不是保存时固化。core 不关心具体短代码语法。 */
-    {
-      const viewer = await viewerContext(req, post);
-      const out = await runThemeHook('transformContent', post.html_content, { req, post, viewer, db });
-      if (typeof out === 'string') post.html_content = out;
-    }
+      {
+        const viewer = await viewerContext(req, post);
+        const out = await runThemeHook('transformContent', post.html_content, { req, post, viewer, db });
+        if (typeof out === 'string') post.html_content = out;
+      }
     // 独立页面自定义模板（对标 Typecho 的 page-xxx.php）
     // 页面记录里的 template 字段保存模板 key（如 page-links），仅当主题里确实存在该文件时才生效
-    if (type === 'page' && post.template) {
-      const tpl = pageTemplatesList.find(t => t.key === post.template);
-      if (tpl) { data.pageTemplate = tpl.key; pageInfo.template = tpl.key; pageInfo.templateName = tpl.name; }
+      if (type === 'page' && post.template) {
+        const tpl = pageTemplatesList.find(t => t.key === post.template);
+        if (tpl) { data.pageTemplate = tpl.key; pageInfo.template = tpl.key; pageInfo.templateName = tpl.name; }
       // 主题扩展只接收 manifest 已声明且实际存在的模板 key。
-      if (tpl) await runThemeHook('pageTemplate', tpl.key, { req, url, db, data, pageView, post });
+        if (tpl) await runThemeHook('pageTemplate', tpl.key, { req, url, db, data, pageView, post });
     }
     /* 原版 page.php:37 是 `if ($this->allow('comment')) $this->need('comments.php');`
        —— 独立页面同样渲染评论区（主站 /index.php/messages.html 实测带
        <div class="md-card comments-section">，首页留言链接直指 #comment-308）。
        此前只判 type==='post'，使所有 type==='page' 的页面评论区整体不渲染。 */
-    if (type === 'post' || type === 'page') {
-      const comments = await readComments(req, post, {
-        page: url.searchParams.get('commentPage'), sort: url.searchParams.get('commentSort'),
-      });
-      data.comments = comments.items;
-      data.commentFlat = comments.commentFlat;
-      data.commentSort = comments.sort;
-      data.commentDisplay = comments.display;
-      data.commentMeta = comments.meta;
-      data.commentAllowed = commentsAllowed(post);
+      if (type === 'post' || type === 'page') {
+        const comments = await readComments(req, post, {
+          page: url.searchParams.get('commentPage'), sort: url.searchParams.get('commentSort'),
+        });
+        data.comments = comments.items;
+        data.commentFlat = comments.commentFlat;
+        data.commentSort = comments.sort;
+        data.commentDisplay = comments.display;
+        data.commentMeta = comments.meta;
+        data.commentAllowed = commentsAllowed(post);
+      }
     }
   } else if (type === 'archive') {
     const archive = listArchivePosts(month);
@@ -475,16 +547,24 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     pageInfo.title = month ? '归档：' + month : '归档';
   } else if (type === 'category') {
     const cat = cats.find(c => c.slug === slug) || null;
-    if (!cat) return error(res, '分类不存在', 404);
-    const d = listPosts({ categorySlug: slug, page, pageSize: perPage });
-    data.category = cat; data.posts = d.items; data.pagination = d.meta;
-    pageInfo.title = '分类 ' + cat.name;
+    if (!cat) {
+      if (!frontPath) return error(res, '分类不存在', 404);
+      type = '404';
+    } else {
+      const d = listPosts({ categorySlug: slug, page, pageSize: perPage });
+      data.category = cat; data.posts = d.items; data.pagination = d.meta;
+      pageInfo.title = '分类 ' + cat.name;
+    }
   } else if (type === 'tag') {
     const tag = listTags().find(t => t.slug === slug) || null;
-    if (!tag) return error(res, '标签不存在', 404);
-    const d = listPosts({ tag: slug, page, pageSize: perPage });
-    data.tag = tag; data.posts = d.items; data.pagination = d.meta;
-    pageInfo.title = '标签 ' + tag.name;
+    if (!tag) {
+      if (!frontPath) return error(res, '标签不存在', 404);
+      type = '404';
+    } else {
+      const d = listPosts({ tag: slug, page, pageSize: perPage });
+      data.tag = tag; data.posts = d.items; data.pagination = d.meta;
+      pageInfo.title = '标签 ' + tag.name;
+    }
   } else if (type === 'search') {
     const d = listPosts({ keyword: q, page, pageSize: perPage });
     data.keyword = q; data.posts = d.items; data.pagination = d.meta;
@@ -496,6 +576,14 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     pageInfo.title = options.site_name || '首页';
   } else {
     pageInfo.title = '页面没找到';
+    data.notFound = true;
+  }
+
+  if (type === '404' || pageInfo.type === '404') {
+    pageInfo.type = '404';
+    pageInfo.slug = '';
+    pageInfo.title = '页面没找到';
+    pageInfo.url = frontPath || '/404';
     data.notFound = true;
   }
 
@@ -518,7 +606,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     ? (extensionResult.extension && typeof extensionResult.extension === 'object' ? extensionResult.extension : extensionResult)
     : {};
   coreView.theme.extension = extension;
-  json(res, coreView);
+  json(res, coreView, coreView.page.type === '404' ? 404 : 200);
 });
 
 
@@ -571,19 +659,37 @@ route('GET', '/api/v1/comments/recent', async (req, res) => {
 
 // 文章详情（含标签、上下篇导航）
 route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
-  // 安全隔离:只返回已发布、公开且未设置密码的文章
+  // 详情只按发布状态取文；私密与密码可见性在下面单独判定。
   const post = db.prepare(`
-    SELECT ${PUBLIC_POST_FIELDS},
+    SELECT ${PUBLIC_POST_FIELDS}, p.password,
            u.nickname as author_nickname, u.avatar as author_avatar,
            c.name as category_name, c.slug as category_slug
     FROM posts p
     LEFT JOIN users u ON p.author_id = u.id
     LEFT JOIN categories c ON p.category_id = c.id
-    WHERE p.slug = ? AND p.type = 'post' AND ${PUBLIC_POST_WHERE}
+    WHERE p.slug = ? AND p.type = 'post' AND ${PUBLISHED_POST_WHERE}
   `).get(params.slug);
   if (!post) return error(res, '文章不存在', 404);
+  // 私密文章仅作者本人与管理员/编辑可见，其余一律按不存在处理，避免泄漏标题与正文。
+  if (post.visibility === 'private') {
+    const viewer = await optionalUser(req);
+    if (!viewer || (viewer.id !== post.author_id && !['admin', 'editor'].includes(viewer.role))) {
+      return error(res, '文章不存在', 404);
+    }
+  }
+  // 密码文章在解锁前返回 403 与专用错误码，前端据此弹出密码框。
+  // 兼容旧数据：visibility 仍是 public 但 password 非空的文章同样受保护，避免历史受限内容被直接公开。
+  if (post.password && !isUnlocked(req, post)) {
+    res.statusCode = 403;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.end(JSON.stringify({ code: 'post_password_required', postId: post.id, message: '此文章受密码保护' }));
+  }
+  delete post.password;
   projectPublicThemeFields(post);
   post.tags = db.prepare('SELECT t.name, t.slug FROM tags t JOIN post_tags pt ON pt.tag_id = t.id WHERE pt.post_id = ?').all(post.id);
+  post.categories = db.prepare('SELECT c.id, c.name, c.slug FROM categories c JOIN post_categories pc ON pc.category_id = c.id WHERE pc.post_id = ? ORDER BY c.sort_order, c.name').all(post.id)
+    .map(item => { const link = getPermalinkUrl('category', null, item, null, siteBaseUrl(), readPermalinkOptions(db)); return { ...item, url: link.url, route: link.route }; });
   adjacentPosts(post);
   db.prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?').run(post.id);
   const postUrlResult = getPermalinkUrl('post', post, post.category_id ? { slug: post.category_slug } : null); post.url = postUrlResult.url; post.route = postUrlResult.route;
@@ -597,6 +703,23 @@ route('GET', '/api/v1/posts/:slug', async (req, res, params) => {
   json(res, post);
 });
 
+// 密码文章解锁：验证通过后写 7 天有效的 HttpOnly cookie，值只含密码哈希派生的 token。
+route('POST', '/api/v1/posts/:slug/unlock', async (req, res, params) => {
+  const post = db.prepare(`
+    SELECT p.id, p.password, p.visibility
+    FROM posts p
+    WHERE p.slug = ? AND p.type = 'post' AND ${PUBLISHED_POST_WHERE}
+  `).get(params.slug);
+  // 历史数据兼容：早期版本可能把密码存在 visibility='public' 的行上，一律以「有密码」为准。
+  if (!post || !post.password) return error(res, '文章不存在', 404);
+  const body = await parseBody(req);
+  if (!verifyPwd(body.password, post.password)) return error(res, '密码错误', 400);
+  const cookie = 'lill_post_' + post.id + '=' + unlockToken(post) + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800';
+  const previous = res.getHeader('Set-Cookie');
+  res.setHeader('Set-Cookie', previous ? [].concat(previous, cookie) : cookie);
+  json(res, { ok: true });
+});
+
 // RSS Feed is a core-only serialization of published posts; optional theme providers are not involved.
 route('GET', '/api/v1/feed', async (req, res) => {
   const getOpt = (k, d) => { const r = db.prepare('SELECT value FROM options WHERE key = ?').get(k); return (r && r.value) || d; };
@@ -604,7 +727,8 @@ route('GET', '/api/v1/feed', async (req, res) => {
   const siteDesc = getOpt('site_description', '');
   const siteUrl = getOpt('site_url', '').replace(/\/$/, '');
   const posts = db.prepare(`SELECT p.id, p.title, p.slug, p.excerpt, p.published_at, c.slug AS category_slug
-    FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE} ORDER BY p.published_at DESC LIMIT 20`).all();
+    FROM posts p LEFT JOIN categories c ON c.id = p.category_id WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE}
+    AND (p.allow_feed IS NULL OR p.allow_feed = 1) ORDER BY p.published_at DESC LIMIT 20`).all();
   const permalinkOptions = readPermalinkOptions(db);
   const x = value => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel>\n';
@@ -622,9 +746,50 @@ route('GET', '/api/v1/feed', async (req, res) => {
   res.end(xml);
 });
 
+// Sitemap and robots.txt reuse the same permalink settings as public pages.
+route('GET', '/api/v1/sitemap.xml', async (req, res) => {
+  const x = value => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const baseUrl = siteBaseUrl();
+  const permalinkOptions = readPermalinkOptions(db);
+  const lastmod = value => {
+    if (!value) return '';
+    const text = String(value);
+    const date = /^\d{4}-\d\d-\d\d[ T]\d\d:\d\d(?::\d\d(?:\.\d+)?)?$/.test(text)
+      ? new Date(text.replace(' ', 'T') + 'Z')
+      : new Date(text);
+    return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+  };
+  const entries = [];
+  const add = (type, item, category, tag) => {
+    const result = getPermalinkUrl(type, item, category, tag, baseUrl, permalinkOptions);
+    const modified = lastmod(item && (item.published_at || item.created_at));
+    entries.push('<url><loc>' + x(result.url) + '</loc>' + (modified ? '<lastmod>' + modified + '</lastmod>' : '') + '</url>');
+  };
+  const posts = db.prepare(`SELECT p.id, p.slug, p.published_at, p.created_at, p.category_id, c.slug AS category_slug
+    FROM posts p LEFT JOIN categories c ON c.id = p.category_id
+    WHERE p.type = 'post' AND ${PUBLIC_POST_WHERE}
+    AND (p.allow_feed IS NULL OR p.allow_feed = 1) ORDER BY p.published_at DESC`).all();
+  for (const post of posts) add('post', post, post.category_id ? { slug: post.category_slug } : null, null);
+  const pages = db.prepare(`SELECT p.id, p.slug, p.published_at, p.created_at
+    FROM posts p WHERE p.type = 'page' AND ${PUBLIC_POST_WHERE} ORDER BY p."order" ASC, p.created_at ASC`).all();
+  for (const page of pages) add('page', page, null, null);
+  for (const category of db.prepare('SELECT * FROM categories ORDER BY sort_order, name').all()) add('category', null, category, null);
+  for (const tag of db.prepare('SELECT * FROM tags ORDER BY name').all()) add('tag', null, null, tag);
+  const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    + entries.join('\n') + '\n</urlset>';
+  res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
+  res.end(xml);
+});
+
+route('GET', '/robots.txt', async (req, res) => {
+  const text = 'User-agent: *\nAllow: /\n\nSitemap: ' + siteBaseUrl() + '/sitemap.xml\n';
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
+  res.end(text);
+});
+
 route('GET', '/api/v1/categories', async (req, res) => {
   const baseUrl = siteBaseUrl();
-  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count FROM categories c ORDER BY sort_order`).all();
+  const cats = db.prepare(`SELECT c.*, (SELECT COUNT(DISTINCT p.id) FROM posts p WHERE (p.category_id = c.id OR p.id IN (SELECT post_id FROM post_categories WHERE category_id = c.id)) AND p.type = 'post' AND ${PUBLIC_POST_WHERE}) as post_count FROM categories c ORDER BY sort_order`).all();
   cats.forEach(c => { const r = getPermalinkUrl('category', null, c, null, baseUrl); c.url = r.url; c.route = r.route; });
   json(res, cats);
 });

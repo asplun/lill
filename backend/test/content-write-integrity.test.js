@@ -190,6 +190,40 @@ test('partial and legacy updates preserve generic fields and every theme namespa
   });
 });
 
+test('generic field edits keep theme and plugin namespaces and reject unsafe keys', async () => {
+  const post = data(await create(), 201);
+  db.prepare('UPDATE posts SET fields = ? WHERE id = ?').run(JSON.stringify({
+    kept: 'old value',
+    _lillThemeFields: { 'editor-fixture': { subtitle: 'theme value' } },
+    _lillPluginFields: { 'credit-tools': { author: '摄影师', enabled: false } },
+  }), post.id);
+
+  data(await update(post.id, { fields: { kept: 'new value', rating: 5, featured: true } }));
+  const stored = JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields);
+  assert.deepEqual(stored, {
+    kept: 'new value',
+    rating: 5,
+    featured: true,
+    _lillThemeFields: { 'editor-fixture': { subtitle: 'theme value' } },
+    _lillPluginFields: { 'credit-tools': { author: '摄影师', enabled: false } },
+  });
+
+  const invalid = [
+    { 'bad key': 'x' },
+    { '中文': 'x' },
+    { nested: { a: 1 } },
+    { list: ['a'] },
+    JSON.parse('{"__proto__":"x"}'),
+    Object.fromEntries(Array.from({ length: 51 }, (_, index) => ['k' + index, 'v'])),
+  ];
+  for (const fields of invalid) {
+    const response = await update(post.id, { fields });
+    assert.equal(response.status, 400, JSON.stringify(response.payload));
+    assert.match(response.payload.message, /自定义字段|最多 50/);
+    assert.deepEqual(JSON.parse(db.prepare('SELECT fields FROM posts WHERE id = ?').get(post.id).fields), stored);
+  }
+});
+
 test('switching active themes edits only that theme namespace and preserves values when switching back', async () => {
   const post = data(await create({ themeFields: { subtitle: 'fixture value' } }), 201);
   data(await write('POST', '/api/v1/admin/themes/editor-other/activate', {}));
@@ -363,11 +397,12 @@ test('a duplicate post slug returns 409 without adding a version or changing tag
 });
 
 for (const body of [
-  { visibility: 'private' }, { visibility: 'password' }, { visibility: 'hidden' },
-  { visibility: '' }, { visibility: null }, { password: 'secret' },
+  { visibility: 'hidden' }, { visibility: '' }, { visibility: null }, { visibility: 'PASSWORD' },
+  { visibility: 'password' }, { visibility: 'password', password: 'abc' },
+  { visibility: 'password', password: 'x'.repeat(101) },
   { password: ' ' }, { password: 123 }, { password: {} },
 ]) {
-  test(`unsupported access settings ${JSON.stringify(body)} are explicitly rejected on create and update`, async () => {
+  test(`invalid access settings ${JSON.stringify(body)} are explicitly rejected on create and update`, async () => {
     const post = data(await create({}), 201);
     for (const method of ['POST', 'PUT']) {
       const beforeWrite = snapshot();
@@ -375,11 +410,26 @@ for (const body of [
         ? await create({ status: 'published', ...body })
         : await update(post.id, { status: 'published', content: 'Must not become public', ...body });
       assert.equal(response.status, 400, JSON.stringify(response.payload));
-      assert.match(response.payload.message, /不支持|尚未支持/);
+      assert.match(response.payload.message, /可见性无效|密码保护需要/);
       assert.deepEqual(snapshot(), beforeWrite);
     }
   });
 }
+
+test('private and password visibility are accepted and passwords are stored hashed', async () => {
+  const privatePost = data(await create({ visibility: 'private', status: 'published' }), 201);
+  assert.equal(privatePost.visibility, 'private');
+  assert.ok(privatePost.password === null || privatePost.password === '');
+  const passwordPost = data(await create({ visibility: 'password', password: 'open-sesame-123', status: 'published' }), 201);
+  assert.equal(passwordPost.visibility, 'password');
+  assert.match(passwordPost.password, /^[0-9a-f]{32}:[0-9a-f]{128}$/);
+  assert.notEqual(passwordPost.password, 'open-sesame-123');
+  const updated = data(await update(passwordPost.id, { visibility: 'public' }), 200);
+  assert.equal(updated.visibility, 'public');
+  assert.ok(updated.password === null || updated.password === '');
+  const restored = data(await update(passwordPost.id, { visibility: 'password', password: 'another-pass-456' }), 200);
+  assert.notEqual(restored.password, 'another-pass-456');
+});
 
 test('explicit public visibility and empty passwords are compatible with ordinary writes', async () => {
   for (const password of ['', null]) {

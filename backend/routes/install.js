@@ -6,9 +6,13 @@
  * 设计目标：对标 Typecho / WordPress 的首次安装体验
  * 安装完成后创建：管理员账号、站点信息、默认分类、默认主题、Hello World 文章
  */
-import { accessSync, constants, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { rollbackPluginActivation } from '../lib/plugin-ext.js';
+import { clientIp } from '../lib/http.js';
+
+const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 export function register(router, ctx) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, hashPwd, signJWT, generateCSRFToken, checkRateLimit, PLUGINS_DIR, ensureBuiltinPlugin } = ctx;
@@ -37,7 +41,7 @@ export function register(router, ctx) {
     let dataWritable = false;
     let dataDetail = '';
     try {
-      const dir = join(process.cwd(), 'data');
+      const dir = ctx.DB_PATH ? dirname(ctx.DB_PATH) : join(ROOT_DIR, 'data');
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       accessSync(dir, constants.W_OK);
       dataWritable = true;
@@ -59,7 +63,7 @@ export function register(router, ctx) {
   // ── 执行安装 ──
 route('POST', '/api/v1/install', async (req, res) => {
     // 限流：同一 IP 每分钟最多 10 次安装尝试
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+    const ip = clientIp(req) || 'unknown';
     if (!checkRateLimit('install:' + ip, 10, 60 * 1000)) {
       return error(res, '请求过于频繁，请稍后再试', 429);
     }
@@ -122,6 +126,7 @@ route('POST', '/api/v1/install', async (req, res) => {
         comment_moderation: 'true',
         active_theme: 'default',
         permalink: '/archives/{cid}/',
+        page_pattern: '/page/{slug}',
         category_prefix: '/category/{slug}/',
         tag_prefix: '/tag/{slug}/',
       };
@@ -192,12 +197,13 @@ route('POST', '/api/v1/install', async (req, res) => {
     }
 
     // 安装成功即签发登录 token，前端可直接进入后台并处理可选插件警告。
-    const token = signJWT({ id: adminId, username: adminUser, role: 'admin' });
+    const csrfToken = generateCSRFToken();
+    const token = signJWT({ id: adminId, username: adminUser, role: 'admin', csrf: csrfToken });
     console.log('✓ 安装完成 | 管理员:', adminUser, '| 站点:', siteName);
     json(res, {
       installed: true,
       token,
-      csrfToken: generateCSRFToken(),
+      csrfToken,
       user: { id: adminId, username: adminUser, nickname: adminUser, email: adminEmail, role: 'admin' },
       ...(warnings.length ? { warnings } : {}),
     });

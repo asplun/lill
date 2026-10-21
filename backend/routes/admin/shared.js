@@ -62,11 +62,13 @@ export function createAdminHelpers(ctx, router, options = {}) {
     let where = 'WHERE p.type = ?'; const params = [type];
     if (status && status !== 'ALL') { where += ' AND p.status = ?'; params.push(status); }
     if (keyword) { where += ' AND (p.title LIKE ? OR p.content LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`); }
-    if (categoryId) { where += ' AND p.category_id = ?'; params.push(categoryId); }
+    // 后台按分类筛选同样走多分类关系表，能查到非主分类的文章；同时兼容只写 category_id 的旧数据。
+    if (categoryId) { where += ' AND (p.category_id = ? OR p.id IN (SELECT post_id FROM post_categories WHERE category_id = ?))'; params.push(categoryId, categoryId); }
     if (!managesAll(auth)) { where += ' AND p.author_id = ?'; params.push(auth.id); }
     if (auth.role === 'contributor') where += " AND p.status = 'draft'";
     const total = db.prepare(`SELECT COUNT(*) as c FROM posts p ${where}`).get(...params).c;
-    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.status, p.view_count, p.comment_count, p.sticky, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id ${where} ORDER BY p.sticky DESC, p.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
+    const orderBySql = type === 'page' ? 'p."order" ASC, p.created_at ASC' : 'p.sticky DESC, p.created_at DESC';
+    const items = db.prepare(`SELECT p.id, p.title, p.slug, p.type, p.status, p.view_count, p.comment_count, p.sticky, p."order", p.template, p.parent_id, p.created_at, u.username as author_name, c.name as category_name FROM posts p LEFT JOIN users u ON p.author_id = u.id LEFT JOIN categories c ON p.category_id = c.id ${where} ORDER BY ${type === 'page' ? 'p."order" ASC, p.created_at ASC' : 'p.sticky DESC, p.created_at DESC'} LIMIT ? OFFSET ?`).all(...params, pageSize, offset);
     json(res, { items, meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize), hasNext: page * pageSize < total, hasPrev: page > 1 } });
   };
   return { route, managesAll, canManagePost, validatePostWrite, logAction, activeThemeId, normalizePageTemplate, listPostsHandler, contentRoles, editorRoles };

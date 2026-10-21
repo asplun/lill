@@ -12,8 +12,11 @@ const POST = {
 };
 const DEFAULTS = {
   permalink: '/archives/{cid}/',
+  page_pattern: '/page/{slug}',
   category_prefix: '/category/{slug}/',
   tag_prefix: '/tag/{slug}/',
+  archive_path: '/archive',
+  search_path: '/search',
 };
 
 async function moduleUnderTest() {
@@ -37,7 +40,7 @@ function database(t) {
     CREATE TABLE posts (
       id TEXT PRIMARY KEY, type TEXT DEFAULT 'post', title TEXT, slug TEXT UNIQUE,
       status TEXT DEFAULT 'published', visibility TEXT DEFAULT 'public', password TEXT,
-      published_at TEXT, created_at TEXT, category_id TEXT
+      published_at TEXT, created_at TEXT, category_id TEXT, parent_id TEXT
     );
   `);
   db.prepare('INSERT INTO categories VALUES (?, ?, ?)').run(CAT.id, '研发与记录', CAT.slug);
@@ -63,7 +66,7 @@ function setOptions(db, options) {
   }
 }
 
-test('reads only the three permalink options dynamically and uses defaults for missing keys', async t => {
+test('reads only the routing options dynamically and uses defaults for missing keys', async t => {
   const { readPermalinkOptions } = await moduleUnderTest();
   const db = database(t);
   assert.deepEqual(readPermalinkOptions(db), DEFAULTS);
@@ -88,6 +91,24 @@ test('default UUID article paths and page/category/tag paths roundtrip through a
   assert.deepEqual(resolvePermalink(db, '/tag/node%2Bsqlite/'), { type: 'tag', slug: TAG.slug, id: TAG.id });
 });
 
+test('page patterns are configurable and legacy page aliases keep resolving', async t => {
+  const { permalinkPath, resolvePermalink, readPermalinkOptions, validatePermalinkOptions } = await moduleUnderTest();
+  const db = database(t);
+  setOptions(db, { page_pattern: '/{slug}' });
+  const options = readPermalinkOptions(db);
+  assert.equal(options.page_pattern, '/{slug}');
+  assert.equal(permalinkPath('page', { id: 'page-uuid', slug: 'about-us' }, null, options), '/about-us');
+  assert.deepEqual(resolvePermalink(db, '/about-us'), { type: 'page', slug: 'about-us', id: 'page-uuid' });
+  assert.deepEqual(resolvePermalink(db, '/page/about-us'), { type: 'page', slug: 'about-us', id: 'page-uuid' });
+  setOptions(db, { page_pattern: '/{slug}.html' });
+  const htmlOptions = readPermalinkOptions(db);
+  assert.equal(permalinkPath('page', { id: 'page-uuid', slug: 'about-us' }, null, htmlOptions), '/about-us.html');
+  assert.deepEqual(resolvePermalink(db, '/about-us.html'), { type: 'page', slug: 'about-us', id: 'page-uuid' });
+  assert.equal(validatePermalinkOptions({ page_pattern: '/{slug}/{slug}' }), null);
+  assert.equal(typeof validatePermalinkOptions({ page_pattern: '/{cid}/{slug}' }), 'string');
+  assert.equal(typeof validatePermalinkOptions({ page_pattern: '/api/{slug}' }), 'string');
+});
+
 test('configured literal prefixes/suffixes, dates and taxonomy IDs generate the same paths they resolve', async t => {
   const { permalinkPath, resolvePermalink, readPermalinkOptions } = await moduleUnderTest();
   const db = database(t);
@@ -105,6 +126,17 @@ test('configured literal prefixes/suffixes, dates and taxonomy IDs generate the 
   assert.deepEqual(resolvePermalink(db, '/labels/tag-uuid.html'), { type: 'tag', slug: TAG.slug, id: TAG.id });
   assert.equal(permalinkPath('post', POST, CAT, { permalink: '/articles_{cid}' }), '/articles_' + UUID);
   assert.deepEqual(resolvePermalink(db, '/articles_' + UUID, { permalink: '/articles_{cid}' }), { type: 'post', slug: POST.slug, id: UUID });
+});
+
+test('day token uses the published day and validates during generation and resolution', async t => {
+  const { permalinkPath, resolvePermalink, validatePermalinkOptions } = await moduleUnderTest();
+  const db = database(t);
+  const options = { permalink: '/archives/{year}/{month}/{day}/{slug}.html' };
+  assert.equal(validatePermalinkOptions(options), null);
+  const path = '/archives/2020/06/07/' + encodeURIComponent(POST.slug) + '.html';
+  assert.equal(permalinkPath('post', POST, CAT, options), path);
+  assert.deepEqual(resolvePermalink(db, path, options), { type: 'post', slug: POST.slug, id: UUID });
+  assert.equal(resolvePermalink(db, path.replace('/06/07/', '/06/08/'), options), null);
 });
 
 test('lookup verifies the real slug/category/date/type instead of accepting arbitrary alternate paths', async t => {
@@ -156,7 +188,7 @@ test('legacy slug routes remain available after every configured prefix changes'
 test('templates reject external/unsafe paths, reserved prefixes and unsupported or missing identity tokens', async () => {
   const { validatePermalinkOptions, permalinkPath } = await moduleUnderTest();
   assert.equal(validatePermalinkOptions({}), null);
-  for (const key of ['permalink', 'category_prefix', 'tag_prefix']) {
+  for (const key of ['permalink', 'page_pattern', 'category_prefix', 'tag_prefix']) {
     for (const path of [
       '', 'relative/{slug}', 'https://evil.test/{slug}', '//evil.test/{slug}', '/x/{slug}?draft=1', '/x/{slug}#part',
       '/x/../{slug}', '/x/%2e%2e/{slug}', '/x/./{slug}', '/x\\evil/{slug}', '/x//{slug}',

@@ -143,7 +143,8 @@ test('public detail hides draft, private, and password posts', async t => {
   }
 
   const passwordPost = await api.request('GET', '/api/v1/posts/password-post');
-  assert.equal(passwordPost.status, 404);
+  assert.equal(passwordPost.status, 403);
+  assert.equal(passwordPost.payload.code, 'post_password_required');
 });
 
 test('bootstrap excludes private content and secret fields', async t => {

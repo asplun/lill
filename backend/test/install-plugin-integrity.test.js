@@ -28,7 +28,10 @@ function fixture(t) {
   writeFileSync(join(pluginsDir, 'package.json'), '{"type":"module"}');
   const db = new DatabaseSync(':memory:');
   const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-  db.exec(source.match(/db\.exec\(`([\s\S]*?)`\);/)[1]);
+  // server.js 把建表 DDL 抽成了 `const SCHEMA_SQL = `…``（另有动态 db.exec 模板），
+  // 直接匹配第一个 db.exec(`…`) 会抓到 ALTER TABLE ${table}… 这类动态语句；优先取常量，回退旧写法。
+  const schemaSql = source.match(/const SCHEMA_SQL = `([\s\S]*?)`;/);
+  db.exec(schemaSql ? schemaSql[1] : source.match(/db\.exec\(`([\s\S]*?)`\);/)[1]);
   const router = createRouter();
   const ctx = {
     db, router, route: router.route, json, error, validators,

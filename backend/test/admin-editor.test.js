@@ -33,6 +33,7 @@ async function createAdminApp(options = {}) {
       this.checked = false;
       this._text = '';
       this._html = '';
+      this._attrs = {};
       this._ownedIds = new Set();
       this._listeners = {};
       this.dataset = {};
@@ -45,6 +46,9 @@ async function createAdminApp(options = {}) {
         contains: (c) => this.classList._set.has(c),
       };
     }
+    setAttribute(name, value) { this._attrs[String(name)] = String(value); }
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; }
+    removeAttribute(name) { delete this._attrs[name]; }
     get textContent() { return this._text; }
     set textContent(v) { this._text = String(v); this._html = escapeHtml(v); }
     get innerHTML() { return this._html; }
@@ -402,12 +406,52 @@ test('文章状态筛选实际传给接口，切回全部后移除筛选', async
   assert.ok(apiCalls.some(call => call.path === '/admin/posts?page=1&pageSize=20'));
 });
 
+test('文章列表提供关键词分类筛选和批量操作入口', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: {
+      '/admin/posts?page=1&pageSize=20': { items: [], meta: {} },
+      '/admin/categories': [{ id: 'cat-1', name: '技术' }],
+    },
+  });
+  await sandbox.renderPosts();
+  const html = elements.get('content').innerHTML;
+  assert.match(html, /id="post-keyword"/);
+  assert.match(html, /id="post-category"/);
+  assert.match(html, /id="post-selection"/);
+  assert.equal(typeof sandbox.batchPosts, 'function');
+
+  elements.get('post-keyword').value = '性能';
+  elements.get('post-category').value = 'cat-1';
+  await sandbox.applyPostFilters();
+  await sandbox.renderPosts();
+  assert.ok(apiCalls.some(call => call.path === '/admin/posts?page=1&pageSize=20&keyword=%E6%80%A7%E8%83%BD&categoryId=cat-1'));
+});
+
 test('评论状态筛选在重建页面容器后保留', async () => {
   const { sandbox, elements, apiCalls } = await createAdminApp();
   await sandbox.filterComments('pending');
   elements.get('content').innerHTML = '<div class="loading"></div>';
   await sandbox.renderComments();
   assert.ok(apiCalls.some(call => call.path === '/admin/comments?page=1&pageSize=20&status=pending'));
+});
+
+test('评论列表提供文章筛选并传递 postId', async () => {
+  const { sandbox, elements, apiCalls } = await createAdminApp({
+    responses: {
+      '/admin/posts?type=post&page=1&pageSize=100': {
+        items: [{ id: 'post-1', title: '关于性能的一篇文章' }],
+        meta: {},
+      },
+    },
+  });
+  await sandbox.renderComments();
+  const html = elements.get('content').innerHTML;
+  assert.match(html, /id="cf-post"/);
+  assert.match(html, /关于性能的一篇文章/);
+
+  await sandbox.filterComments('', 'post-1');
+  await sandbox.renderComments();
+  assert.ok(apiCalls.some(call => call.path === '/admin/comments?page=1&pageSize=20&postId=post-1'));
 });
 
 test('标签编辑按钮保留名称中的引号和反斜杠，并保存修改', async () => {

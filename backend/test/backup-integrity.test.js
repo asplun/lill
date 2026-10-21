@@ -57,16 +57,21 @@ async function startBackupApi(t, {
     else {
       const realZip = execFileSync('which', ['zip'], { encoding: 'utf8' }).trim();
       // Delay only the external command, then create a real archive.
-      await writeFile(join(bin, 'zip'), `#!${process.execPath}
-const { writeFileSync } = require('node:fs');
-const { spawn } = require('node:child_process');
+      // The wrapper is a shell script because a `#!` line cannot point at an
+      // interpreter whose own path contains spaces (common for bundled Node).
+      const script = join(root, 'fake-zip.mjs');
+      await writeFile(script, `import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 writeFileSync(${JSON.stringify(join(root, 'zip.pid'))}, String(process.pid));
 setTimeout(() => {
   const child = spawn(${JSON.stringify(realZip)}, process.argv.slice(2), { stdio: 'inherit' });
   child.on('error', () => process.exit(1));
   child.on('exit', code => process.exit(code ?? 1));
 }, ${typeof slowZip === 'number' ? slowZip : 900});
-`, { mode: 0o755 });
+`);
+      await writeFile(join(bin, 'zip'),
+        '#!/bin/sh\nexec ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(script) + ' "$@"\n',
+        { mode: 0o755 });
     }
     env.PATH = bin + ':' + process.env.PATH;
   }
@@ -265,6 +270,26 @@ test('backup timeout cancels archiving without late files, success logs or a pro
   assert.doesNotMatch(api.output(), /ERR_HTTP_HEADERS_SENT|ERR_STREAM_WRITE_AFTER_END/);
 });
 
+test('backup progress reports active stages and terminal state; progress requires authentication', async t => {
+  const api = await startBackupApi(t, { slowZip: 900, emptyUploads: false });
+  await writeFile(join(api.uploadsDir, 'attachment.txt'), 'progress attachment');
+  const unauthorized = await api.request('GET', '/api/v1/admin/backup/progress');
+  assert.equal(unauthorized.status, 401);
+  const pending = api.request('POST', '/api/v1/admin/backup', { headers: api.headers, body: {} });
+  await waitUntil(async () => {
+    const result = await api.request('GET', '/api/v1/admin/backup/progress', { headers: api.headers });
+    return result.status === 200 && result.payload.data.status === 'running' && result.payload.data.progress >= 5;
+  }, 'backup progress did not enter running state');
+  const running = await api.request('GET', '/api/v1/admin/backup/progress', { headers: api.headers });
+  assert.ok(['running', 'done'].includes(running.payload.data.status));
+  assert.ok(Number.isFinite(running.payload.data.progress) && running.payload.data.progress >= 0 && running.payload.data.progress <= 100);
+  const completed = await pending;
+  assert.equal(completed.status, 200);
+  const final = await api.request('GET', '/api/v1/admin/backup/progress', { headers: api.headers });
+  assert.equal(final.payload.data.status, 'done');
+  assert.equal(final.payload.data.progress, 100);
+});
+
 test('disconnecting during an active ZIP cancels the child and cleans the staged backup', async t => {
   const api = await startBackupApi(t, { slowZip: 3000, guardClock: 'disconnect' });
   await writeFile(join(api.uploadsDir, 'attachment.txt'), 'disconnected backup');
@@ -361,5 +386,32 @@ test('backup list/download do not expose traversal paths, directories or symlink
   for (const name of ['../private.db', '..\\private.db', 'lill-backup-directory.db', 'lill-backup-link.db', 'missing.db']) {
     const result = await api.request('GET', '/api/v1/admin/backup/' + encodeURIComponent(name) + '/download', { headers: api.headers });
     assert.ok([400, 404].includes(result.status), name + ': ' + result.status);
+  }
+});
+
+test('backup restore replaces live data and keeps a pre-restore safety copy', async t => {
+  const api = await startBackupApi(t);
+  await writePost(api, 'Kept before backup');
+  const backup = await createBackup(api);
+  const backupName = basename(backup.path);
+  const later = await writePost(api, 'Written after backup');
+
+  const restore = await api.request('POST', '/api/v1/admin/backup/restore', { headers: api.headers, body: { name: backupName } });
+  assert.equal(restore.status, 200, JSON.stringify(restore.payload));
+  assert.equal(restore.payload.data.restored, backupName);
+  assert.ok(restore.payload.data.tables >= 10);
+
+  const listed = await api.request('GET', '/api/v1/admin/posts?page=1&pageSize=50', { headers: api.headers });
+  const titles = (listed.payload.data.items || []).map(item => item.title);
+  assert.ok(titles.includes('Kept before backup'), titles.join(','));
+  assert.ok(!titles.includes('Written after backup'), titles.join(','));
+
+  const safety = new DatabaseSync(join(dirname(api.dbPath), 'backups', restore.payload.data.safetyBackup), { readOnly: true });
+  try { assert.ok(safety.prepare('SELECT id FROM posts WHERE id = ?').get(later.id)); }
+  finally { safety.close(); }
+
+  for (const name of ['../private.db', 'lill-uploads-x.zip', 'missing.db', '']) {
+    const bad = await api.request('POST', '/api/v1/admin/backup/restore', { headers: api.headers, body: { name } });
+    assert.ok([400, 404].includes(bad.status), name + ': ' + bad.status);
   }
 });

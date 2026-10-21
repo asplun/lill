@@ -1,5 +1,5 @@
 /** Theme management, settings, installer, and editor routes. */
-import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, statSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
@@ -243,6 +243,65 @@ export function register(router, ctx, helpers) {
     try { ctx.settings?.invalidate?.(); } catch {}
     logAction(auth.id, 'theme.install', themeId + ' (' + written + ' files, ' + skipped + ' skipped)', req);
     json(res, { themeId, name: manifest.name, version: manifest.version || '1.0.0', files: written, skipped }, 201);
+  });
+
+  // 删除主题：内置 default 与当前启用中的主题都不可删；批量接口复用同一套守卫。
+  const BUILTIN_THEMES = new Set(['default']);
+  const themeDirFor = themeId => {
+    const dir = join(THEMES_DIR, themeId);
+    if (!dir.startsWith(THEMES_DIR + sep)) throw new Error('无效主题目录');
+    return dir;
+  };
+  const deleteThemeDir = themeId => { rmSync(themeDirFor(themeId), { recursive: true, force: true }); };
+  const themeDeleteBlocker = themeId => {
+    if (BUILTIN_THEMES.has(themeId)) return '内置主题不可删除';
+    const row = db.prepare('SELECT active FROM themes WHERE theme_id = ?').get(themeId);
+    if (!row && !existsSync(join(THEMES_DIR, themeId))) return '主题不存在';
+    if (row?.active) return '当前启用中的主题不可删除';
+    return '';
+  };
+
+  route('DELETE', '/api/v1/admin/themes/:themeId', async (req, res, params) => {
+    const auth = await authenticate(req);
+    const themeId = String(params.themeId || '').trim();
+    if (!THEME_ID_PATTERN.test(themeId)) return error(res, '主题 ID 无效', 400);
+    const blocked = themeDeleteBlocker(themeId);
+    if (blocked) return error(res, blocked, blocked === '主题不存在' ? 404 : 400);
+    try {
+      deleteThemeDir(themeId);
+      db.prepare('DELETE FROM themes WHERE theme_id = ?').run(themeId);
+      try { ctx.settings?.invalidate?.(); } catch {}
+      logAction(auth.id, 'theme.delete', themeId, req);
+      json(res, { themeId, deleted: true });
+    } catch (e) {
+      return error(res, '删除主题失败：' + e.message, 500);
+    }
+  });
+
+  route('POST', '/api/v1/admin/themes/batch', async (req, res) => {
+    const auth = await authenticate(req);
+    const body = await parseBody(req);
+    if (body.action !== 'delete') return error(res, '无效操作', 400);
+    if (!Array.isArray(body.themes) || !body.themes.length) return error(res, '请选择主题', 400);
+    if (body.themes.length > 100) return error(res, '一次最多操作 100 个主题', 400);
+    const deleted = [];
+    const skipped = [];
+    for (const raw of new Set(body.themes)) {
+      const themeId = typeof raw === 'string' ? raw.trim() : '';
+      if (!THEME_ID_PATTERN.test(themeId)) { skipped.push({ themeId, reason: '主题 ID 无效' }); continue; }
+      const blocked = themeDeleteBlocker(themeId);
+      if (blocked) { skipped.push({ themeId, reason: blocked }); continue; }
+      try {
+        deleteThemeDir(themeId);
+        db.prepare('DELETE FROM themes WHERE theme_id = ?').run(themeId);
+        deleted.push(themeId);
+        logAction(auth.id, 'theme.batch-delete', themeId, req);
+      } catch (e) {
+        skipped.push({ themeId, reason: e.message });
+      }
+    }
+    try { ctx.settings?.invalidate?.(); } catch {}
+    json(res, { deleted, skipped });
   });
 
   route('GET', '/api/v1/admin/themes/files', async (req, res) => {
