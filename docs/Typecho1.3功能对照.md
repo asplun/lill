@@ -16,7 +16,7 @@ P1 优先处理内容正确性、安全和基础可用性；P2 补齐日常管�
 | B01 | P1 | 文章列表缺少 `type`，编辑时可能提交 `"undefined"` | 列表及最近文章返回真实类型；文章入口固定 `post` 兼容滚动升级；后端拒绝非法类型和状态。 |
 | B02 | P1 | 清空正文后仍显示旧 HTML | 空正文同步重算；升级时也重新生成历史派生 HTML。 |
 | B03 | P1 | 中文标签重复保存报错，文章可能部分更新 | 按名称复用标签，slug 冲突加后缀；正文、标签关联和旧版本快照同事务。 |
-| B04 | P1 | 静默忽略保护参数，可能误公开 | 明确拒绝尚不支持的非公开可见性与非空密码；普通更新保留历史保护字段，公开查询仍排除受限内容。**完整私密/密码阅读流程未实现。** |
+| B04 | P1 | 静默忽略保护参数，可能误公开 | 明确拒绝尚不支持的非公开可见性与非空密码；普通更新保留历史保护字段，公开查询仍排除受限内容。**已闭环。** 后台接受 public/private/password 三种可见性并校验 4-100 位密码，密码只存哈希；编辑已有密码文章时留空密码即保持原哈希，不必重填（`PUT /api/v1/admin/posts/:id`）；前台解锁表单位于 `frontend/public/theme.js` 的通用渲染层（`renderPasswordGate`），不依赖主题模板；bootstrap 对未解锁的密码文章只下发 `{id,title,slug,passwordRequired}`，历史遗留的「public + 有密码」行同样可解锁；列表、Feed、导航仍只含公开内容。 |
 | B05 | P1 | 历史 `autoload=1` 插件配置可进入公开响应 | 公开 options/bootstrap 使用核心白名单；新插件配置强制私有，旧配置也不再随 autoload 暴露。未声称曾发现真实密钥泄漏。 |
 | B06 | P1 | 备份使用推导路径，可能复制错库或遗漏 WAL | 使用实际 `DB_PATH/UPLOAD_DIR`、正式 SQLite 一致性快照及校验；失败不发布产物；后台可列表和下载。 |
 | B07 | P1 | 并发首次安装可能创建多个管理员 | 在写事务内重新检查安装状态；可选插件失败仍返回已完成的安装/session，并同步停用失败插件、附警告。 |
@@ -46,17 +46,25 @@ P1 优先处理内容正确性、安全和基础可用性；P2 补齐日常管�
 
 | 功能 | lill 现状 | Typecho 1.3 对照与建议 |
 | --- | --- | --- |
-| 自定义内容字段 | 后端可存 `fields`，编辑器没有通用入口 | Typecho 有字符、整数、小数、JSON 字段编辑。复用现有字段存储，提供通用编辑器；主题业务字段继续由主题声明。 |
-| 一篇文章多个分类 | 数据模型及编辑器只有单个 `category_id` | Typecho 使用多选分类和关联表。这是模型差异，需要迁移关联表，不能只把下拉换成复选框。 |
-| 页面层级 | 顺序已接通新建、编辑和公开导航；没有页面父子管理 | 仍需独立设计层级及目录路由，不能把顺序等同于层级。已有自定义页面模板保留。 |
-| 服务端自动草稿与修订草稿 | 当前为本浏览器 localStorage 恢复；保存时写历史快照，没有完整修订管理界面 | Typecho 可将已发布文章的修改保存为独立草稿，自动保存到服务器。不能把本地恢复或历史表等同于此功能。 |
-| 单篇其他权限 | 允许评论已接通；没有单篇引用/Feed 控制 | 引用协议按实际使用需求决定，单篇 Feed 策略尚需设计。 |
-| 内容列表筛选与批量操作 | 关键词、分类筛选和文章批量接口已有，界面没有完整操作入口 | 先复用已有接口，接通筛选、选择后操作及明确反馈。 |
-| 评论按文章查看 | API 支持 `postId`，界面只有状态筛选 | Typecho 支持针对某篇内容管理评论；补按文章查看入口，不强制引入折叠式分组布局。 |
-| 附件编辑与替换 | 当前主要为上传、列表和删除 | Typecho 可编辑标题、缩略名、描述，并原位替换文件。lill 缺相应编辑与替换流程；这不包括 WP 裁图等额外需求。 |
-| 备份恢复 | 创建、列表、下载已闭环；没有恢复流程 | Typecho 可恢复自身内容备份，但不等同于完整站点快照；跨数据库和附件的原子快照、Typecho 格式导入均未实现。 |
+| 自定义内容字段 | **已闭环**：编辑器侧栏「自定义字段」按行增删键值对，随文章保存到 `posts.fields`；字段名限 `[A-Za-z_][A-Za-z0-9_]{0,63}` 且不能以下划线开头，最多 50 个，值只收文本/数字/布尔，非法键与超限返回 400；主题命名空间 `_lillThemeFields` 与插件命名空间 `_lillPluginFields` 在通用字段保存时一并保留 | Typecho 有字符、整数、小数、JSON 字段编辑。lill 以「通用键值 + 命名空间隔离」实现同等能力；JSON 复合值不开放给通用字段，需要结构的业务字段仍由主题/插件声明。 |
+| 一篇文章多个分类 | **已闭环**：新增 `post_categories` 关联表（建表+索引，老库启动时把 `category_id` 回填进去），编辑器侧栏「主分类」下拉 +「附加分类」复选框（`name="pe-cat-extra"`），保存 `categoryIds` 数组且首项写入 `category_id` 作为主分类（供 `{category}` 永久链接）；公开分类页/分类计数/后台筛选与计数都按关系表匹配，并兼容只写 `category_id` 的旧数据（`COUNT(DISTINCT p.id)`）；文章详情返回 `post.categories`，`PUT categoryIds: []` 可解绑，非法分类 id 返回 400。测试锁在 `backend/test/multi-category.test.js` | Typecho 使用多选分类和关联表；lill 用等价关联表实现多分类，同时保留单值 `category_id` 作为主分类，旧永久链接不变。 |
+| 页面层级 | **已闭环**：`posts` 新增 `parent_id`（含历史库 `ensureColumn` 升级与 `idx_posts_parent` 索引），编辑器侧栏「父级页面」下拉排除自身与后代；公开路径按祖先 slug 拼目录（如 `/docs/install/linux`），有子页面的父级自动用 `/docs` 形式，未设父级的页面仍走 `page_pattern`；导航下发 `depth`，后台页面列表按层级缩进并显示 `a/b` 路径；删除父级时子页面提升为顶层，保存拒绝自指、成环、父级不存在或父级不是页面（`parentId` 走 `POST/PUT /api/v1/admin/posts`） | Typecho 独立页面支持父子层级与 `/父/子.html` 目录路径。lill 已对齐层级、目录路由与旧 `/page/<slug>` 别名；不同处是父级页面 URL 会随「获得子页面」变为目录形式（旧地址仍可访问）。 |
+| 服务端自动草稿与修订草稿 | **已闭环**：新增 `post_drafts` 表（`post_id` 唯一，一篇文章一条草稿），编辑已有文章时停止输入 800ms 后 `POST /api/v1/admin/posts/:id/autosave` 落库，失败静默不打断写作；保存成功或恢复修订后 `DELETE .../autosave` 清理。打开文章时 `GET .../autosave`，与现值不同则在编辑器顶部显示「有服务器草稿（时间），点击恢复」提示条，一键回填标题/正文/摘要（摘要自动切手动）。侧栏「修订历史」列最近 50 条快照（`GET /posts/:id/versions`，详情 `GET .../versions/:versionId`），点「恢复」二次确认后 `POST .../versions/:versionId/restore`：先把当前值写入 `post_versions` 再覆盖 `posts` 并重载编辑器；跨文章 versionId 返回 404，无权限 403，超长草稿 400。测试锁在 `backend/test/post-autosave-revisions.test.js` | Typecho 可将已发布文章的修改保存为独立草稿并自动保存到服务器。lill 用「服务器草稿表 + 修订快照恢复」对齐：草稿独立于发布内容、跨浏览器可找回，恢复前旧值仍留历史；差别是草稿只保留每篇最新一份而非多份并行草稿。 |
+| 单篇其他权限 | **已闭环**：允许评论已接通；私密文章仅作者与管理员/编辑可读（bootstrap 与详情同口径，其余身份 404）；密码文章通过 `POST /api/v1/posts/:slug/unlock` 校验后下发 7 天 HttpOnly cookie（`lill_post_<id>`），详情接口在解锁前返回 `post_password_required`，bootstrap 未解锁时只返回解锁表单所需的最小视图模型；前台解锁表单在 `theme.js` 通用渲染层渲染、不套主题模板，失败提示「密码错误」；解锁判定只看「行上是否有密码」，历史 public+password 数据同样可解锁。单篇 Feed 可用 `allowFeed` 关闭：`/api/v1/feed` 与 `/api/v1/sitemap.xml` 的文章查询过滤 `p.allow_feed != 0`（列默认 1），编辑器侧栏「输出到 Feed」复选框，保存走 `POST/PUT /api/v1/admin/posts` 的 `allowFeed` 布尔（非布尔 400）；`allowPing` 仅存开关（`posts.allow_ping`，默认 1，编辑器「允许引用」复选框），lill 无 trackback/pingback 接收端。测试锁在 `backend/test/post-permissions.test.js` | Typecho 每篇有 `allowPing`/`allowFeed`。lill 已对齐单篇 Feed 输出控制；引用协议本身无接收端，`allowPing` 作为兼容字段保留，不引入 trackback/pingback 处理。 |
+| 内容列表筛选与批量操作 | **已闭环**：文章/页面列表具备状态筛选、关键词与分类筛选、全选与本页选择，批量动作覆盖发布、转草稿、删除、移动分类、置顶/取消置顶，并给出逐条结果反馈（成功/跳过/失败计数） | Typecho 列表同样支持筛选与批量动作；lill 已在同一工具条内实现，无额外设计差异。 |
+| 评论按文章查看 | **已闭环**：评论页筛选区新增「文章」下拉（`app.js` 的 `commentPostId`，请求带 `postId=`），与状态、关键词筛选可组合，重置会一并清空 | Typecho 支持针对某篇内容管理评论；lill 用筛选下拉实现同等入口，不引入折叠式分组布局。 |
+| 附件编辑与替换 | **已闭环**：后台附件页可编辑文件名、缩略名、替代文本、描述，并原位替换文件（保留原链接与扩展名，重算尺寸与缩略图）；接口为 `PUT /api/v1/admin/media/:id` 与 `POST /api/v1/admin/media/:id/replace`，`media` 表补 `slug`/`description` 列（含历史库 `ensureColumn` 升级） | Typecho 可编辑标题、缩略名、描述，并原位替换文件。lill 已对齐编辑与替换流程；不含 WP 裁图等额外需求。 |
+| 备份恢复 | **已闭环（数据库）**：备份页对 `.db` 备份提供「恢复」，二次确认 + 输入「恢复」后才执行；`POST /api/v1/admin/backup/restore` 先 `quick_check` 校验来源、要求 `users` 表存在，再自动生成 `lill-backup-before-restore-*.db` 安全快照，按表列交集在单事务内覆盖；附件需手工解压对应 `lill-uploads-*.zip` | Typecho 可恢复自身内容备份，但不等同于完整站点快照；跨数据库和附件的原子快照、Typecho 格式导入仍未实现（lill 目前只恢复数据库，附件目录需另行解压覆盖）。 |
 
-本表用于确认差距和实现边界，不表示本轮已经新增这些功能，也不是穷尽所有差异的功能承诺。
+## 2026-10-21 补齐记录（在这些差距行之上新增）
+
+| 项 | 本轮落点 |
+| --- | --- |
+| 后台批量操作 | 文章/页面支持 发布、转草稿、删除、移动分类、置顶/取消置顶；分类/标签/附件/用户/小工具/主题支持批量操作；评论支持批量审核与批量删除；日志、备份、插件页补批量入口。接口集中在 `backend/routes/admin/{content,taxonomy,media,users,widgets,themes,comments,system}.js`，前端在 `frontend/public/admin/app.js` 的 `update*Selection` / `batch*` 系列。 |
+| 永久链接设置 | 分文章/独立页面/分类/标签四组预设 + 自定义，附变量说明、实时预览、恢复默认、冲突提示与粘贴 URL 试解析（`POST /api/v1/admin/permalinks/resolve`）；新增 `page_pattern`（独立页面路径）与 `archive_path`/`search_path`。 |
+| 附件编辑与替换 | 见上表该行；测试锁在 `backend/test/batch-operations.test.js` 的 media editor 用例。 |
+
+本表用于确认差距和实现边界，不表示所有差异都已补齐，也不是穷尽所有差异的功能承诺。
 
 已新增的编辑细节：可编辑发布时间（本地显示、UTC 存储）、单篇允许评论、页面顺序、自动/手填摘要。旧摘要首次迁移时，手填内容若恰好等于旧自动摘要无法无损区分，可在编辑器切回手填；明确保存的模式不会重复猜测。
 
@@ -121,4 +129,4 @@ P1 优先处理内容正确性、安全和基础可用性；P2 补齐日常管�
 - [插件激活与配置](https://github.com/typecho/typecho/blob/e9f23304bf20c0c355ef1df9634d42148cbc53b5/var/Widget/Plugins/Edit.php)
 - [内容备份与恢复](https://github.com/typecho/typecho/blob/e9f23304bf20c0c355ef1df9634d42148cbc53b5/var/Widget/Backup.php)
 
-后续建议优先复用现有接口补齐列表筛选/批量操作与按文章管理评论，再处理自定义字段、附件编辑等独立功能；多分类、层级与服务端修订草稿需要先明确迁移边界，不为对齐名称引入重型框架。
+后续建议优先复用现有接口补齐列表筛选/批量操作与按文章管理评论，再处理自定义字段、附件编辑等独立功能；多分类、层级与服务端修订草稿已按上表闭环，剩余项不为对齐名称引入重型框架。

@@ -20,8 +20,14 @@ PATH="$NODE:$PATH" "$PNPM" run build
 cd "$LOCAL/frontend/dist"
 
 echo "▶ 2. 收集所有页面引用的 CSS"
-REFERENCED=$(grep -rho '_astro/[A-Za-z0-9._-]*\.css' . | sort -u | sed 's|_astro/||')
-echo "   引用文件: ${REFERENCED:-（无）}"
+# pipefail 下 grep 无命中会以 1 结束整条管道，进而让 `set -e` 中止部署（本次就是被它卡住），
+# 故末尾 `|| true` 兜住退出码；无命中时第 6 步整体跳过，避免把服务器上仍被引用的 _astro CSS 删光。
+REFERENCED=$(grep -rho '_astro/[A-Za-z0-9._-]*\.css' . | sort -u | sed 's|_astro/||' || true)
+if [ -n "$REFERENCED" ]; then
+  echo "   引用文件: $REFERENCED"
+else
+  echo "   引用文件: （无引用的 _astro CSS，跳过第 6 步清理）"
+fi
 
 echo "▶ 3. 同步构建产物到服务器"
 # 排除单独发布的主题目录、源码和缓存目录；主题由 THEME_IDS 清单单独同步
@@ -83,28 +89,41 @@ if [ -d "$LOCAL/backend/plugins" ]; then
 fi
 
 echo "▶ 6. 清理无引用的旧 CSS"
-REMOTE_CSS=$(ssh "$SERVER" "ls $REMOTE/frontend/_astro/*.css 2>/dev/null | xargs -n1 basename || true")
-for f in $REMOTE_CSS; do
-  if ! echo "$REFERENCED" | grep -q "^$f$"; then
-    echo "   删除: $f"
-    ssh "$SERVER" "rm -f $REMOTE/frontend/_astro/$f"
-  fi
-done
+if [ -n "$REFERENCED" ]; then
+  REMOTE_CSS=$(ssh "$SERVER" "ls $REMOTE/frontend/_astro/*.css 2>/dev/null | xargs -n1 basename || true")
+  for f in $REMOTE_CSS; do
+    if ! echo "$REFERENCED" | grep -q "^$f$"; then
+      echo "   删除: $f"
+      ssh "$SERVER" "rm -f $REMOTE/frontend/_astro/$f"
+    fi
+  done
+else
+  echo "   （无引用的 _astro CSS，跳过清理）"
+fi
 
 echo "▶ 7. 重启后端"
 ssh "$SERVER" "pm2 restart lill-backend --update-env > /dev/null 2>&1"
 
 echo "▶ 8. 健康检查"
 sleep 2
+check_health() (
+  local path="$1" code attempt base_url="${HEALTH_BASE_URL:-https://test.abohe.cn}"
+  for attempt in 1 2 3 4 5; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$base_url$path" || true)
+    echo "   $path -> $code (attempt $attempt/5)"
+    [ "$code" = "200" ] && return 0
+    if [ "$code" != "500" ] || [ "$attempt" = "5" ]; then
+      echo "❌ $path health check failed"
+      return 1
+    fi
+    sleep 3
+  done
+)
 for path in /api/v1/install/status /api/v1/posts /api/v1/site/bootstrap; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "https://test.abohe.cn$path")
-  echo "   $path -> $code"
-  [ "$code" = "200" ] || { echo "❌ 健康检查失败: $path"; exit 1; }
+  check_health "$path" || exit 1
 done
 for path in / /admin/ /admin/login/; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "https://test.abohe.cn$path")
-  echo "   $path -> $code"
-  [ "$code" = "200" ] || { echo "❌ 页面异常: $path"; exit 1; }
+  check_health "$path" || exit 1
 done
 
 echo "▶ 9. 校验公开主题引擎入口"

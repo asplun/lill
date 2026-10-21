@@ -84,6 +84,10 @@ server {
     location ~ ^/(package(-lock)?\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|astro\.config\.mjs)$ { return 404; }
     location ~ (^|/)\.(?!well-known(/|$)) { return 404; }
 
+    # ── Typecho page paths resolve to the shared page shell ──
+    location ~ ^/index\.php/(.+\.html)$ { rewrite ^/index\.php/(.+\.html)$ /page/index.html last; }
+    location ~ ^/(.+\.html)$ { rewrite ^/(.+\.html)$ /page/index.html last; }
+
     # ── 动态路由回退到各自的静态壳 ──
     location /post/     { try_files $uri $uri/ /post/index.html; }
     location /category/ { try_files $uri $uri/ /category/index.html; }
@@ -98,6 +102,15 @@ server {
     # ── RSS Feed ──
     location = /feed.xml {
         proxy_pass http://127.0.0.1:3000/api/v1/feed;
+        proxy_set_header Host $host;
+    }
+
+    location = /sitemap.xml {
+        proxy_pass http://127.0.0.1:3000/api/v1/sitemap.xml;
+        proxy_set_header Host $host;
+    }
+    location = /robots.txt {
+        proxy_pass http://127.0.0.1:3000/robots.txt;
         proxy_set_header Host $host;
     }
 
