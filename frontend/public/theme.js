@@ -313,8 +313,12 @@
     searchDebounceTimer = setTimeout(callback, delay || 300);
   }
   var pageType = app.getAttribute('data-page') || 'index';
-  var segs = location.pathname.split('/').filter(Boolean);
-  var slugRaw = (pageType === 'post' || pageType === 'page' || pageType === 'category' || pageType === 'tag') ? (segs[1] || '') : '';
+  var htmlMatch = location.pathname.match(/^\/(?:index\.php\/)?([\w-]+)\.html$/i);
+  var routePath = htmlMatch ? location.pathname : location.pathname.replace(/^\/index\.php(?=\/|$)/i, '').replace(/\.html$/i, '');
+  if (htmlMatch) pageType = 'page';
+  var segs = routePath.split('/').filter(Boolean);
+  var slugRaw = htmlMatch ? htmlMatch[1] : pageType === 'page' && segs.length === 1 ? segs[0]
+    : (pageType === 'post' || pageType === 'page' || pageType === 'category' || pageType === 'tag') ? (segs[1] || '') : '';
   // 中文等非 ASCII 别名在 pathname 中是百分号编码，先解码再交给 API（API 层会重新编码）
   var slug = slugRaw;
   if (slug) { try { slug = decodeURIComponent(slug); } catch (e) { slug = slugRaw; } }
@@ -332,10 +336,13 @@
   function assetUrl(themeId, file) {
     return '/themes/' + encodeURIComponent(themeId) + '/' + file;
   }
+  var textCache = Object.create(null);
   function fetchText(url) {
-    return fetch(url, { cache: 'no-cache' }).then(function (r) {
+    if (textCache[url]) return textCache[url];
+    textCache[url] = fetch(url, { cache: 'no-cache' }).then(function (r) {
       return r.ok ? r.text() : null;
     }).catch(function () { return null; });
+    return textCache[url];
   }
 
   // 递归加载模板 + 它引用到的所有片段
@@ -371,10 +378,15 @@
 
   function applyHead(boot) {
     var site = boot.site || {}, page = boot.page || {}, theme = boot.theme || {};
+    var brand = theme.seoSiteName || site.name || 'lill';
     var title = page.title || site.name || '';
-    document.title = (page.type === 'index' || !title) ? (site.name || 'lill') : (title + ' - ' + (site.name || 'lill'));
+    document.title = (page.type === 'index' || !title) ? brand : (title + ' - ' + brand);
     var md = document.querySelector('meta[name="description"]');
-    if (md && site.description) md.setAttribute('content', site.description);
+    var description = theme.seoSiteDesc || site.description;
+    if (md && description) md.setAttribute('content', description);
+    var keywords = theme.seoSiteKeywords || site.keywords || (boot.options || {}).site_keywords || (boot.options || {}).keywords;
+    var mk = document.querySelector('meta[name="keywords"]');
+    if (mk && keywords) mk.setAttribute('content', keywords);
     if (theme.custom_css) {
       var st = document.createElement('style');
       st.id = 'lill-theme-custom-css';
@@ -478,6 +490,40 @@
     if (t.color) document.documentElement.style.setProperty('--primary', t.color);
   }
 
+  // 密码文章未解锁：不套用任何主题模板，渲染与主题无关的内联样式解锁表单。
+  function renderPasswordGate(post) {
+    var title = (post && post.title) || '密码保护';
+    var slugPath = encodeURIComponent((post && post.slug) || '');
+    app.innerHTML = ''
+      + '<div style="min-height:60vh;display:flex;align-items:center;justify-content:center;padding:40px 20px;font-family:system-ui,-apple-system,\'Segoe UI\',sans-serif;">'
+      + '<form id="lill-unlock-form" style="width:100%;max-width:380px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:28px 24px;box-shadow:0 8px 30px rgba(0,0,0,.08);">'
+      + '<h1 style="font-size:20px;line-height:1.4;margin:0 0 8px;color:#111827;">' + esc(title) + '</h1>'
+      + '<p style="font-size:14px;line-height:1.6;color:#6b7280;margin:0 0 18px;">该文章受密码保护，请输入访问密码后继续阅读。</p>'
+      + '<input id="lill-unlock-password" type="password" autocomplete="current-password" placeholder="访问密码" style="width:100%;box-sizing:border-box;padding:10px 12px;font-size:14px;border:1px solid #d1d5db;border-radius:8px;outline:none;">'
+      + '<button type="submit" style="width:100%;margin-top:14px;padding:10px 12px;font-size:14px;font-weight:600;color:#fff;background:#111827;border:0;border-radius:8px;cursor:pointer;">解锁阅读</button>'
+      + '<p id="lill-unlock-error" style="display:none;color:#dc2626;font-size:13px;margin:12px 0 0;"></p>'
+      + '</form></div>';
+    var form = document.getElementById('lill-unlock-form');
+    var input = document.getElementById('lill-unlock-password');
+    var errBox = document.getElementById('lill-unlock-error');
+    var btn = form.querySelector('button');
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var pwd = input.value;
+      if (!pwd) { errBox.textContent = '请输入访问密码'; errBox.style.display = 'block'; return; }
+      btn.disabled = true;
+      errBox.style.display = 'none';
+      API.post('/posts/' + slugPath + '/unlock', { password: pwd }).then(function () {
+        location.reload();
+      }).catch(function (err) {
+        btn.disabled = false;
+        errBox.textContent = err && err.message ? err.message : '密码错误';
+        errBox.style.display = 'block';
+      });
+    });
+    try { input.focus(); } catch (e) {}
+  }
+
   function render(boot) {
     pageType = boot.page?.type || pageType;
     var themeId = boot.themeId || 'default';
@@ -489,6 +535,11 @@
     // data.* 平铺到顶层，模板里直接写 {$posts} / {$post} / {$comments}
     Object.keys(boot.data || {}).forEach(function (k) { scope[k] = boot.data[k]; });
     window.__LILL_SCOPE__ = scope;
+
+    // 密码文章未解锁：只渲染解锁表单，既不加载主题模板也不加载主题 JS。
+    if (boot.data && boot.data.post && boot.data.post.passwordRequired) {
+      return renderPasswordGate(boot.data.post);
+    }
 
     // 老式「shell.html + theme.js 适配器」主题：没有任何页面模板，
     // 直接走兼容渲染，避免对 index.html 之类的无意义 404 探测
@@ -537,9 +588,11 @@
     '&page=' + pageNum +
     '&commentPage=' + (parseInt(qs.get('commentPage')) || 1) +
     '&commentSort=' + encodeURIComponent(qs.get('commentSort') || '') +
-    '&path=' + encodeURIComponent(location.pathname) +
+    '&path=' + encodeURIComponent(routePath || '/') +
     '&q=' + encodeURIComponent(keyword) +
-    '&month=' + encodeURIComponent(month))
+    '&month=' + encodeURIComponent(month) +
+    '&album=' + encodeURIComponent(qs.get('album') || '') +
+    '&layout=' + encodeURIComponent(qs.get('layout') || ''))
     .then(function (boot) {
       return applyHead(boot).then(function () { return render(boot); });
     })

@@ -89,7 +89,9 @@
         if (!res.ok || data.code !== 0) throw new Error(data.message || '登录失败，请重试');
         if (!data.data || !data.data.token) throw new Error('登录响应异常，请重试');
         localStorage.setItem('lill_token', data.data.token); if (data.data.csrfToken) localStorage.setItem('lill_csrf_token', data.data.csrfToken);
-        location.href = '/admin/';
+        var next = new URLSearchParams(location.search).get('next') || '';
+        if (!next || next.charAt(0) !== '/' || next.charAt(1) === '/') next = '/admin/';
+        location.href = next;
       } catch (e) {
         error.textContent = e.name === 'AbortError' ? '请求超时，请重试' :
           e instanceof TypeError ? '无法连接服务器，请检查网络后重试' :

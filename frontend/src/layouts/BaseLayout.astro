@@ -13,7 +13,8 @@ export interface Props {
   jsonLd?: Record<string, unknown>;
 }
 const { page = 'index', title = '', description = '', ogImage = '', jsonLd } = Astro.props;
-const siteTitle = 'lill 博客';
+const siteTitle = '一个薄荷';
+const siteDescription = '懒癌晚期95后的网络折腾和生活记录';
 const fullTitle = title ? `${title} - ${siteTitle}` : siteTitle;
 ---
 
@@ -22,13 +23,15 @@ const fullTitle = title ? `${title} - ${siteTitle}` : siteTitle;
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content={description || '一个轻量、可扩展、前后端分离的博客系统'} />
+  <meta name="description" content={description || siteDescription} />
+  <meta name="keywords" content="一个薄荷,冷水薄荷,个人站,博客,黑苹果,blog,asplun" />
   <meta name="generator" content={'lill v' + pkg.version} />
+  <script is:inline src="/themes/trim3/darkmode-prepaint.js"></script>
   
   <!-- Open Graph -->
   <meta property="og:site_name" content={siteTitle} />
   <meta property="og:title" content={fullTitle} />
-  <meta property="og:description" content={description || '一个轻量、可扩展、前后端分离的博客系统'} />
+  <meta property="og:description" content={description || siteDescription} />
   <meta property="og:type" content={page === 'post' ? 'article' : 'website'} />
   <meta property="og:image" content={ogImage || '/logo.svg'} />
   <meta property="og:locale" content="zh_CN" />
@@ -36,7 +39,7 @@ const fullTitle = title ? `${title} - ${siteTitle}` : siteTitle;
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content={fullTitle} />
-  <meta name="twitter:description" content={description || '一个轻量、可扩展、前后端分离的博客系统'} />
+  <meta name="twitter:description" content={description || siteDescription} />
   <meta name="twitter:image" content={ogImage || '/logo.svg'} />
   
   <!-- JSON-LD 结构化数据 -->

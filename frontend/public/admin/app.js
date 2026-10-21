@@ -2,12 +2,35 @@ let user = null;
 let page = 'dashboard';
 let pageNum = 1;
 let postStatus = '';
+let postKeyword = '';
+let postCategoryId = '';
 let commentStatus = '';
+let commentPostId = '';
+let pageKeyword = '';
+let pageCategoryId = '';
+let commentKeyword = '';
+let mediaKeyword = '';
+let userKeyword = '';
+let selectedPosts = new Set();
+let selectedPages = new Set();
+let selectedCategories = new Set();
+let selectedUsers = new Set();
+let selectedTags = new Set();
+let selectedMedia = new Set();
+let mediaRowsCache = [];
+let selectedLogs = new Set();
+let selectedBackups = new Set();
+let selectedPlugins = new Set();
+let selectedThemes = new Set();
+let selectedWidgets = new Set();
+let postCategoriesCache = [];
 let currentEditorThemeFields = null;
 let currentEditorPluginManifest = null;
 let currentEditorRuntime = null;
+let systemPollTimer = null;
+let backupProgressTimer = null;
 
-const TITLES = { dashboard: '控制台', posts: '文章', pages: '页面', categories: '分类', tags: '标签', comments: '评论', media: '附件', themes: '外观', users: '用户', settings: '设置', logs: '日志', backup: '备份', plugins: '插件' };
+const TITLES = { dashboard: '控制台', posts: '文章', pages: '页面', categories: '分类', tags: '标签', comments: '评论', media: '附件', themes: '外观', users: '用户', settings: '设置', logs: '日志', backup: '备份', plugins: '插件', widgets: '小工具', system: '系统' };
 
 // 统一 API 层：由 /api.js 提供的 window.lillAPI（前台后台共用）
 const api = (path, opts = {}) => window.lillAPI.request(path, opts);
@@ -16,6 +39,8 @@ function toast(msg, type = 'success') {
   const el = document.createElement('div');
   el.className = 'toast toast-' + type;
   el.textContent = msg;
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  el.setAttribute('aria-live', 'polite');
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3000);
 }
@@ -58,6 +83,10 @@ function applyRoleNavigation() {
   });
 }
 function setTopbar(html) { document.getElementById('topbar-actions').innerHTML = html || ''; }
+function stopSystemPolling() {
+  if (systemPollTimer) clearInterval(systemPollTimer);
+  systemPollTimer = null;
+}
 
 function paginate(meta) {
   if (!meta || !meta.totalPages || meta.totalPages <= 1) return '';
@@ -82,6 +111,7 @@ function paginate(meta) {
 let activeView = null;
 function showView(key, load, reuse = false, navigation = {}) {
   if (reuse && activeView?.key === key && !activeView.signal.aborted && !activeView.failed) return activeView.promise;
+  if (activeView?.key !== key) stopSystemPolling();
   const view = { key, load, navigation, signal: window.lillAPI.newRenderScope() };
   activeView = view;
   setTopbar('');
@@ -120,6 +150,8 @@ function render(reuse = false, navigation) {
       case 'logs': return await renderLogs();
       case 'backup': return await renderBackup();
       case 'plugins': return await renderPlugins();
+      case 'widgets': return await renderWidgets();
+      case 'system': return await renderSystem();
       default:
         if (page.startsWith('plugin-settings:')) return await renderPluginSettings(page.slice(16));
         if (page.startsWith('plugin:')) return await renderPluginMenuPanel(page.slice(7));
@@ -127,6 +159,138 @@ function render(reuse = false, navigation) {
     }
   }, reuse, navigation);
 }
+
+function formatUptime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remainder = total % 60;
+  return (days ? days + '天 ' : '') + hours + '小时 ' + minutes + '分 ' + remainder + '秒';
+}
+function formatBytesGB(value) {
+  const bytes = Number(value);
+  return Number.isFinite(bytes) ? (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB' : '-';
+}
+function systemMetric(label, value) {
+  return '<div><dt>' + escape(label) + '</dt><dd>' + escape(value == null || value === '' ? '-' : value) + '</dd></div>';
+}
+async function renderSystem() {
+  stopSystemPolling();
+  const [version, sites] = await Promise.all([api('/admin/system/version'), api('/admin/sites')]);
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="dashboard-grid"><section class="card"><h2 class="card-title">运行状态</h2><dl id="system-monitor"></dl></section>' +
+    '<section class="card"><h2 class="card-title">健康检查</h2><dl id="system-health"></dl></section>' +
+    '<section class="card"><h2 class="card-title">版本与站点</h2><dl id="system-version"></dl><div id="system-sites"></div></section></div>';
+  document.getElementById('system-version').innerHTML = systemMetric('版本', version.version) + systemMetric('Node.js', version.node) + systemMetric('平台', version.platform);
+  document.getElementById('system-sites').innerHTML = '<h3>站点</h3>' + ((sites || []).length ? '<ul>' + sites.map(site => '<li>' + escape(site.name) + ' · ' + escape(site.domain) + '</li>').join('') + '</ul>' : '<p>暂无站点</p>');
+  const update = async () => {
+    if (page !== 'system' || activeView?.signal.aborted) return stopSystemPolling();
+    const [monitor, health] = await Promise.all([api('/admin/system/monitor'), api('/admin/system/health')]);
+    if (page !== 'system' || activeView?.signal.aborted) return stopSystemPolling();
+    const memory = monitor.memory || {};
+    const cpu = monitor.cpu || {};
+    document.getElementById('system-monitor').innerHTML = systemMetric('运行时间', formatUptime(monitor.uptime)) + systemMetric('内存 used / total', (memory.used || '-') + ' / ' + (memory.total || '-')) + systemMetric('RSS', memory.rss) + systemMetric('CPU 用户 / 系统', (Number(cpu.user) || 0) + ' / ' + (Number(cpu.system) || 0));
+    const disk = health.disk || {};
+    document.getElementById('system-health').innerHTML = systemMetric('状态', health.status) + systemMetric('数据库', health.database) + systemMetric('磁盘可用', formatBytesGB(disk.free)) + systemMetric('磁盘总量', formatBytesGB(disk.total));
+  };
+  await update();
+  if (page === 'system' && !activeView?.signal.aborted) systemPollTimer = setInterval(() => update().catch(error => toast('系统状态更新失败：' + error.message, 'error')), 10000);
+}
+
+async function renderWidgets() {
+  const widgets = await api('/admin/widgets');
+  const rows = (widgets || []).map(widget => '<tr><td><input type="checkbox" class="widget-checkbox" value="' + escape(widget.id) + '" aria-label="选择小工具 ' + escape(widget.name) + '" ' + (selectedWidgets.has(widget.id) ? 'checked' : '') + ' onchange="toggleWidgetCheck(' + jsArg(widget.id) + ',this.checked)"></td><td><strong>' + escape(widget.name) + '</strong></td><td>' + escape(widget.type) + '</td><td>' + escape(widget.position) + '</td><td class="sort-cell"><button class="btn btn-sm btn-outline" title="上移" aria-label="上移" onclick="moveWidget(' + jsArg(widget.id) + ',-1)">↑</button> <span>' + Number(widget.sort_order || 0) + '</span> <button class="btn btn-sm btn-outline" title="下移" aria-label="下移" onclick="moveWidget(' + jsArg(widget.id) + ',1)">↓</button></td><td><button class="btn btn-sm btn-outline" onclick="toggleWidget(' + jsArg(widget.id) + ')">' + (Number(widget.enabled) ? '已启用' : '已停用') + '</button></td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openWidgetEditor(' + jsArg(widget.id) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delWidget(' + jsArg(widget.id) + ')">删除</button></td></tr>').join('');
+  setTopbar('<button class="btn btn-primary" onclick="openWidgetEditor()">+ 新建组件</button>');
+  document.getElementById('content').innerHTML = '<div id="widget-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input type="checkbox" aria-label="选择本页小工具" onchange="toggleAllWidgets(this.checked)"' + ((widgets || []).length && widgets.every(widget => selectedWidgets.has(widget.id)) ? ' checked' : '') + '></th><th scope="col">名称</th><th scope="col">类型</th><th scope="col">位置</th><th scope="col">排序</th><th scope="col">启用</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">暂无小工具</div></td></tr>') + '</tbody></table></div>';
+  updateWidgetBatchBar();
+}
+function updateWidgetBatchBar() {
+  const bar = document.getElementById('widget-selection');
+  if (!bar) return;
+  bar.innerHTML = selectedWidgets.size ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedWidgets.size + ' 项</span><button class="btn btn-sm btn-outline" onclick="batchWidgets(\'enable\')">启用</button><button class="btn btn-sm btn-outline" onclick="batchWidgets(\'disable\')">停用</button><button class="btn btn-sm btn-danger" onclick="batchWidgets(\'delete\')">删除</button><button class="btn btn-sm btn-outline" onclick="clearWidgetSelection()">取消</button></div>' : '';
+}
+window.toggleWidgetCheck = (id, checked) => { if (checked) selectedWidgets.add(id); else selectedWidgets.delete(id); updateWidgetBatchBar(); };
+window.toggleAllWidgets = checked => {
+  if (checked) document.querySelectorAll('.widget-checkbox').forEach(el => selectedWidgets.add(el.value));
+  else selectedWidgets.clear();
+  document.querySelectorAll('.widget-checkbox').forEach(el => { el.checked = selectedWidgets.has(el.value); });
+  updateWidgetBatchBar();
+};
+window.clearWidgetSelection = () => { selectedWidgets.clear(); document.querySelectorAll('.widget-checkbox, #content thead input[type="checkbox"]').forEach(el => { el.checked = false; }); updateWidgetBatchBar(); };
+window.batchWidgets = async action => {
+  if (!selectedWidgets.size) return;
+  if (action === 'delete' && !confirm('确定删除选中的 ' + selectedWidgets.size + ' 个小工具？')) return;
+  const view = activeView;
+  try {
+    await api('/admin/widgets/batch', { method: 'POST', body: { action, ids: Array.from(selectedWidgets) } });
+    selectedWidgets.clear();
+    toast('批量操作完成');
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.openWidgetEditor = async id => {
+  try {
+    const widgets = await api('/admin/widgets');
+    const widget = id ? (widgets || []).find(item => String(item.id) === String(id)) : null;
+    if (id && !widget) throw new Error('小工具不存在');
+    const positions = [['sidebar', '侧栏'], ['left', '左侧'], ['right', '右侧'], ['footer', '页脚']];
+    document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">' + (widget ? '编辑小工具' : '新建小工具') + '</h3>' +
+      '<div class="form-group"><label for="we-name">名称</label><input id="we-name" maxlength="100" value="' + escape(widget?.name || '') + '"></div>' +
+      '<div class="form-group"><label for="we-type">类型</label><input id="we-type" maxlength="50" value="' + escape(widget?.type || '') + '"></div>' +
+      '<div class="form-group"><label for="we-position">位置</label><select id="we-position">' + positions.map(([value, label]) => '<option value="' + value + '"' + ((widget?.position || 'sidebar') === value ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></div>' +
+      '<div class="form-group"><label for="we-sort">排序</label><input id="we-sort" type="number" step="1" value="' + Number(widget?.sort_order || 0) + '"></div>' +
+      '<div class="form-group"><label for="we-content">内容</label><textarea id="we-content" rows="8">' + escape(widget?.content || '') + '</textarea></div>' +
+      '<label class="form-group"><input id="we-enabled" type="checkbox"' + (widget ? (Number(widget.enabled) ? ' checked' : '') : ' checked') + '> 启用</label>' +
+      '<button class="btn btn-primary" onclick="saveWidget(' + (widget ? jsArg(widget.id) : 'null') + ')">保存</button> <button class="btn btn-outline" onclick="navigate(\'widgets\')">取消</button></div>';
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.saveWidget = async id => {
+  const view = activeView;
+  const name = document.getElementById('we-name').value.trim();
+  const type = document.getElementById('we-type').value.trim();
+  const sortOrder = Number(document.getElementById('we-sort').value);
+  if (!name || !type) return toast('请填写名称和类型', 'error');
+  if (!Number.isSafeInteger(sortOrder)) return toast('排序必须是整数', 'error');
+  const body = { name, type, position: document.getElementById('we-position').value, sort_order: sortOrder, content: document.getElementById('we-content').value, enabled: document.getElementById('we-enabled').checked ? 1 : 0 };
+  try {
+    await api(id ? '/admin/widgets/' + encodeURIComponent(id) : '/admin/widgets', { method: id ? 'PUT' : 'POST', body });
+    toast('已保存');
+    if (view?.navigation === activeView?.navigation) refreshView(view);
+    else navigate('widgets');
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.toggleWidget = async id => {
+  const view = activeView;
+  try {
+    const widgets = await api('/admin/widgets');
+    const widget = (widgets || []).find(item => String(item.id) === String(id));
+    if (!widget) throw new Error('小工具不存在');
+    await api('/admin/widgets/' + encodeURIComponent(id), { method: 'PUT', body: { name: widget.name, type: widget.type, content: widget.content || '', position: widget.position || 'sidebar', sort_order: Number(widget.sort_order) || 0, enabled: Number(widget.enabled) ? 0 : 1 } });
+    toast('状态已更新');
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.moveWidget = async (id, delta) => {
+  const view = activeView;
+  try {
+    const widgets = (await api('/admin/widgets') || []).slice();
+    const index = widgets.findIndex(item => String(item.id) === String(id));
+    const target = index + delta;
+    if (index < 0) throw new Error('小工具不存在');
+    if (target < 0 || target >= widgets.length) return toast('已经在边界', 'error');
+    [widgets[index], widgets[target]] = [widgets[target], widgets[index]];
+    await Promise.all(widgets.map((widget, sort_order) => api('/admin/widgets/' + encodeURIComponent(widget.id), { method: 'PUT', body: { name: widget.name, type: widget.type, content: widget.content || '', position: widget.position || 'sidebar', sort_order, enabled: Number(widget.enabled) ? 1 : 0 } })));
+    toast('顺序已更新');
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.delWidget = async id => {
+  if (!confirm('确定删除这个小工具？')) return;
+  const view = activeView;
+  try { await api('/admin/widgets/' + encodeURIComponent(id), { method: 'DELETE' }); toast('已删除'); refreshView(view); }
+  catch (e) { toast(e.message, 'error'); }
+};
 
 // 小屏仍保留每个字段的名称，不依赖列在桌面上的位置。
 function labelTableRows() {
@@ -169,7 +333,7 @@ async function renderDashboard() {
     sc(o.pageCount || 0, '独立页面', '管理页面', "navigate('pages')") + '</div>';
   html += '<div class="dashboard-grid"><section class="card dashboard-posts"><div class="panel-heading"><h3>最近文章</h3><button class="text-button" onclick="navigate(\'posts\')">查看全部 →</button></div>';
   if (recentPosts?.length) {
-    html += '<table><thead><tr><th>标题</th><th>状态</th><th>分类</th><th>创建时间</th></tr></thead><tbody>' +
+    html += '<table><thead><tr><th scope="col">标题</th><th scope="col">状态</th><th scope="col">分类</th><th scope="col">创建时间</th></tr></thead><tbody>' +
       recentPosts.map(p => '<tr><td><button class="title-button" onclick="openPostEditor(\'post\',' + jsArg(p.id) + ')">' + escape(p.title || '无标题') +
         '</button><small class="record-meta">' + escape(p.author_name || '') + '</small></td><td>' + statusLabel(p.status) +
         '</td><td>' + escape(p.category_name || '未分类') + '</td><td><time>' + fmt(p.created_at) + '</time></td></tr>').join('') + '</tbody></table>';
@@ -689,13 +853,14 @@ async function loadPostEditor(type, id, signal) {
   const isPage = type === 'page';
   cleanupEditorRuntime();
   // 各项互不依赖，同时读取；可选信息失败不阻止写作。
-  const [post, cats, templates, options, editorFieldResponse, editorPluginResponse] = await Promise.all([
+  const [post, cats, templates, options, editorFieldResponse, editorPluginResponse, pageList] = await Promise.all([
     id ? api('/admin/posts/' + id, { signal }) : null,
     api('/admin/categories', { signal }).catch(() => []),
     isPage ? api('/admin/page-templates', { signal }).catch(() => null) : null,
     api(user?.role === 'admin' ? '/admin/options' : '/options/public', { signal }).catch(() => null),
     api('/admin/editor-fields?type=' + (isPage ? 'page' : 'post'), { signal }).catch(error => ({ error })),
     api('/admin/editor-extensions?type=' + (isPage ? 'page' : 'post'), { signal }).catch(error => ({ error })),
+    isPage ? api('/admin/pages?page=1&pageSize=100', { signal }).catch(() => null) : null,
   ]);
   // 请求被切页或另一个编辑器取消后，不再覆盖当前页面。
   if (signal.aborted) return;
@@ -710,8 +875,9 @@ async function loadPostEditor(type, id, signal) {
   const pluginActionsMarkup = currentEditorPluginManifest ? renderPluginEditorActions(currentEditorPluginManifest) : '';
   const pluginSidebarActionsMarkup = currentEditorPluginManifest ? renderPluginSidebarActions(currentEditorPluginManifest) : '';
   const pageTpls = templates?.templates || [];
-  const permalinkTpl = (isPage ? '/page/{slug}' : (Array.isArray(options)
-    ? options.find(o => o.key === 'permalink')?.value : options?.permalink)) || '/archives/{cid}/';
+  const optionValue = key => Array.isArray(options)
+    ? options.find(o => o.key === key)?.value : options?.[key];
+  const permalinkTpl = (isPage ? optionValue('page_pattern') : optionValue('permalink')) || (isPage ? '/page/{slug}' : '/archives/{cid}/');
   const curTpl = post ? (post.template || '') : '';
   const tplOpts = ['<option value=""' + (curTpl ? '' : ' selected') + '>默认模板（page.html）</option>']
     .concat(pageTpls.map(t => '<option value="' + escape(t.key) + '"' + (curTpl === t.key ? ' selected' : '') + '>' + escape(t.name) + '（' + escape(t.file) + '）</option>'))
@@ -720,24 +886,88 @@ async function loadPostEditor(type, id, signal) {
   const tplGroup = (isPage && pageTpls.length)
     ? '<div class="form-group"><label>页面模板</label><select id="pe-template">' + tplOpts + '</select></div>'
     : '';
-  const catOpts = ['<option value="">无分类</option>'].concat((cats || []).map(c => '<option value="' + c.id + '"' + (post && post.category_id === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
+  // 页面层级：父级下拉排除自身与自己的后代，服务端仍会再校验一次环
+  const pageItems = Array.isArray(pageList?.items) ? pageList.items : [];
+  const descendantIds = new Set();
+  if (isPage && id) {
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const item of pageItems) {
+        if (item.id === id || descendantIds.has(item.id) || !item.parent_id) continue;
+        if (item.parent_id === id || descendantIds.has(item.parent_id)) { descendantIds.add(item.id); grew = true; }
+      }
+    }
+  }
+  const parentOptions = ['<option value="">顶层页面</option>'].concat(pageItems
+    .filter(item => item.id !== id && !descendantIds.has(item.id))
+    .map(item => '<option value="' + escape(item.id) + '"' + (post && post.parent_id === item.id ? ' selected' : '') + '>' + escape(item.title || item.slug) + '</option>')).join('');
+  const parentBox = isPage
+    ? '<div class="side-box" id="pe-parent-box"><div class="side-box-title">页面层级</div>' +
+      '<div class="form-group"><label for="pe-parent">父级页面</label><select id="pe-parent">' + parentOptions + '</select>' +
+      '<div class="hint">有父级时公开路径按目录拼接，例如 /父页面/子页面；父级页面不能是自己或自己的子页面。</div></div></div>'
+    : '';
+  // 多分类：主分类走下拉（写入 category_id，供 {category} 永久链接），其余用复选框。
+  const postCategoryIds = Array.isArray(post?.categoryIds) ? post.categoryIds
+    : (Array.isArray(post?.categories) ? post.categories.map(item => item.id) : (post?.category_id ? [post.category_id] : []));
+  const primaryCategory = postCategoryIds[0] || '';
+  const catOpts = ['<option value="">无分类</option>'].concat((cats || []).map(c => '<option value="' + c.id + '"' + (primaryCategory === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
+  const catExtras = (cats || []).filter(c => c.id !== primaryCategory).map(c =>
+    '<label class="cat-extra"><input type="checkbox" name="pe-cat-extra" value="' + escape(c.id) + '"' + (postCategoryIds.includes(c.id) ? ' checked' : '') + '> ' + escape(c.name) + '</label>').join('');
   const st = post ? post.status : (user?.role === 'contributor' ? 'draft' : 'published');
   const statuses = user?.role === 'contributor' ? [['draft', '草稿']] : [['draft', '草稿'], ['published', '发布'], ['pending', '待审核']];
   const statusOpts = statuses.map(x => '<option value="' + x[0] + '"' + (st === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
+  // 可见性只对文章开放：私密与密码保护是公开阅读路径的两种受限模式。
+  const postVisibility = post?.visibility || 'public';
+  const visibilityOpts = [['public', '公开'], ['private', '私密'], ['password', '密码保护']]
+    .map(x => '<option value="' + x[0] + '"' + (postVisibility === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
+  const visibilityBox = isPage ? '' : `
+          <div class="form-group"><label for="pe-visibility">可见性</label><select id="pe-visibility" onchange="togglePostPassword()">${visibilityOpts}</select>
+            <div class="hint">私密文章仅作者与管理员/编辑可见；密码保护文章需访客输入密码后阅读。</div></div>
+          <div class="form-group" id="pe-post-password-box"${postVisibility === 'password' ? '' : ' hidden'}><label for="pe-post-password">访问密码</label><input id="pe-post-password" type="password" autocomplete="new-password" placeholder="4-100 位；留空表示不修改"><div class="hint">只保存哈希，不回填明文；编辑已有密码文章时留空即可保持原密码；解锁后访客 7 天内免再次输入。</div></div>`;
   const tagStr = post && post.tags ? post.tags.map(t => t.name).join(',') : '';
   const saveBtn = '<button class="btn btn-primary btn-block" onclick="savePost(\'' + type + '\',' + (id ? '\'' + id + '\'' : 'null') + ')">' + (id ? '更新' : '保存') + '</button>';
   setTopbar('<button class="btn btn-outline" onclick="navigate(\'' + (isPage ? 'pages' : 'posts') + '\')">← 返回列表</button>');
   document.getElementById('page-title').textContent = (id ? '编辑' : '新建') + (isPage ? '页面' : '文章');
+  const catExtrasBlock = catExtras
+    ? '<div class="cat-extras">' + catExtras + '</div>'
+    : '<div class="hint">暂无其他分类可附加。</div>';
   const tagBox = isPage ? '' : (`
         <div class="side-box">
           <div class="side-box-title">分类与标签</div>
-          <div class="form-group"><label>分类</label><select id="pe-cat">${catOpts}</select></div>
+          <div class="form-group"><label for="pe-cat">主分类</label><select id="pe-cat">${catOpts}</select>
+            <div class="hint">主分类用于分类永久链接；一篇文章可以再勾选多个附加分类。</div></div>
+          <div class="form-group"><label>附加分类</label>${catExtrasBlock}</div>
           <div class="form-group"><label>标签（逗号分隔）</label><input id="pe-tags" value="${escape(tagStr)}" placeholder="tag1,tag2"></div>
         </div>`);
+  const genericFields = (() => {
+    try {
+      const parsed = typeof post?.fields === 'string' ? JSON.parse(post.fields) : (post?.fields || {});
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      return Object.fromEntries(Object.entries(parsed).filter(([key, value]) =>
+        !key.startsWith('_lill') && ['string', 'number', 'boolean'].includes(typeof value)));
+    } catch { return {}; }
+  })();
+  const genericRows = Object.entries(genericFields).map(([key, value]) =>
+    '<div class="generic-field-row"><input class="gf-key" aria-label="字段名" value="' + escape(key) + '" placeholder="字段名">' +
+    '<input class="gf-value" aria-label="字段值" value="' + escape(String(value)) + '" placeholder="字段值">' +
+    '<button type="button" class="btn btn-sm btn-ghost" onclick="removeGenericField(this)">删除</button></div>').join('');
+  const genericFieldsBox = '<div class="side-box" id="pe-generic-box"><div class="side-box-title">自定义字段</div>' +
+    '<div class="hint">键值对，供主题模板从 post.fields 读取；字段名仅限字母、数字与下划线。</div>' +
+    '<div id="pe-generic-rows">' + genericRows + '</div>' +
+    '<button type="button" class="btn btn-sm btn-outline" onclick="addGenericField()">+ 添加字段</button></div>';
+  // 修订历史区块只在编辑已有文章时出现：新建文章还没有任何版本可回退。
+  const versionsBoxMarkup = id
+    ? '<div class="side-box" id="pe-versions"><div class="side-box-title">修订历史</div><div class="hint" id="pe-versions-list">加载中…</div></div>'
+    : '';
   document.getElementById('content').innerHTML = `
   <div class="card editor-card" id="pe-editor-card">
     <div class="editor-layout">
       <div class="editor-main">
+        <div id="pe-draft-banner" class="side-box" hidden style="border-color:#f59e0b;background:#fffbeb">
+          <span id="pe-draft-banner-text"></span>
+          <button type="button" class="btn btn-sm btn-primary" onclick="restoreServerDraft()">恢复草稿</button>
+        </div>
         <div class="form-group"><input id="pe-title" class="editor-title" placeholder="请输入标题" value="${escape(post ? post.title : '')}"></div>
         <div class="editor-toolbar">
           <div class="tb-group">
@@ -779,8 +1009,11 @@ async function loadPostEditor(type, id, signal) {
         <div class="side-box">
           <div class="side-box-title">发布</div>
           <div class="form-group"><label>状态</label><select id="pe-status">${statusOpts}</select></div>
+          ${visibilityBox}
           <div class="form-group"><label for="pe-published-at">发布时间</label><input id="pe-published-at" type="datetime-local" step="1" value="${localDateTime(post?.published_at)}"><div class="hint">本地时间；留空在首次发布时使用当前时间，未来时间到点后自动公开。</div></div>
           <label class="check-line"><input type="checkbox" id="pe-comment-allowed"${post?.comment_allowed === 0 ? '' : ' checked'}> 允许评论</label>
+          <label class="check-line"><input type="checkbox" id="pe-allow-ping"${post?.allow_ping === 0 ? '' : ' checked'}> 允许引用</label>
+          <label class="check-line"><input type="checkbox" id="pe-allow-feed"${post?.allow_feed === 0 ? '' : ' checked'}> 输出到 Feed</label>
           ${isPage ? '' : '<label class="check-line"><input type="checkbox" id="pe-sticky"' + (post && post.sticky ? ' checked' : '') + '> 置顶到首页</label>'}
           <div class="side-actions">${saveBtn}</div>
         </div>
@@ -788,7 +1021,10 @@ async function loadPostEditor(type, id, signal) {
           <div class="side-box-title">别名（URL）</div>
           <div class="form-group"><input id="pe-slug" value="${escape(post ? post.slug : '')}" placeholder="留空自动生成"><div class="hint" id="pe-slug-hint"></div></div>
         </div>
+        ${versionsBoxMarkup}
         ${tagBox}
+        ${genericFieldsBox}
+        ${parentBox}
         <div class="side-box">
           <div class="side-box-title">更多</div>
           <div class="form-group"><label>封面图（URL，可选）</label><input id="pe-cover" value="${escape(post ? (post.cover_image || '') : '')}" placeholder="https://…"></div>
@@ -868,10 +1104,20 @@ async function loadPostEditor(type, id, signal) {
   // 本地草稿：停止输入 800ms 后写入 localStorage，保存成功后清除
   const draftKey = 'lill:draft:' + type + ':' + (id || 'new');
   let draftTimer = null;
+  let serverDraftTimer = null;
   window.__lillDraftSave = () => {
     clearTimeout(draftTimer);
     draftTimer = setTimeout(() => {
       try { localStorage.setItem(draftKey, JSON.stringify({ title: titleInput.value, content: ta.value, excerpt: excerptInput.value, excerptAuto: excerptAuto.checked, at: Date.now() })); } catch (e) {}
+    }, 800);
+    // 已有文章额外把草稿推到服务器：换浏览器/清缓存也能找回；失败静默，不打断写作
+    if (!id) return;
+    clearTimeout(serverDraftTimer);
+    serverDraftTimer = setTimeout(() => {
+      api('/admin/posts/' + id + '/autosave', {
+        method: 'POST',
+        body: { title: titleInput.value, content: ta.value, excerpt: excerptInput.value },
+      }).catch(() => {});
     }, 800);
   };
   try {
@@ -893,12 +1139,108 @@ async function loadPostEditor(type, id, signal) {
       }
     }
   } catch (e) {}
+  // 服务器草稿：跨设备/清缓存也能找回；修订历史：一篇文章的版本快照
+  const serverTimeText = value => {
+    const raw = String(value || '');
+    if (!raw) return '';
+    const iso = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? raw : date.toLocaleString();
+  };
+  let serverDraft = null;
+  const loadServerDraft = () => {
+    if (!id) return;
+    api('/admin/posts/' + id + '/autosave').then(res => {
+      const draft = res && res.draft;
+      if (!draft || typeof draft.post_id !== 'string') return;
+      const title = typeof draft.title === 'string' ? draft.title : '';
+      const content = typeof draft.content === 'string' ? draft.content : '';
+      if (!title && !content) return;
+      // 与服务器上的现值一致就不用打扰作者
+      if (title === (post ? (post.title || '') : '') && content === (post ? (post.content || '') : '')) return;
+      serverDraft = draft;
+      const banner = document.getElementById('pe-draft-banner');
+      const text = document.getElementById('pe-draft-banner-text');
+      if (!banner || !text) return;
+      text.textContent = '有服务器草稿（' + (serverTimeText(draft.updated_at) || '未知时间') + '），点击恢复。';
+      banner.hidden = false;
+    }).catch(() => {});
+  };
+  window.restoreServerDraft = () => {
+    if (!serverDraft) return;
+    if (typeof serverDraft.title === 'string' && serverDraft.title) titleInput.value = serverDraft.title;
+    if (typeof serverDraft.content === 'string') ta.value = serverDraft.content;
+    if (typeof serverDraft.excerpt === 'string' && serverDraft.excerpt) {
+      excerptInput.value = serverDraft.excerpt;
+      excerptAuto.checked = false;
+      syncExcerptMode();
+    }
+    if (!slugTouched && !slugInput.value) slugInput.value = mdClientSlug(titleInput.value);
+    serverDraft = null;
+    const banner = document.getElementById('pe-draft-banner');
+    if (banner) banner.hidden = true;
+    mdSync();
+    toast('已载入服务器草稿');
+  };
+  const loadVersions = () => {
+    if (!id) return;
+    const box = document.getElementById('pe-versions-list');
+    if (!box) return;
+    api('/admin/posts/' + id + '/versions').then(res => {
+      const items = res && Array.isArray(res.items) ? res.items : [];
+      if (!items.length) { box.textContent = '暂无修订记录'; return; }
+      box.innerHTML = items.slice(0, 10).map(v => '<div class="version-row" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid #e2e8f0"><div class="version-meta" style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escape(v.title || '（无标题）') + '</div><div class="hint">' + escape(serverTimeText(v.created_at)) + ' · ' + statusLabel(v.status) + '</div></div><button type="button" class="btn btn-sm btn-outline" onclick="restorePostVersion(' + jsArg(v.id) + ')">恢复</button></div>').join('');
+    }).catch(() => { box.textContent = '修订记录加载失败'; });
+  };
+  loadServerDraft();
+  loadVersions();
   titleInput.addEventListener('input', window.__lillDraftSave);
   excerptInput.addEventListener('input', window.__lillDraftSave);
   excerptAuto.addEventListener('change', window.__lillDraftSave);
   mdSync();
   renderSlugHint();
 }
+
+window.addGenericField = () => {
+  const rows = document.getElementById('pe-generic-rows');
+  if (!rows) return;
+  if (rows.children.length >= 50) return toast('自定义字段最多 50 个', 'error');
+  const row = document.createElement('div');
+  row.className = 'generic-field-row';
+  row.innerHTML = '<input class="gf-key" aria-label="字段名" placeholder="字段名">' +
+    '<input class="gf-value" aria-label="字段值" placeholder="字段值">' +
+    '<button type="button" class="btn btn-sm btn-ghost" onclick="removeGenericField(this)">删除</button>';
+  rows.appendChild(row);
+  row.querySelector('.gf-key').focus();
+};
+window.removeGenericField = button => {
+  const row = button.closest('.generic-field-row');
+  if (row) row.remove();
+};
+function collectGenericFields() {
+  const rows = [...document.querySelectorAll('#pe-generic-rows .generic-field-row')];
+  const result = {};
+  const seen = new Set();
+  for (const row of rows) {
+    const key = row.querySelector('.gf-key').value.trim();
+    const value = row.querySelector('.gf-value').value;
+    if (!key) {
+      if (value.trim()) throw new Error('请先填写自定义字段名');
+      continue;
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)) throw new Error('自定义字段名「' + key + '」无效：只能使用字母、数字和下划线，且不能以下划线开头');
+    if (seen.has(key)) throw new Error('自定义字段名「' + key + '」重复');
+    seen.add(key);
+    result[key] = value;
+  }
+  return result;
+}
+window.togglePostPassword = () => {
+  const select = document.getElementById('pe-visibility');
+  const box = document.getElementById('pe-post-password-box');
+  if (!select || !box) return;
+  box.hidden = select.value !== 'password';
+};
 
 window.savePost = async (type, id) => {
   const view = activeView;
@@ -923,7 +1265,27 @@ window.savePost = async (type, id) => {
     excerpt: document.getElementById('pe-excerpt').value || null,
     excerptAuto: document.getElementById('pe-excerpt-auto').checked,
     commentAllowed: document.getElementById('pe-comment-allowed').checked,
+    allowPing: document.getElementById('pe-allow-ping').checked,
+    allowFeed: document.getElementById('pe-allow-feed').checked,
   };
+  const visibilityEl = document.getElementById('pe-visibility');
+  if (visibilityEl) {
+    body.visibility = visibilityEl.value;
+    const passwordEl = document.getElementById('pe-post-password');
+    const postPassword = passwordEl ? passwordEl.value : '';
+    if (body.visibility === 'password') {
+      // 与后端一致：密码只收 4-100 位字符串；留空表示保持原密码，编辑已有密码文章不必重填。
+      if (postPassword !== '') {
+        if (postPassword.length < 4 || postPassword.length > 100) return toast('密码保护需要 4-100 位密码', 'error');
+        body.password = postPassword;
+      } else if (!id) {
+        // 新建密码文章必须给出密码，否则后端会以同样文案拒绝。
+        return toast('密码保护需要 4-100 位密码', 'error');
+      }
+    } else {
+      body.password = '';
+    }
+  }
   if (Array.isArray(currentEditorThemeFields) && currentEditorThemeFields.length) {
     body.themeFields = Object.fromEntries(currentEditorThemeFields.flatMap(field => {
       const input = document.getElementById('pe-theme-field-' + field.key);
@@ -962,12 +1324,26 @@ window.savePost = async (type, id) => {
   if (published.value !== published.defaultValue) body.publishedAt = published.value ? new Date(published.value).toISOString() : null;
   const order = document.getElementById('pe-order');
   if (order) body.order = Number(order.value);
+  const parentEl = document.getElementById('pe-parent');
+  if (parentEl) body.parentId = parentEl.value || null;
   const catEl = document.getElementById('pe-cat');
-  if (catEl) body.categoryId = catEl.value || null;
+  if (catEl) {
+    // 多分类：下拉是主分类（写入 category_id，供 {category} 永久链接），复选框是附加分类。
+    const extraIds = typeof document.querySelectorAll === 'function'
+      ? Array.from(document.querySelectorAll('input[name="pe-cat-extra"]:checked')).map(el => el.value)
+      : [];
+    const categoryIds = [catEl.value || '', ...extraIds].filter(Boolean);
+    body.categoryIds = [...new Set(categoryIds)];
+    body.categoryId = body.categoryIds[0] || null;
+  }
   const tagEl = document.getElementById('pe-tags');
   if (tagEl) body.tagNames = tagEl.value.split(',').map(s => s.trim()).filter(Boolean);
   const coverEl = document.getElementById('pe-cover');
   if (coverEl) body.coverImage = coverEl.value.trim() || null;
+  if (document.getElementById('pe-generic-box')) {
+    try { body.fields = collectGenericFields(); }
+    catch (e) { return toast(e.message, 'error'); }
+  }
   const stickyEl = document.getElementById('pe-sticky');
   if (stickyEl) body.sticky = stickyEl.checked;
   // 仅当页面模板下拉存在时才提交 template，避免误清空已有设置
@@ -977,8 +1353,22 @@ window.savePost = async (type, id) => {
     else await api('/admin/posts', { method: 'POST', body });
     if (runtime && runtime.type === type) runtime.emitSaveAfter({ content, pluginFields: body.pluginFields || {}, type, postId: id || null });
     try { localStorage.removeItem('lill:draft:' + type + ':' + (id || 'new')); } catch (e) {}
+    if (id) api('/admin/posts/' + id + '/autosave', { method: 'DELETE' }).catch(() => {});
     toast(id ? '已更新' : '已保存');
     if (activeView === view) return window.navigate(type === 'page' ? 'pages' : 'posts');
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+window.restorePostVersion = async (versionId) => {
+  const postId = currentEditorRuntime && currentEditorRuntime.postId;
+  if (!postId) return;
+  if (!confirm('恢复到这个修订版本？当前内容会先存为一条新的修订。')) return;
+  const key = activeView && activeView.key;
+  try {
+    await api('/admin/posts/' + postId + '/versions/' + versionId + '/restore', { method: 'POST', body: {} });
+    try { await api('/admin/posts/' + postId + '/autosave', { method: 'DELETE' }); } catch (e) {}
+    toast('已恢复修订');
+    if (activeView && activeView.key === key) window.retryView();
   } catch (e) { toast(e.message, 'error'); }
 };
 
@@ -986,45 +1376,219 @@ window.delPost = async (id) => { if (!confirm('确定删除？')) return; const 
 
 // ═══ 文章列表 ═══
 async function renderPosts() {
-  const r = await api('/admin/posts?page=' + pageNum + '&pageSize=20' + (postStatus ? '&status=' + postStatus : ''));
-  const rows = (r.items || []).map(p => '<tr><td><input type="checkbox" class="post-check" value="' + p.id + '"></td><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + escape(p.category_name || '-') + '</td><td>' + statusLabel(p.status) + '</td><td>' + (p.comment_count || 0) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'post\',' + jsArg(p.id) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
+  const params = ['page=' + pageNum, 'pageSize=20'];
+  if (postKeyword.trim()) params.push('keyword=' + encodeURIComponent(postKeyword.trim()));
+  if (postCategoryId) params.push('categoryId=' + encodeURIComponent(postCategoryId));
+  if (postStatus) params.push('status=' + encodeURIComponent(postStatus));
+  const [r, categoryData] = await Promise.all([
+    api('/admin/posts?' + params.join('&')),
+    api('/admin/categories').catch(() => []),
+  ]);
+  const categories = Array.isArray(categoryData) ? categoryData : [];
+  postCategoriesCache = categories;
+  selectedPosts.clear();
+  const rows = (r.items || []).map(p => '<tr><td><input type="checkbox" aria-label="选择文章" class="post-check" value="' + escape(p.id) + '" onchange="togglePostCheck(this.value, this.checked)"></td><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + escape(p.category_name || '-') + '</td><td>' + statusLabel(p.status) + '</td><td>' + (p.comment_count || 0) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'post\',' + jsArg(p.id) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openPostEditor(\'post\')">+ 写文章</button>');
-  const filters = (user?.role === 'contributor' ? [['', '全部'], ['draft', '草稿']] : [['', '全部'], ['published', '已发布'], ['draft', '草稿'], ['pending', '待审核'], ['trash', '回收站']]).map(([value, label]) =>
+  const filters = (user?.role === 'contributor' ? [['', '全部'], ['draft', '草稿']] : [['', '全部'], ['published', '已发布'], ['draft', '草稿'], ['pending', '待审核']]).map(([value, label]) =>
     '<button class="filter-tab' + (postStatus === value ? ' active' : '') + '" aria-pressed="' + (postStatus === value) + '" onclick="filterPosts(\'' + value + '\')">' + label + '</button>').join('');
-  document.getElementById('content').innerHTML = '<div class="toolbar"><div class="filter-tabs" aria-label="文章状态">' + filters + '</div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllPosts(this.checked)"> 选择本页文章</label></div><div class="table-container"><table><thead><tr><th><input aria-label="选择本页文章" type="checkbox" onchange="toggleAllPosts(this.checked)"></th><th>标题</th><th>分类</th><th>状态</th><th>评论</th><th>浏览</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty">该状态下暂无文章</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  const categoryOpts = ['<option value="">全部分类</option>'].concat(categories.map(c => '<option value="' + escape(c.id) + '"' + (postCategoryId === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
+  document.getElementById('content').innerHTML = '<div class="toolbar"><div class="filter-tabs" aria-label="文章状态">' + filters + '</div><div class="list-filters"><label for="post-keyword">关键词</label><input type="text" id="post-keyword" value="' + escape(postKeyword) + '" placeholder="搜索标题或正文"><select id="post-category" aria-label="文章分类">' + categoryOpts + '</select><button class="btn btn-sm btn-outline" onclick="applyPostFilters()">筛选</button><button class="btn btn-sm btn-ghost" onclick="resetPostFilters()">重置</button></div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllPosts(this.checked)"> 选择本页文章</label></div><div id="post-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页文章" type="checkbox" onchange="toggleAllPosts(this.checked)"></th><th scope="col">标题</th><th scope="col">分类</th><th scope="col">状态</th><th scope="col">评论</th><th scope="col">浏览</th><th scope="col">日期</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty">该状态下暂无文章</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
+  updatePostSelection();
 }
 
-window.filterPosts = status => { postStatus = ['', 'published', 'draft', 'pending', 'trash'].includes(status) ? status : ''; pageNum = 1; return render(); };
-window.toggleAllPosts = (checked) => { document.querySelectorAll('.post-check').forEach(c => c.checked = checked); };
+window.filterPosts = status => { postStatus = ['', 'published', 'draft', 'pending'].includes(status) ? status : ''; pageNum = 1; return render(); };
+window.applyPostFilters = () => {
+  postKeyword = document.getElementById('post-keyword')?.value.trim() || '';
+  postCategoryId = document.getElementById('post-category')?.value || '';
+  pageNum = 1;
+  return render();
+};
+window.resetPostFilters = () => {
+  postKeyword = '';
+  postCategoryId = '';
+  pageNum = 1;
+  return render();
+};
+function updatePostSelection() {
+  const bar = document.getElementById('post-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.post-check')];
+  checks.forEach(el => { el.checked = selectedPosts.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllPosts(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  const publishAction = user?.role === 'contributor'
+    ? ''
+    : '<button class="btn btn-sm btn-outline" onclick="batchPosts(\'publish\')">批量发布</button>';
+  const categoryOptions = postCategoriesCache.map(c => '<option value="' + escape(c.id) + '">' + escape(c.name) + '</option>').join('');
+  bar.innerHTML = selectedPosts.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedPosts.size + ' 篇</span>' + publishAction +
+      '<button class="btn btn-sm btn-outline" onclick="batchPosts(\'draft\')">批量转草稿</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="batchPosts(\'sticky\')">置顶</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="batchPosts(\'unsticky\')">取消置顶</button>' +
+      (categoryOptions ? '<select id="batch-category" class="batch-select" aria-label="目标分类">' + categoryOptions + '</select><button class="btn btn-sm btn-outline" onclick="batchPosts(\'category\')">移动分类</button>' : '') +
+      '<button class="btn btn-sm btn-danger" onclick="batchPosts(\'delete\')">批量删除</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="clearPostSelection()">取消选择</button></div>'
+    : '';
+}
+window.togglePostCheck = (id, checked) => {
+  if (checked) selectedPosts.add(id);
+  else selectedPosts.delete(id);
+  updatePostSelection();
+};
+window.toggleAllPosts = (checked) => {
+  if (checked) document.querySelectorAll('.post-check').forEach(c => selectedPosts.add(c.value));
+  else selectedPosts.clear();
+  updatePostSelection();
+};
+window.clearPostSelection = () => { selectedPosts.clear(); updatePostSelection(); };
 window.batchPosts = async (action) => {
   const view = activeView;
-  const ids = Array.from(document.querySelectorAll('.post-check:checked')).map(c => c.value);
+  const ids = selectedPosts.size
+    ? Array.from(selectedPosts)
+    : Array.from(document.querySelectorAll('.post-check:checked')).map(c => c.value);
   if (!ids.length) return toast('请先选择文章', 'error');
   if (action === 'delete' && !confirm('确定删除选中的文章？')) return;
+  const body = { ids, action };
+  if (action === 'category') {
+    const select = document.getElementById('batch-category');
+    if (!select || !select.value) return toast('请选择目标分类', 'error');
+    body.categoryId = select.value;
+  }
   try {
-    await api('/admin/posts/batch', { method: 'POST', body: { ids, action } });
-    toast('操作完成'); refreshView(view);
+    await api('/admin/posts/batch', { method: 'POST', body });
+    toast('操作完成');
+    selectedPosts.clear();
+    refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
 };
 
 // ═══ 页面列表 ═══
 async function renderPages() {
-  const r = await api('/admin/pages?page=' + pageNum + '&pageSize=20');
-  const rows = (r.items || []).map(p => '<tr><td><strong>' + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(p.slug) + '</small></td><td>' + statusLabel(p.status) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openPostEditor(\'page\',\'' + p.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
+  const params = new URLSearchParams({ page: String(pageNum), pageSize: '20' });
+  if (pageKeyword) params.set('keyword', pageKeyword);
+  if (pageCategoryId) params.set('categoryId', pageCategoryId);
+  const [r, categories] = await Promise.all([api('/admin/pages?' + params), api('/admin/categories').catch(() => [])]);
+  selectedPages.clear();
+  const pageItems = r.items || [];
+  const pageById = new Map(pageItems.map(item => [item.id, item]));
+  const pageDepth = item => {
+    let depth = 0; let cursor = item.parent_id ? pageById.get(item.parent_id) : null; const seen = new Set([item.id]);
+    while (cursor && !seen.has(cursor.id) && depth < 10) { seen.add(cursor.id); depth++; cursor = cursor.parent_id ? pageById.get(cursor.parent_id) : null; }
+    return depth;
+  };
+  const pageSlugPath = item => {
+    const slugs = []; let cursor = item; const seen = new Set();
+    while (cursor && !seen.has(cursor.id)) { seen.add(cursor.id); slugs.unshift(cursor.slug); cursor = cursor.parent_id ? pageById.get(cursor.parent_id) : null; }
+    return slugs.join('/');
+  };
+  const rows = pageItems.map((p, index) => '<tr><td><input type="checkbox" aria-label="选择页面" class="page-check" value="' + escape(p.id) + '" onchange="togglePageCheck(this.value, this.checked)"></td><td><strong style="display:inline-block;padding-left:' + (pageDepth(p) * 14) + 'px">' + (pageDepth(p) ? '↳ ' : '') + escape(p.title) + '</strong><br><small style="color:#64748b">' + escape(pageSlugPath(p)) + '</small></td><td>' + (p.order ?? 0) + '</td><td>' + escape(p.template || '默认模板') + '</td><td>' + statusLabel(p.status) + '</td><td>' + (p.view_count || 0) + '</td><td>' + fmt(p.created_at) + '</td><td class="actions"><button class="btn btn-sm btn-outline" title="上移" aria-label="上移" onclick="movePage(\'' + p.id + '\',-1)">↑</button> <button class="btn btn-sm btn-outline" title="下移" aria-label="下移" onclick="movePage(\'' + p.id + '\',1)">↓</button> <button class="btn btn-sm btn-outline" onclick="openPostEditor(\'page\',\'' + p.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delPost(\'' + p.id + '\')">删除</button></td></tr>').join('');
   setTopbar('<button class="btn btn-primary" onclick="openPostEditor(\'page\')">+ 新建页面</button>');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>标题</th><th>状态</th><th>浏览</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">暂无页面</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  const categoryOpts = ['<option value="">全部分类</option>'].concat((Array.isArray(categories) ? categories : []).map(c => '<option value="' + escape(c.id) + '"' + (pageCategoryId === c.id ? ' selected' : '') + '>' + escape(c.name) + '</option>')).join('');
+  document.getElementById('content').innerHTML = '<div class="toolbar"><div class="list-filters"><label for="page-keyword">关键词</label><input type="text" id="page-keyword" value="' + escape(pageKeyword) + '" placeholder="搜索标题或正文"><select id="page-category" aria-label="页面分类">' + categoryOpts + '</select><button class="btn btn-sm btn-outline" onclick="applyPageFilters()">筛选</button><button class="btn btn-sm btn-ghost" onclick="resetPageFilters()">重置</button></div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllPages(this.checked)"> 选择本页页面</label></div><div id="page-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页页面" type="checkbox" onchange="toggleAllPages(this.checked)"></th><th scope="col">标题</th><th scope="col">顺序</th><th scope="col">模板</th><th scope="col">状态</th><th scope="col">浏览</th><th scope="col">日期</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="8"><div class="empty">暂无页面</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
+  updatePageSelection();
 }
+window.applyPageFilters = () => {
+  pageKeyword = document.getElementById('page-keyword')?.value.trim() || '';
+  pageCategoryId = document.getElementById('page-category')?.value || '';
+  pageNum = 1;
+  return render();
+};
+window.resetPageFilters = () => { pageKeyword = ''; pageCategoryId = ''; pageNum = 1; return render(); };
+window.movePage = async (id, delta) => {
+  try {
+    const r = await api('/admin/pages?page=1&pageSize=100');
+    const items = (r.items || []).slice();
+    const from = items.findIndex(item => item.id === id);
+    const to = from + delta;
+    if (from < 0) return;
+    if (to < 0 || to >= items.length) return toast('已经在边界', 'error');
+    [items[from], items[to]] = [items[to], items[from]];
+    await api('/admin/pages/reorder', { method: 'POST', body: items.map((item, index) => ({ id: item.id, order: index })) });
+    toast('顺序已更新');
+    refreshView(activeView);
+  } catch (e) { toast(e.message, 'error'); }
+};
+function updatePageSelection() {
+  const bar = document.getElementById('page-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.page-check')];
+  checks.forEach(el => { el.checked = selectedPages.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllPages(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  const publishAction = user?.role === 'contributor' ? '' : '<button class="btn btn-sm btn-outline" onclick="batchPages(\'publish\')">批量发布</button>';
+  bar.innerHTML = selectedPages.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedPages.size + ' 个页面</span>' + publishAction + '<button class="btn btn-sm btn-outline" onclick="batchPages(\'draft\')">批量转草稿</button><button class="btn btn-sm btn-danger" onclick="batchPages(\'delete\')">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearPageSelection()">取消选择</button></div>'
+    : '';
+}
+window.togglePageCheck = (id, checked) => {
+  if (checked) selectedPages.add(id);
+  else selectedPages.delete(id);
+  updatePageSelection();
+};
+window.toggleAllPages = (checked) => {
+  if (checked) document.querySelectorAll('.page-check').forEach(c => selectedPages.add(c.value));
+  else selectedPages.clear();
+  updatePageSelection();
+};
+window.clearPageSelection = () => { selectedPages.clear(); updatePageSelection(); };
+window.batchPages = async (action) => {
+  const view = activeView;
+  const ids = selectedPages.size ? Array.from(selectedPages) : Array.from(document.querySelectorAll('.page-check:checked')).map(c => c.value);
+  if (!ids.length) return toast('请先选择页面', 'error');
+  if (action === 'delete' && !confirm('确定删除选中的 ' + ids.length + ' 个页面？')) return;
+  try {
+    await api('/admin/pages/batch', { method: 'POST', body: { ids, action } });
+    toast('操作完成');
+    selectedPages.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 
 // ═══ 操作日志 ═══
 async function renderLogs() {
   const r = await api('/admin/logs?page=' + pageNum + '&pageSize=20');
-  const rows = (r.items || []).map(l => '<tr><td>' + fmt(l.created_at) + '</td><td>' + escape(l.username || '-') + '</td><td><code>' + escape(l.action) + '</code></td><td>' + escape(l.detail || '-') + '</td><td>' + escape(l.ip || '-') + '</td></tr>').join('');
+  selectedLogs.clear();
+  const rows = (r.items || []).map(l => '<tr><td><input type="checkbox" aria-label="选择日志" class="log-check" value="' + escape(l.id) + '" onchange="toggleLogCheck(this.value, this.checked)"></td><td>' + fmt(l.created_at) + '</td><td>' + escape(l.username || '-') + '</td><td><code>' + escape(l.action) + '</code></td><td>' + escape(l.detail || '-') + '</td><td>' + escape(l.ip || '-') + '</td></tr>').join('');
   setTopbar('<button class="btn btn-danger" onclick="clearLogs()">清空日志</button>');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>详情</th><th>IP</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">暂无日志</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  document.getElementById('content').innerHTML = '<div class="toolbar"><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllLogs(this.checked)"> 选择本页日志</label></div><div id="log-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页日志" type="checkbox" onchange="toggleAllLogs(this.checked)"></th><th scope="col">时间</th><th scope="col">用户</th><th scope="col">操作</th><th scope="col">详情</th><th scope="col">IP</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">暂无日志</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
+  updateLogSelection();
 }
+
+function updateLogSelection() {
+  const bar = document.getElementById('log-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.log-check')];
+  checks.forEach(el => { el.checked = selectedLogs.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllLogs(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedLogs.size ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedLogs.size + ' 条</span><button class="btn btn-sm btn-danger" onclick="batchDeleteLogs()">删除选中</button><button class="btn btn-sm btn-outline" onclick="clearLogSelection()">取消选择</button></div>' : '';
+}
+window.toggleLogCheck = (id, checked) => { if (checked) selectedLogs.add(id); else selectedLogs.delete(id); updateLogSelection(); };
+window.toggleAllLogs = checked => { if (checked) document.querySelectorAll('.log-check').forEach(el => selectedLogs.add(el.value)); else selectedLogs.clear(); updateLogSelection(); };
+window.clearLogSelection = () => { selectedLogs.clear(); updateLogSelection(); };
+window.batchDeleteLogs = async () => {
+  const view = activeView;
+  const ids = [...selectedLogs];
+  if (!ids.length) return toast('请先选择日志', 'error');
+  try {
+    const result = await api('/admin/logs/batch', { method: 'POST', body: { ids } });
+    toast('已删除 ' + result.deleted + ' 条日志');
+    selectedLogs.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 
 window.clearLogs = async () => {
   if (!confirm('确定清空所有日志？')) return;
@@ -1035,26 +1599,91 @@ window.clearLogs = async () => {
 // ═══ 备份 ═══
 async function renderBackup() {
   const backups = await api('/admin/backup/list');
+  selectedBackups.clear();
   setTopbar('<button class="btn btn-primary" onclick="createBackup()">+ 创建备份</button>');
-  const rows = backups.map(b => '<tr><td>' + escape(b.name) + '</td><td>' +
+  const rows = backups.map(b => '<tr><td><input type="checkbox" aria-label="选择备份" class="backup-check" value="' + escape(b.name) + '" onchange="toggleBackupCheck(this.value, this.checked)"></td><td>' + escape(b.name) + '</td><td>' +
     (b.size / 1024).toFixed(1) + ' KB</td><td>' + escape(new Date(b.created_at).toLocaleString('zh-CN')) +
-    '</td><td><button class="btn btn-sm btn-outline" onclick="downloadBackup(' + jsArg(b.name) + ')">下载</button></td></tr>').join('');
+    '</td><td><button class="btn btn-sm btn-outline" onclick="downloadBackup(' + jsArg(b.name) + ')">下载</button>' +
+    (/\.db$/.test(b.name) ? ' <button class="btn btn-sm btn-danger" onclick="restoreBackup(' + jsArg(b.name) + ')">恢复</button>' : '') +
+    '</td></tr>').join('');
   document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">站点备份</h3>' +
     '<p>数据库和附件分别打包。数据库包含账号及配置，请将下载的备份妥善保存。</p></div>' +
-    '<div class="table-container"><table><thead><tr><th>文件</th><th>大小</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="4"><div class="empty">暂无备份，点击创建备份</div></td></tr>') + '</tbody></table></div>';
+    '<div id="backup-progress" aria-live="polite"></div>' +
+    '<div class="toolbar"><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllBackups(this.checked)"> 选择本页备份</label></div><div id="backup-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页备份" type="checkbox" onchange="toggleAllBackups(this.checked)"></th><th scope="col">文件</th><th scope="col">大小</th><th scope="col">创建时间</th><th scope="col">操作</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="5"><div class="empty">暂无备份，点击创建备份</div></td></tr>') + '</tbody></table></div>';
+  updateBackupSelection();
 }
+
+function updateBackupSelection() {
+  const bar = document.getElementById('backup-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.backup-check')];
+  checks.forEach(el => { el.checked = selectedBackups.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllBackups(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedBackups.size ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedBackups.size + ' 项</span><button class="btn btn-sm btn-danger" onclick="batchDeleteBackups()">删除选中</button><button class="btn btn-sm btn-outline" onclick="clearBackupSelection()">取消选择</button></div>' : '';
+}
+window.toggleBackupCheck = (name, checked) => { if (checked) selectedBackups.add(name); else selectedBackups.delete(name); updateBackupSelection(); };
+window.toggleAllBackups = checked => { if (checked) document.querySelectorAll('.backup-check').forEach(el => selectedBackups.add(el.value)); else selectedBackups.clear(); updateBackupSelection(); };
+window.clearBackupSelection = () => { selectedBackups.clear(); updateBackupSelection(); };
+window.batchDeleteBackups = async () => {
+  const view = activeView;
+  const names = [...selectedBackups];
+  if (!names.length) return toast('请先选择备份', 'error');
+  if (!confirm('确定删除选中的 ' + names.length + ' 个附件备份？')) return;
+  try {
+    const result = await api('/admin/backup', { method: 'DELETE', body: { names } });
+    toast(result.skipped.length ? '已删除 ' + result.updated + ' 个，跳过 ' + result.skipped.length + ' 个' : '已删除 ' + result.updated + ' 个备份');
+    selectedBackups.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 
 window.createBackup = async () => {
   const view = activeView;
   const buttons = [...document.querySelectorAll('button[onclick="createBackup()"]')];
   if (buttons.some(button => button.disabled)) return;
   buttons.forEach(button => { button.disabled = true; button.textContent = '备份中…'; });
+  const progress = document.getElementById('backup-progress');
+  const showProgress = async () => {
+    try {
+      const state = await api('/admin/backup/progress');
+      if (!progress || activeView?.navigation !== view.navigation) return;
+      const percent = Math.max(0, Math.min(100, Number(state.progress) || 0));
+      progress.innerHTML = '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">' + escape(state.message || '正在备份') + '</span><progress max="100" value="' + percent + '"></progress><strong>' + percent + '%</strong></div>';
+    } catch (e) {
+      if (progress) progress.textContent = e.message;
+    }
+  };
+  clearInterval(backupProgressTimer);
+  await showProgress();
+  backupProgressTimer = setInterval(showProgress, 800);
   try {
     await api('/admin/backup', { method: 'POST', timeout: 180000 });
     toast('备份已创建，可以下载'); refreshView(view);
   } catch (e) { toast(e.message, 'error'); }
-  finally { buttons.forEach(button => { button.disabled = false; button.textContent = '+ 创建备份'; }); }
+  finally {
+    clearInterval(backupProgressTimer);
+    backupProgressTimer = null;
+    buttons.forEach(button => { button.disabled = false; button.textContent = '+ 创建备份'; });
+  }
+};
+window.restoreBackup = async name => {
+  if (!/\.db$/.test(name)) return toast('请选择数据库备份文件（.db）', 'error');
+  if (!confirm('将用备份 ' + name + ' 覆盖当前站点数据库。\n恢复前会自动生成一份当前数据的安全快照，但恢复后需要重新登录。确定继续？')) return;
+  if (!confirm('再次确认：恢复会替换现有的文章、评论、用户与设置。')) return;
+  const typed = prompt('请输入「恢复」两个字以确认操作');
+  if (typed !== '恢复') return toast('已取消恢复');
+  const view = activeView;
+  try {
+    const result = await api('/admin/backup/restore', { method: 'POST', body: { name }, timeout: 180000 });
+    toast(result.message || ('已从 ' + result.restored + ' 恢复 ' + result.tables + ' 张表，请重新登录'), 'success');
+    if (confirm('数据库已恢复。是否立即刷新页面并重新登录？')) location.reload();
+    else refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
 };
 window.downloadBackup = async name => {
   try {
@@ -1077,11 +1706,66 @@ window.downloadBackup = async name => {
 // ═══ 分类 ═══
 async function renderCategories() {
   const r = await api('/admin/categories');
-  const rows = (r || []).map(c => '<tr><td><strong>' + escape(c.name) + '</strong></td><td><code>' + escape(c.slug) + '</code></td><td>' + escape(c.description || '-') + '</td><td>' + (c.parent_name ? escape(c.parent_name) : '-') + '</td><td>' + (c.post_count || 0) + '</td><td class="actions">' + (managesTaxonomy() ? '<button class="btn btn-sm btn-outline" onclick="openCatEditor(\'' + c.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delCat(\'' + c.id + '\')">删除</button>' : '只读') + '</td></tr>').join('');
+  const can = managesTaxonomy();
+  selectedCategories.clear();
+  const rows = (r || []).map(c => '<tr>' + (can ? '<td><input type="checkbox" aria-label="选择分类" class="cat-check" value="' + escape(c.id) + '" onchange="toggleCatCheck(this.value, this.checked)"></td>' : '') + '<td><strong>' + escape(c.name) + '</strong></td><td><code>' + escape(c.slug) + '</code></td><td>' + escape(c.description || '-') + '</td><td>' + (c.parent_name ? escape(c.parent_name) : '-') + '</td><td>' + (c.post_count || 0) + '</td><td class="sort-cell"><span class="sort-val">' + (c.sort_order || 0) + '</span><button class="btn btn-sm btn-outline" title="上移" aria-label="分类上移" onclick="moveCategory(\'' + c.id + '\',-1)">↑</button><button class="btn btn-sm btn-outline" title="下移" aria-label="分类下移" onclick="moveCategory(\'' + c.id + '\',1)">↓</button></td><td class="actions">' + (managesTaxonomy() ? '<button class="btn btn-sm btn-outline" onclick="openCatEditor(\'' + c.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delCat(\'' + c.id + '\')">删除</button>' : '只读') + '</td></tr>').join('');
   setTopbar(managesTaxonomy() ? '<button class="btn btn-primary" onclick="openCatEditor()">+ 新建分类</button>' : '');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>描述</th><th>父级</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">暂无分类</div></td></tr>') + '</tbody></table></div>';
+  document.getElementById('content').innerHTML = '<div class="toolbar"><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllCats(this.checked)"> 选择本页分类</label></div><div id="cat-selection"></div><div class="table-container"><table><thead><tr>' + (can ? '<th scope="col"><input aria-label="选择本页分类" type="checkbox" onchange="toggleAllCats(this.checked)"></th>' : '') + '<th scope="col">名称</th><th scope="col">别名</th><th scope="col">描述</th><th scope="col">父级</th><th scope="col">文章数</th><th scope="col">排序</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="' + (can ? 8 : 7) + '"><div class="empty">暂无分类</div></td></tr>') + '</tbody></table></div>';
   labelTableRows();
+  updateCatSelection();
 }
+function updateCatSelection() {
+  const bar = document.getElementById('cat-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.cat-check')];
+  checks.forEach(el => { el.checked = selectedCategories.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllCats(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedCategories.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedCategories.size + ' 个分类</span><button class="btn btn-sm btn-danger" onclick="batchCats()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearCatSelection()">取消选择</button></div>'
+    : '';
+}
+window.toggleCatCheck = (id, checked) => {
+  if (checked) selectedCategories.add(id);
+  else selectedCategories.delete(id);
+  updateCatSelection();
+};
+window.toggleAllCats = (checked) => {
+  if (checked) document.querySelectorAll('.cat-check').forEach(c => selectedCategories.add(c.value));
+  else selectedCategories.clear();
+  updateCatSelection();
+};
+window.clearCatSelection = () => { selectedCategories.clear(); updateCatSelection(); };
+window.batchCats = async () => {
+  const view = activeView;
+  const ids = Array.from(selectedCategories);
+  if (!ids.length) return toast('请先选择分类', 'error');
+  if (!confirm('确定删除选中的 ' + ids.length + ' 个分类？分类下的文章将变为未分类，仍有子分类的分类会跳过并提示。')) return;
+  try {
+    const r = await api('/admin/categories/batch', { method: 'POST', body: { ids, action: 'delete' } });
+    toast('已删除 ' + (r.deleted || ids.length) + ' 个分类');
+    selectedCategories.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.moveCategory = async (id, delta) => {
+  const view = activeView;
+  try {
+    const list = (await api('/admin/categories') || []).slice();
+    const index = list.findIndex(c => c.id === id);
+    const target = index + delta;
+    if (index < 0) return;
+    if (target < 0 || target >= list.length) return toast('已经在边界', 'error');
+    const items = list.map((c, i) => ({ id: c.id, sortOrder: i }));
+    [items[index], items[target]] = [items[target], items[index]];
+    await api('/admin/categories/reorder', { method: 'POST', body: { items } });
+    toast('顺序已更新');
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 
 window.openCatEditor = id => showView('category-editor:' + (id || 'new'), signal => loadCatEditor(id, signal), true);
 async function loadCatEditor(id, signal) {
@@ -1132,11 +1816,67 @@ window.delCat = async (id) => { if (!confirm('确定删除？该分类下的文�
 // ═══ 标签 ═══
 async function renderTags() {
   const r = await api('/admin/tags?pageSize=100&page=' + pageNum);
-  const rows = (r.items || []).map(t => '<tr><td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="actions">' + (managesTaxonomy() ? '<button class="btn btn-sm btn-outline" onclick="openTagEditor(' + jsArg(t.id) + ',' + jsArg(t.name) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button>' : '只读') + '</td></tr>').join('');
+  const can = managesTaxonomy();
+  selectedTags.clear();
+  const rows = (r.items || []).map(t => '<tr>' + (can ? '<td><input type="checkbox" aria-label="选择标签" class="tag-check" value="' + escape(t.id) + '" onchange="toggleTagCheck(this.value, this.checked)"></td>' : '') + '<td><strong>' + escape(t.name) + '</strong></td><td><code>' + escape(t.slug) + '</code></td><td>' + (t.post_count || 0) + '</td><td class="sort-cell"><span class="sort-val">' + (t.sort_order || 0) + '</span><button class="btn btn-sm btn-outline" title="上移" aria-label="标签上移" onclick="moveTag(\'' + t.id + '\',-1)">↑</button><button class="btn btn-sm btn-outline" title="下移" aria-label="标签下移" onclick="moveTag(\'' + t.id + '\',1)">↓</button></td><td class="actions">' + (managesTaxonomy() ? '<button class="btn btn-sm btn-outline" onclick="openTagEditor(' + jsArg(t.id) + ',' + jsArg(t.name) + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delTag(\'' + t.id + '\')">删除</button>' : '只读') + '</td></tr>').join('');
   setTopbar(managesTaxonomy() ? '<button class="btn btn-primary" onclick="openTagEditor()">+ 新建标签</button>' : '');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>名称</th><th>别名</th><th>文章数</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty">暂无标签</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  document.getElementById('content').innerHTML = '<div class="toolbar"><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllTags(this.checked)"> 选择本页标签</label></div><div id="tag-selection"></div><div class="table-container"><table><thead><tr>' + (can ? '<th scope="col"><input aria-label="选择本页标签" type="checkbox" onchange="toggleAllTags(this.checked)"></th>' : '') + '<th scope="col">名称</th><th scope="col">别名</th><th scope="col">文章数</th><th scope="col">排序</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="' + (can ? 6 : 5) + '"><div class="empty">暂无标签</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
+  updateTagSelection();
 }
+function updateTagSelection() {
+  const bar = document.getElementById('tag-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.tag-check')];
+  checks.forEach(el => { el.checked = selectedTags.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllTags(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedTags.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedTags.size + ' 个标签</span><button class="btn btn-sm btn-danger" onclick="batchTags()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearTagSelection()">取消选择</button></div>'
+    : '';
+}
+window.toggleTagCheck = (id, checked) => {
+  if (checked) selectedTags.add(id);
+  else selectedTags.delete(id);
+  updateTagSelection();
+};
+window.toggleAllTags = (checked) => {
+  if (checked) document.querySelectorAll('.tag-check').forEach(c => selectedTags.add(c.value));
+  else selectedTags.clear();
+  updateTagSelection();
+};
+window.clearTagSelection = () => { selectedTags.clear(); updateTagSelection(); };
+window.batchTags = async () => {
+  const view = activeView;
+  const ids = Array.from(selectedTags);
+  if (!ids.length) return toast('请先选择标签', 'error');
+  if (!confirm('确定删除选中的 ' + ids.length + ' 个标签？文章不会被删除，只会解除标签关联。')) return;
+  try {
+    const r = await api('/admin/tags/batch', { method: 'POST', body: { ids, action: 'delete' } });
+    toast('已删除 ' + (r.deleted || ids.length) + ' 个标签');
+    selectedTags.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.moveTag = async (id, delta) => {
+  const view = activeView;
+  try {
+    const r = await api('/admin/tags?pageSize=100&page=' + pageNum);
+    const list = (r.items || []).slice();
+    const index = list.findIndex(t => t.id === id);
+    const target = index + delta;
+    if (index < 0) return;
+    if (target < 0 || target >= list.length) return toast('已经在边界', 'error');
+    const items = list.map((t, i) => ({ id: t.id, sortOrder: i }));
+    [items[index], items[target]] = [items[target], items[index]];
+    await api('/admin/tags/reorder', { method: 'POST', body: { items } });
+    toast('顺序已更新');
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 window.openTagEditor = (id, name) => {
   const view = activeView;
   const n = prompt('标签名称：', name || '');
@@ -1154,10 +1894,37 @@ window.delTag = async (id) => { if (!confirm('确定删除？')) return; const v
 // ═══ 评论 ═══
 let selectedComments = new Set();
 let commentRows = new Map();
+let commentPostOptions = null;
+let commentPostOptionsPromise = null;
+
+async function loadCommentPostOptions() {
+  if (commentPostOptions) return commentPostOptions;
+  if (!commentPostOptionsPromise) {
+    commentPostOptionsPromise = api('/admin/posts?type=post&page=1&pageSize=100')
+      .then(data => {
+        const posts = Array.isArray(data) ? data : (data?.items || []);
+        commentPostOptions = posts;
+        return posts;
+      })
+      .catch(() => {
+        commentPostOptions = [];
+        return commentPostOptions;
+      })
+      .finally(() => { commentPostOptionsPromise = null; });
+  }
+  return commentPostOptionsPromise;
+}
 
 async function renderComments() {
   const status = commentStatus;
-  const r = await api('/admin/comments?page=' + pageNum + '&pageSize=20' + (status ? '&status=' + status : ''));
+  const params = ['page=' + pageNum, 'pageSize=20'];
+  if (status) params.push('status=' + encodeURIComponent(status));
+  if (commentPostId) params.push('postId=' + encodeURIComponent(commentPostId));
+  if (commentKeyword) params.push('keyword=' + encodeURIComponent(commentKeyword));
+  const [r, posts] = await Promise.all([
+    api('/admin/comments?' + params.join('&')),
+    loadCommentPostOptions(),
+  ]);
   commentRows = new Map((r.items || []).map(c => [c.id, c]));
   const rows = (r.items || []).map(c => '<tr><td><input type="checkbox" aria-label="选择评论" class="cmt-check" value="' + c.id + '" ' + (selectedComments.has(c.id) ? 'checked' : '') + ' onchange="toggleCmtCheck(\'' + c.id + '\', this.checked)"></td><td>' + escape((c.content || '').substring(0, 50)) + '</td><td>' + escape(c.post_title || '-') + '</td><td>' + escape(c.author_name || c.username || '匿名') + '</td><td>' + statusLabel(c.status) + '</td><td>' + fmt(c.created_at) + '</td><td class="actions">' +
     (c.status !== 'approved' ? '<button class="btn btn-sm btn-outline" onclick="setCmt(\'' + c.id + '\',\'approved\')">通过</button> ' : '') +
@@ -1166,16 +1933,31 @@ async function renderComments() {
     '<button class="btn btn-sm btn-outline" onclick="editCmt(\'' + c.id + '\')">编辑</button> ' +
     '<button class="btn btn-sm btn-danger" onclick="delCmt(\'' + c.id + '\')">删除</button></td></tr>').join('');
   
-  setTopbar('');
+  setTopbar('<button class="btn btn-outline" onclick="exportComments()">导出 CSV</button>');
   document.getElementById('content').innerHTML =
-    '<div class="toolbar"><label for="cf-status">评论状态</label><select id="cf-status" onchange="filterComments(this.value)">' +
+    '<div class="toolbar"><div class="list-filters"><label for="comment-keyword">关键词</label><input type="text" id="comment-keyword" value="' + escape(commentKeyword) + '" placeholder="搜索内容、作者或邮箱"><label for="cf-status">评论状态</label><select id="cf-status" onchange="filterComments(this.value, document.getElementById(\'cf-post\').value)">' +
     ['', 'pending', 'approved', 'spam'].map(v => '<option value="' + v + '"' + (status === v ? ' selected' : '') + '>' + ({ '': '所有状态', pending: '待审核', approved: '已通过', spam: '垃圾' }[v]) + '</option>').join('') +
-    '</select><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllCmts(this.checked)"' +
+    '</select><label for="cf-post">文章</label><select id="cf-post" onchange="filterComments(document.getElementById(\'cf-status\').value, this.value)"><option value="">所有文章</option>' +
+    posts.map(post => '<option value="' + escape(post.id) + '"' + (commentPostId === post.id ? ' selected' : '') + '>' + escape(post.title || '无标题') + '</option>').join('') +
+    '</select><button class="btn btn-sm btn-outline" onclick="applyCommentFilters()">筛选</button><button class="btn btn-sm btn-ghost" onclick="resetCommentFilters()">重置</button></div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllCmts(this.checked)"' +
     ((r.items || []).length && r.items.every(c => selectedComments.has(c.id)) ? ' checked' : '') + '> 选择本页评论</label></div><div id="comment-selection"></div>' +
-    '<div class="table-container"><table><thead><tr><th><input aria-label="选择本页评论" type="checkbox" onchange="toggleAllCmts(this.checked)"></th><th>内容</th><th>文章</th><th>作者</th><th>状态</th><th>日期</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">该状态下暂无评论</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+    '<div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页评论" type="checkbox" onchange="toggleAllCmts(this.checked)"></th><th scope="col">内容</th><th scope="col">文章</th><th scope="col">作者</th><th scope="col">状态</th><th scope="col">日期</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">该状态下暂无评论</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
   updateCommentSelection();
 }
+window.exportComments = async () => {
+  try {
+    const response = await fetch('/api/v1/admin/comments/export', { headers: { Authorization: 'Bearer ' + window.lillAPI.getToken() } });
+    if (!response.ok) throw new Error('导出失败（HTTP ' + response.status + '）');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'comments.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) { toast(error.message, 'error'); }
+};
 function updateCommentSelection() {
   const bar = document.getElementById('comment-selection');
   if (!bar) return;
@@ -1186,9 +1968,11 @@ function updateCommentSelection() {
     el.checked = checks.length > 0 && count === checks.length;
     el.indeterminate = count > 0 && count < checks.length;
   });
-  bar.innerHTML = selectedComments.size ? '<div class="batch-bar"><span>已选 ' + selectedComments.size + ' 项</span><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'approved\')">批量通过</button><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'spam\')">批量垃圾</button><button class="btn btn-sm btn-danger" onclick="batchCmtDelete()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearCmtSelection()">取消选择</button></div>' : '';
+  bar.innerHTML = selectedComments.size ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedComments.size + ' 项</span><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'approved\')">批量通过</button><button class="btn btn-sm btn-outline" onclick="batchCmtStatus(\'spam\')">批量垃圾</button><button class="btn btn-sm btn-danger" onclick="batchCmtDelete()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearCmtSelection()">取消选择</button></div>' : '';
 }
-window.filterComments = status => { commentStatus = ['', 'pending', 'approved', 'spam'].includes(status) ? status : ''; selectedComments.clear(); pageNum = 1; return render(); };
+window.filterComments = (status, postId = commentPostId) => { commentStatus = ['', 'pending', 'approved', 'spam'].includes(status) ? status : ''; commentPostId = typeof postId === 'string' ? postId : ''; selectedComments.clear(); pageNum = 1; return render(); };
+window.applyCommentFilters = () => { commentKeyword = document.getElementById('comment-keyword')?.value.trim() || ''; commentStatus = document.getElementById('cf-status')?.value || ''; commentPostId = document.getElementById('cf-post')?.value || ''; pageNum = 1; selectedComments.clear(); return render(); };
+window.resetCommentFilters = () => { commentKeyword = ''; commentStatus = ''; commentPostId = ''; pageNum = 1; selectedComments.clear(); return render(); };
 window.setCmt = async (id, status) => { const view = activeView; try { await api('/admin/comments/' + id + '/status', { method: 'PATCH', body: { status } }); toast('已更新'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 window.delCmt = async (id) => { if (!confirm('确定删除？')) return; const view = activeView; try { await api('/admin/comments/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 window.toggleCmtCheck = (id, checked) => { if (checked) selectedComments.add(id); else selectedComments.delete(id); updateCommentSelection(); };
@@ -1214,7 +1998,7 @@ window.batchCmtDelete = async () => {
   const view = activeView;
   const ids = Array.from(selectedComments);
   try {
-    for (const id of ids) { await api('/admin/comments/' + id, { method: 'DELETE' }); }
+    await api('/admin/comments/batch-delete', { method: 'POST', body: { ids } });
     toast('已删除');
     if (activeView?.navigation === view.navigation) { selectedComments.clear(); refreshView(view); }
   } catch (e) { toast(e.message, 'error'); }
@@ -1244,13 +2028,79 @@ window.editCmt = async (id) => {
 
 // ═══ 附件 ═══
 async function renderMedia() {
-  const r = await api('/admin/media?pageSize=24&page=' + pageNum);
-  const grid = (r.items || []).map(m => '<div class="media-card"><div class="mp">' + (String(m.mime_type || '').startsWith('image/') ? '<img src="' + escape(m.url) + '" alt="' + escape(m.alt || m.name) + '">' : '<div class="mfi">📎</div>') + '</div><div class="mi2"><div class="mn" title="' + escape(m.name) + '">' + escape(m.name) + '</div><div class="mm">' + (m.size / 1024).toFixed(1) + ' KB · ' + fmt(m.created_at) + '</div></div><div class="ma"><button class="btn btn-sm btn-danger" onclick="delMedia(\'' + m.id + '\')">删除</button></div></div>').join('');
+  const params = new URLSearchParams({ pageSize: '24', page: String(pageNum) });
+  if (mediaKeyword) params.set('keyword', mediaKeyword);
+  const r = await api('/admin/media?' + params);
+  mediaRowsCache = r.items || [];
+  selectedMedia.clear();
+  const grid = (r.items || []).map(m => '<div class="media-card"><label class="media-select"><input type="checkbox" aria-label="选择附件" class="media-check" value="' + escape(m.id) + '" onchange="toggleMediaCheck(this.value, this.checked)"></label><div class="mp">' + (String(m.mime_type || '').startsWith('image/') ? '<img src="' + escape(m.url) + '" alt="' + escape(m.alt || m.name) + '" loading="lazy" decoding="async">' : '<div class="mfi">📎</div>') + '</div><div class="mi2"><div class="mn" title="' + escape(m.name) + '">' + escape(m.name) + '</div><div class="mm">' + (m.size / 1024).toFixed(1) + ' KB · ' + fmt(m.created_at) + '</div></div><div class="ma"><button class="btn btn-sm btn-outline" onclick="openMediaEditor(\'' + m.id + '\')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delMedia(\'' + m.id + '\')">删除</button></div></div>').join('');
   setTopbar('<button class="btn btn-primary" onclick="uploadMedia()">+ 上传附件</button>');
-  document.getElementById('content').innerHTML = '<div class="card"><input type="file" id="media-file-input" accept="image/*,.pdf,.txt,.md,.zip" style="display:none"><div class="media-grid">' + (grid || '<div class="empty">暂无附件，点击右上角上传</div>') + '</div></div>' + paginate(r.meta);
+  document.getElementById('content').innerHTML = '<div class="toolbar"><div class="list-filters"><label for="media-keyword">关键词</label><input type="text" id="media-keyword" value="' + escape(mediaKeyword) + '" placeholder="搜索文件名或替代文本"><button class="btn btn-sm btn-outline" onclick="applyMediaFilters()">筛选</button><button class="btn btn-sm btn-ghost" onclick="resetMediaFilters()">重置</button></div><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllMedia(this.checked)"> 选择本页附件</label></div><div id="media-selection"></div><div class="card"><input type="file" id="media-file-input" accept="image/*,.pdf,.txt,.md,.zip" style="display:none"><div class="media-grid">' + (grid || '<div class="empty">暂无附件，点击右上角上传</div>') + '</div></div>' + paginate(r.meta);
   const fi = document.getElementById('media-file-input');
   if (fi) fi.onchange = handleMediaFile;
+  updateMediaSelection();
 }
+window.applyMediaFilters = () => { mediaKeyword = document.getElementById('media-keyword')?.value.trim() || ''; pageNum = 1; return render(); };
+window.resetMediaFilters = () => { mediaKeyword = ''; pageNum = 1; return render(); };
+function updateMediaSelection() {
+  const bar = document.getElementById('media-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.media-check')];
+  checks.forEach(el => { el.checked = selectedMedia.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllMedia(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedMedia.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedMedia.size + ' 个附件</span><input id="media-batch-alt" class="batch-input" placeholder="替代文本（alt）" aria-label="批量替代文本"><button class="btn btn-sm btn-outline" onclick="batchMediaAlt()">应用</button><button class="btn btn-sm btn-danger" onclick="batchMediaDelete()">批量删除</button><button class="btn btn-sm btn-outline" onclick="copyMediaLinks()">复制链接</button><button class="btn btn-sm btn-outline" onclick="clearMediaSelection()">取消选择</button></div>'
+    : '';
+}
+window.toggleMediaCheck = (id, checked) => {
+  if (checked) selectedMedia.add(id);
+  else selectedMedia.delete(id);
+  updateMediaSelection();
+};
+window.toggleAllMedia = (checked) => {
+  if (checked) document.querySelectorAll('.media-check').forEach(c => selectedMedia.add(c.value));
+  else selectedMedia.clear();
+  updateMediaSelection();
+};
+window.clearMediaSelection = () => { selectedMedia.clear(); updateMediaSelection(); };
+window.batchMediaDelete = async () => {
+  const view = activeView;
+  const ids = Array.from(selectedMedia);
+  if (!ids.length) return toast('请先选择附件', 'error');
+  if (!confirm('确定删除选中的 ' + ids.length + ' 个附件？已引用这些文件的文章会显示失效图片。')) return;
+  try {
+    const r = await api('/admin/media/batch', { method: 'POST', body: { ids, action: 'delete' } });
+    toast('已删除 ' + (r.deleted || ids.length) + ' 个附件');
+    selectedMedia.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.batchMediaAlt = async () => {
+  const view = activeView;
+  const ids = Array.from(selectedMedia);
+  if (!ids.length) return toast('请先选择附件', 'error');
+  const input = document.getElementById('media-batch-alt');
+  const alt = ((input && input.value) || '').trim();
+  try {
+    const r = await api('/admin/media/batch', { method: 'POST', body: { ids, action: 'alt', alt } });
+    toast('已更新 ' + (r.updated || ids.length) + ' 个附件的替代文本');
+    if (input) input.value = '';
+    selectedMedia.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.copyMediaLinks = async () => {
+  const ids = Array.from(selectedMedia);
+  if (!ids.length) return toast('请先选择附件', 'error');
+  const map = new Map(mediaRowsCache.map(m => [m.id, m]));
+  const urls = ids.map(id => map.get(id)).filter(Boolean).map(m => (String(m.url).startsWith('http') ? m.url : location.origin + m.url));
+  try { await navigator.clipboard.writeText(urls.join('\n')); toast('已复制 ' + urls.length + ' 个链接'); }
+  catch (e) { toast('复制失败，请检查浏览器剪贴板权限', 'error'); }
+};
 async function handleMediaFile(ev) {
   const view = activeView;
   const file = ev.target.files && ev.target.files[0];
@@ -1272,18 +2122,80 @@ window.uploadMedia = () => {
   const el = document.getElementById('media-file-input');
   if (el) el.click();
 };
+
+window.openMediaEditor = async id => {
+  try {
+    let item = (mediaRowsCache || []).find(m => String(m.id) === String(id));
+    if (!item) item = await api('/admin/media/' + encodeURIComponent(id));
+    if (!item) throw new Error('附件不存在');
+    const isImage = String(item.mime_type || '').startsWith('image/');
+    const ext = (String(item.name || '').match(/\.[a-zA-Z0-9]+$/) || [''])[0].toLowerCase();
+    document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">编辑附件</h3>' +
+      '<div class="form-group"><label for="me-name">文件名</label><input id="me-name" maxlength="255" value="' + escape(item.name || '') + '"></div>' +
+      '<div class="form-group"><label for="me-slug">缩略名</label><input id="me-slug" maxlength="120" value="' + escape(item.slug || '') + '" placeholder="仅小写字母、数字与连字符"><small class="muted">用于生成稳定的附件标识，留空则清空</small></div>' +
+      '<div class="form-group"><label for="me-alt">替代文本</label><input id="me-alt" maxlength="500" value="' + escape(item.alt || '') + '"><small class="muted">图片无法显示时展示，也供读屏软件朗读</small></div>' +
+      '<div class="form-group"><label for="me-desc">描述</label><textarea id="me-desc" rows="4" maxlength="2000">' + escape(item.description || '') + '</textarea></div>' +
+      '<div class="form-group"><label>替换文件</label>' + (isImage ? '<img src="' + escape(item.url) + '" alt="" style="max-width:200px;border-radius:8px;display:block;margin-bottom:8px">' : '') +
+      '<input type="file" id="me-file"><small class="muted">就地替换并保留原链接与扩展名（' + escape(ext || '无扩展名') + '），大小上限 40MB</small></div>' +
+      '<button class="btn btn-primary" onclick="saveMediaEditor(' + jsArg(item.id) + ')">保存</button> <button class="btn btn-outline" onclick="navigate(\'media\')">取消</button></div>';
+    const fi = document.getElementById('me-file');
+    if (fi) fi.onchange = ev => replaceMediaFile(item.id, ev);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.saveMediaEditor = async id => {
+  const name = document.getElementById('me-name').value.trim();
+  const slug = document.getElementById('me-slug').value.trim();
+  const alt = document.getElementById('me-alt').value.trim();
+  const description = document.getElementById('me-desc').value.trim();
+  if (!name) return toast('文件名不能为空', 'error');
+  if (name.length > 255) return toast('文件名不能超过 255 个字符', 'error');
+  if (slug && !/^[a-z0-9-]+$/.test(slug)) return toast('缩略名只能包含小写字母、数字与连字符', 'error');
+  try {
+    await api('/admin/media/' + encodeURIComponent(id), { method: 'PUT', body: { name, slug, alt, description } });
+    toast('已保存');
+    navigate('media');
+  } catch (e) { toast(e.message, 'error'); }
+};
+async function replaceMediaFile(id, ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  if (file.size > 40 * 1024 * 1024) return toast('文件不能超过 40MB', 'error');
+  const base64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  try {
+    await api('/admin/media/' + encodeURIComponent(id) + '/replace', { method: 'POST', body: { name: file.name, data: base64 }, timeout: 120000 });
+    toast('已替换，原链接保持不变');
+    navigate('media');
+  } catch (e) { toast(e.message, 'error'); }
+}
 window.delMedia = async (id) => { if (!confirm('确定删除？')) return; const view = activeView; try { await api('/admin/media/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
 // ═══ 外观（Typecho 模式：主题列表 → 选主题 → 专属设置页） ═══
 let currentThemeId = null;
+let themeEditorState = null;
+let themeEditorRequest = 0;
+
+function clearThemeEditor() {
+  themeEditorRequest++;
+  themeEditorState = null;
+}
 
 async function renderThemes() {
+  clearThemeEditor();
   currentThemeId = null;
   const themes = await api('/admin/themes');
-  let html = '<div class="card"><h3 class="card-title">主题</h3><div class="theme-grid">';
+  selectedThemes.clear();
+  let html = '<div class="card"><h3 class="card-title">主题</h3><div id="theme-selection"></div><div class="theme-grid">';
   if (themes.length) themes.forEach(t => {
     var screenshot = t.screenshot ? '<img src="' + escape(t.screenshot) + '" alt="" loading="lazy">' : '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M3 4h18v16H3z M3 8h18 M8 8v12"/></svg>';
+    // 内置主题与当前启用中的主题不可删除，复选框一并禁用，避免选了才被后端拒绝。
+    const deletable = !t.active && t.theme_id !== 'default';
     html += '<div class="theme-card' + (t.active ? ' active' : '') + '">' +
+      '<label class="theme-check" title="' + (deletable ? '选择此主题' : '内置主题或当前启用中的主题不可删除') + '"><input type="checkbox" class="theme-checkbox" aria-label="选择主题 ' + escape(t.name) + '" value="' + escape(t.theme_id) + '"' + (deletable ? ' onchange="toggleThemeCheck(this.value, this.checked)"' : ' disabled') + '></label>' +
       '<div class="thumb">' + screenshot + (t.active ? '<span class="theme-badge">使用中</span>' : '') + '</div>' +
       '<div class="tv"><h3>' + escape(t.name) + '</h3>' +
       '<p>' + escape(t.description || '暂无描述') + '</p>' +
@@ -1292,6 +2204,8 @@ async function renderThemes() {
       '<div class="actions">' +
       (t.active ? '<span class="tag tag-green">当前主题</span>' : '<button class="btn btn-sm btn-primary" onclick="activateTheme(\'' + escape(t.theme_id) + '\')">启用</button>') +
       (t.hasSettings ? '<button class="btn btn-sm btn-outline" onclick="openThemeSettings(\'' + escape(t.theme_id) + '\')">设置</button>' : '') +
+      (['admin', 'editor'].includes(user?.role) ? '<button class="btn btn-sm btn-outline" onclick="openThemeFileEditor(' + jsArg(t.theme_id) + ')">编辑文件</button>' : '') +
+      (deletable ? '<button class="btn btn-sm btn-danger" onclick="deleteTheme(\'' + escape(t.theme_id) + '\', \'' + escape(t.name) + '\')">删除</button>' : '') +
       '</div></div></div>';
   });
   else html += '<div class="empty">暂无主题</div>';
@@ -1303,8 +2217,148 @@ async function renderThemes() {
     '<span id="themeInstallMsg" style="margin-left:12px;font-size:13px;color:var(--text-light)"></span></div>';
   setTopbar('');
   document.getElementById('content').innerHTML = html;
+  updateThemeSelection();
 }
 window.renderThemes = renderThemes;
+
+function themeEditorHTML() {
+  const state = themeEditorState;
+  if (!state) return '';
+  const files = state.files.map(file => '<button type="button" class="btn btn-sm ' + (state.path === file.path ? 'btn-primary' : 'btn-outline') + '" style="display:block;width:100%;text-align:left;margin-bottom:6px" onclick="selectThemeFile(' + jsArg(file.path) + ')">' + escape(file.path) + ' <small>' + (file.size / 1024).toFixed(1) + ' KB</small></button>').join('');
+  const content = state.path === null ? '<p class="empty">选择一个文件开始编辑</p>' :
+    '<textarea id="theme-file-content" spellcheck="false" style="width:100%;min-height:320px;font-family:monospace;white-space:pre;tab-size:2" oninput="updateThemeFileContent(this.value)">' + escape(state.content) + '</textarea>';
+  return '<div class="card" id="theme-file-editor" style="margin-top:20px"><div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><h3 class="card-title">主题文件：' + escape(state.themeId) + '</h3><button type="button" class="btn btn-sm btn-outline" onclick="closeThemeFileEditor()">关闭</button></div>' +
+    '<div style="display:grid;grid-template-columns:minmax(180px,28%) minmax(0,1fr);gap:16px"><aside><div style="max-height:480px;overflow:auto">' + (files || '<p class="empty">没有可编辑文件</p>') + '</div></aside><section>' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><strong>' + escape(state.path || '未选择文件') + '</strong><span id="theme-file-dirty" style="color:var(--text-light)">' + (state.dirty ? '未保存' : '') + '</span><span style="flex:1"></span><button type="button" class="btn btn-sm btn-outline" onclick="reloadThemeFile()"' + (state.path === null ? ' disabled' : '') + '>重新加载</button><button type="button" class="btn btn-sm btn-primary" onclick="saveThemeFile()"' + (state.path === null ? ' disabled' : '') + '>保存</button></div>' + content + '</section></div></div>';
+}
+
+function renderThemeFileEditor() {
+  const content = document.getElementById('content');
+  const oldPanel = document.getElementById('theme-file-editor');
+  if (oldPanel) oldPanel.remove();
+  if (content && themeEditorState) content.insertAdjacentHTML('beforeend', themeEditorHTML());
+}
+
+window.openThemeFileEditor = async themeId => {
+  if (!['admin', 'editor'].includes(user?.role)) return;
+  clearThemeEditor();
+  themeEditorState = { themeId: String(themeId), files: [], path: null, content: '', dirty: false };
+  const requestId = themeEditorRequest;
+  renderThemeFileEditor();
+  try {
+    const files = await api('/admin/themes/files?theme=' + encodeURIComponent(themeEditorState.themeId));
+    if (requestId !== themeEditorRequest || !themeEditorState || themeEditorState.themeId !== String(themeId)) return;
+    themeEditorState.files = Array.isArray(files) ? files : [];
+    renderThemeFileEditor();
+  } catch (error) {
+    if (requestId === themeEditorRequest) toast(error.message, 'error');
+  }
+};
+
+window.selectThemeFile = async path => {
+  const state = themeEditorState;
+  if (!state || (state.dirty && !confirm('当前文件有未保存修改，确定切换文件并丢弃修改吗？'))) return;
+  const requestId = ++themeEditorRequest;
+  const themeId = state.themeId;
+  state.path = String(path);
+  state.content = '';
+  state.dirty = false;
+  renderThemeFileEditor();
+  try {
+    const result = await api('/admin/themes/file?theme=' + encodeURIComponent(themeId) + '&path=' + encodeURIComponent(path));
+    if (requestId !== themeEditorRequest || themeEditorState?.themeId !== themeId || themeEditorState.path !== path) return;
+    themeEditorState.content = result.content;
+    renderThemeFileEditor();
+  } catch (error) {
+    if (requestId === themeEditorRequest) toast(error.message, 'error');
+  }
+};
+
+window.updateThemeFileContent = content => {
+  if (!themeEditorState) return;
+  themeEditorState.content = content;
+  themeEditorState.dirty = true;
+  const dirty = document.getElementById('theme-file-dirty');
+  if (dirty) dirty.textContent = '未保存';
+};
+
+window.reloadThemeFile = async () => {
+  const state = themeEditorState;
+  if (!state?.path || (state.dirty && !confirm('确定重新加载并丢弃未保存修改吗？'))) return;
+  const requestId = ++themeEditorRequest;
+  const { themeId, path } = state;
+  try {
+    const result = await api('/admin/themes/file?theme=' + encodeURIComponent(themeId) + '&path=' + encodeURIComponent(path));
+    if (requestId !== themeEditorRequest || themeEditorState?.themeId !== themeId || themeEditorState.path !== path) return;
+    themeEditorState.content = result.content;
+    themeEditorState.dirty = false;
+    renderThemeFileEditor();
+  } catch (error) {
+    if (requestId === themeEditorRequest) toast(error.message, 'error');
+  }
+};
+
+window.saveThemeFile = async () => {
+  const state = themeEditorState;
+  if (!state?.path) return;
+  const { themeId, path, content } = state;
+  try {
+    await api('/admin/themes/file', { method: 'PUT', body: { theme: themeId, path, content } });
+    if (themeEditorState?.themeId !== themeId || themeEditorState.path !== path) return;
+    themeEditorState.dirty = false;
+    toast('保存成功');
+    const files = await api('/admin/themes/files?theme=' + encodeURIComponent(themeId));
+    if (themeEditorState?.themeId !== themeId) return;
+    themeEditorState.files = Array.isArray(files) ? files : [];
+    renderThemeFileEditor();
+  } catch (error) { toast(error.message, 'error'); }
+};
+
+window.closeThemeFileEditor = () => {
+  if (themeEditorState?.dirty && !confirm('当前文件有未保存修改，确定关闭并丢弃修改吗？')) return;
+  clearThemeEditor();
+  document.getElementById('theme-file-editor')?.remove();
+};
+
+function updateThemeSelection() {
+  const bar = document.getElementById('theme-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.theme-checkbox')];
+  checks.forEach(el => { el.checked = selectedThemes.has(el.value); });
+  bar.innerHTML = selectedThemes.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedThemes.size + ' 个主题</span><button class="btn btn-sm btn-danger" onclick="batchDeleteThemes()">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearThemeSelection()">取消选择</button></div>'
+    : '';
+}
+window.toggleThemeCheck = (themeId, checked) => {
+  if (checked) selectedThemes.add(themeId);
+  else selectedThemes.delete(themeId);
+  updateThemeSelection();
+};
+window.clearThemeSelection = () => { selectedThemes.clear(); updateThemeSelection(); };
+window.deleteTheme = async (themeId, name) => {
+  const view = activeView;
+  if (!confirm('确定删除主题「' + (name || themeId) + '」？该操作不可撤销。')) return;
+  try {
+    await api('/admin/themes/' + encodeURIComponent(themeId), { method: 'DELETE' });
+    toast('已删除主题');
+    selectedThemes.delete(themeId);
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.batchDeleteThemes = async () => {
+  const view = activeView;
+  const themes = selectedThemes.size ? Array.from(selectedThemes) : Array.from(document.querySelectorAll('.theme-checkbox:checked')).map(el => el.value);
+  if (!themes.length) return toast('请先选择主题', 'error');
+  if (!confirm('确定删除选中的 ' + themes.length + ' 个主题？该操作不可撤销。')) return;
+  try {
+    const r = await api('/admin/themes/batch', { method: 'POST', body: { themes, action: 'delete' } });
+    const skipped = Array.isArray(r?.skipped) ? r.skipped : [];
+    toast(skipped.length ? '已删除 ' + (r.deleted?.length || 0) + ' 个，跳过 ' + skipped.length + ' 个' : '操作完成');
+    if (skipped.length) console.warn('theme batch skipped', skipped);
+    selectedThemes.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 
 window.uploadTheme = async (input) => {
   const view = activeView;
@@ -1477,12 +2531,20 @@ window.saveThemeSettings = async (themeId) => {
 
 // ═══ 用户 ═══
 async function renderUsers() {
-  const r = await api('/admin/users?pageSize=20&page=' + pageNum);
-  const rows = (r.items || []).map(u => '<tr><td><strong>' + escape(u.username) + '</strong></td><td>' + escape(u.nickname || '-') + '</td><td>' + escape(u.email) + '</td><td><span class="tag tag-blue">' + roleLabel(u.role) + '</span></td><td>' + statusLabel(u.status) + '</td><td>' + (u.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openUserEditor(\'' + u.id + '\')">编辑</button> ' + (u.id === (user && user.id) ? '' : '<button class="btn btn-sm btn-danger" onclick="delUser(\'' + u.id + '\')">删除</button>') + '</td></tr>').join('');
+  const params = new URLSearchParams({ pageSize: '20', page: String(pageNum) });
+  if (userKeyword) params.set('keyword', userKeyword);
+  const r = await api('/admin/users?' + params);
+  const canBatch = !!(user && user.role === 'admin');
+  selectedUsers.clear();
+  const rows = (r.items || []).map(u => '<tr>' + (canBatch ? '<td><input type="checkbox" aria-label="选择用户" class="user-check" value="' + escape(u.id) + '" onchange="toggleUserCheck(this.value, this.checked)"></td>' : '') + '<td><strong>' + escape(u.username) + '</strong></td><td>' + escape(u.nickname || '-') + '</td><td>' + escape(u.email) + '</td><td><span class="tag tag-blue">' + roleLabel(u.role) + '</span></td><td>' + statusLabel(u.status) + '</td><td>' + (u.post_count || 0) + '</td><td class="actions"><button class="btn btn-sm btn-outline" onclick="openUserEditor(\'' + u.id + '\')">编辑</button> ' + (u.id === (user && user.id) ? '' : '<button class="btn btn-sm btn-danger" onclick="delUser(\'' + u.id + '\')">删除</button>') + '</td></tr>').join('');
+  const cols = canBatch ? 8 : 7;
   setTopbar('<button class="btn btn-primary" onclick="openUserEditor()">+ 新建用户</button>');
-  document.getElementById('content').innerHTML = '<div class="table-container"><table><thead><tr><th>用户名</th><th>昵称</th><th>邮箱</th><th>角色</th><th>状态</th><th>文章</th><th>操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty">暂无用户</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
+  document.getElementById('content').innerHTML = '<div class="toolbar"><div class="list-filters"><label for="user-keyword">关键词</label><input type="text" id="user-keyword" value="' + escape(userKeyword) + '" placeholder="搜索用户名、昵称或邮箱"><button class="btn btn-sm btn-outline" onclick="applyUserFilters()">筛选</button><button class="btn btn-sm btn-ghost" onclick="resetUserFilters()">重置</button></div>' + (canBatch ? '<label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllUsers(this.checked)"> 选择本页用户</label>' : '') + '</div>' + (canBatch ? '<div id="user-selection"></div>' : '') + '<div class="table-container"><table><thead><tr>' + (canBatch ? '<th scope="col"><input aria-label="选择本页用户" type="checkbox" onchange="toggleAllUsers(this.checked)"></th>' : '') + '<th scope="col">用户名</th><th scope="col">昵称</th><th scope="col">邮箱</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">文章</th><th scope="col">操作</th></tr></thead><tbody>' + (rows || '<tr><td colspan="' + cols + '"><div class="empty">暂无用户</div></td></tr>') + '</tbody></table></div>' + paginate(r.meta);
   labelTableRows();
+  updateUserSelection();
 }
+window.applyUserFilters = () => { userKeyword = document.getElementById('user-keyword')?.value.trim() || ''; pageNum = 1; return render(); };
+window.resetUserFilters = () => { userKeyword = ''; pageNum = 1; return render(); };
 window.openUserEditor = id => showView('user-editor:' + (id || 'new'), signal => loadUserEditor(id, signal), true);
 async function loadUserEditor(id, signal) {
   let u = null;
@@ -1521,7 +2583,64 @@ window.saveUser = async (id) => {
 };
 window.delUser = async (id) => { if (!confirm('确定删除该用户？')) return; const view = activeView; try { await api('/admin/users/' + id, { method: 'DELETE' }); toast('已删除'); refreshView(view); } catch (e) { toast(e.message, 'error'); } };
 
+function updateUserSelection() {
+  const bar = document.getElementById('user-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.user-check')];
+  checks.forEach(el => { el.checked = selectedUsers.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllUsers(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedUsers.size
+    ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedUsers.size + ' 个用户</span><button class="btn btn-sm btn-outline" onclick="batchUsers(\'activate\')">批量启用</button><button class="btn btn-sm btn-outline" onclick="batchUsers(\'ban\')">批量禁用</button><button class="btn btn-sm btn-danger" onclick="batchUsers(\'delete\')">批量删除</button><button class="btn btn-sm btn-outline" onclick="clearUserSelection()">取消选择</button></div>'
+    : '';
+}
+window.toggleUserCheck = (id, checked) => {
+  if (checked) selectedUsers.add(id);
+  else selectedUsers.delete(id);
+  updateUserSelection();
+};
+window.toggleAllUsers = (checked) => {
+  if (checked) document.querySelectorAll('.user-check').forEach(c => selectedUsers.add(c.value));
+  else selectedUsers.clear();
+  updateUserSelection();
+};
+window.clearUserSelection = () => { selectedUsers.clear(); updateUserSelection(); };
+window.batchUsers = async (action) => {
+  const view = activeView;
+  const ids = selectedUsers.size ? Array.from(selectedUsers) : Array.from(document.querySelectorAll('.user-check:checked')).map(c => c.value);
+  if (!ids.length) return toast('请先选择用户', 'error');
+  if (action === 'delete' && !confirm('确定删除选中的 ' + ids.length + ' 个用户？')) return;
+  try {
+    const r = await api('/admin/users/batch', { method: 'POST', body: { ids, action } });
+    const skipped = (r && r.skipped) || [];
+    toast(skipped.length ? '完成，跳过 ' + skipped.length + ' 个：' + skipped[0].reason : '操作完成');
+    selectedUsers.clear();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+
 // ═══ 设置 ═══
+const PERMALINK_GROUPS = [
+  { key: 'post', label: '文章路径', option: 'permalink', defaultPattern: '/archives/{cid}/', sample: 'hello-world',
+    presets: [['/archives/{cid}/', '默认：/archives/{cid}/'], ['/archives/{slug}/', '文章别名：/archives/{slug}/'], ['/{category}/{slug}/', '分类 + 别名：/{category}/{slug}/'], ['/{year}/{month}/{slug}/', '年月 + 别名：/{year}/{month}/{slug}/'], ['/archives/{year}/{month}/{day}/{slug}.html', '年月日 + 别名：/archives/{year}/{month}/{day}/{slug}.html']],
+    hint: '可用变量：{cid} 文章 ID、{slug} 别名、{category} 分类别名、{year} 年份、{month} 月份、{day} 日期' },
+  { key: 'page', label: '独立页面路径', option: 'page_pattern', defaultPattern: '/page/{slug}', sample: 'about',
+    presets: [['/page/{slug}', '默认：/page/{slug}'], ['/{slug}', '根路径：/{slug}'], ['/{slug}.html', '静态化：/{slug}.html'], ['/{slug}.htm', '静态化：/{slug}.htm'], ['/{slug}.php', '静态化：/{slug}.php']],
+    hint: '可用变量：{slug} 页面别名；建议保持一段路径，便于主题导航与代理重写' },
+  { key: 'category', label: '分类路径', option: 'category_prefix', defaultPattern: '/category/{slug}/', sample: 'notes',
+    presets: [['/category/{slug}/', '分类别名：/category/{slug}/'], ['/category/{mid}/', '分类 ID：/category/{mid}/'], ['/category/{slug}.html', '分类 + 别名：/category/{slug}.html']],
+    hint: '可用变量：{slug} 分类别名、{mid} 分类 ID' },
+  { key: 'tag', label: '标签路径', option: 'tag_prefix', defaultPattern: '/tag/{slug}/', sample: 'tips',
+    presets: [['/tag/{slug}/', '标签别名：/tag/{slug}/'], ['/tag/{slug}.html', '标签 + 别名：/tag/{slug}.html'], ['/tag/{mid}/', '标签 ID：/tag/{mid}/']],
+    hint: '可用变量：{slug} 标签别名、{mid} 标签 ID' },
+];
+const BUILTIN_PATHS = [
+  { key: 'archive_path', label: '归档路径', defaultPath: '/archive' },
+  { key: 'search_path', label: '搜索路径', defaultPath: '/search' },
+];
 async function renderSettings() {
   const r = await api('/admin/options');
   const o = {}; (r || []).forEach(x => o[x.key] = x.value);
@@ -1557,47 +2676,33 @@ async function renderSettings() {
     '<div class="form-group"><label>文章列表排序</label><select id="s14"><option value="date"' + (o.posts_order !== 'title' ? ' selected' : '') + '>按日期</option><option value="title"' + (o.posts_order === 'title' ? ' selected' : '') + '>按标题</option></select></div>' +
     '<button class="btn btn-primary" onclick="saveSettings()">保存设置</button></div></div>';
   
-  // 永久链接设置（Typecho 风格：预设下拉 + 自定义）
-  const plPatterns = [
-    ['/archives/{cid}/', '默认 — /archives/{cid}/'],
-    ['/archives/{slug}/', '文章别名 — /archives/{slug}/'],
-    ['/{category}/{slug}/', '分类+别名 — /{category}/{slug}/'],
-    ['/{year}/{month}/{slug}/', '日期+别名 — /{year}/{month}/{slug}/'],
-  ];
-  const plCurrent = o.permalink || '/archives/{cid}/';
-  const plIsPreset = plPatterns.some(x => x[0] === plCurrent);
-  let plOpts = plPatterns.map(x => '<option value="' + x[0] + '"' + (plCurrent === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
-  plOpts += '<option value="__custom__"' + (!plIsPreset ? ' selected' : '') + '>自定义</option>';
-
-  const catPatterns = [
-    ['/category/{slug}/', '分类别名 — /category/{slug}/'],
-    ['/category/{mid}/', '分类 ID — /category/{mid}/'],
-  ];
-  const catCurrent = o.category_prefix || '/category/{slug}/';
-  const catIsPreset = catPatterns.some(x => x[0] === catCurrent);
-  let catOpts = catPatterns.map(x => '<option value="' + x[0] + '"' + (catCurrent === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
-  catOpts += '<option value="__custom__"' + (!catIsPreset ? ' selected' : '') + '>自定义</option>';
-
-  const tagPatterns = [
-    ['/tag/{slug}/', '标签别名 — /tag/{slug}/'],
-    ['/tag/{mid}/', '标签 ID — /tag/{mid}/'],
-  ];
-  const tagCurrent = o.tag_prefix || '/tag/{slug}/';
-  const tagIsPreset = tagPatterns.some(x => x[0] === tagCurrent);
-  let tagOpts = tagPatterns.map(x => '<option value="' + x[0] + '"' + (tagCurrent === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('');
-  tagOpts += '<option value="__custom__"' + (!tagIsPreset ? ' selected' : '') + '>自定义</option>';
-
+  // 永久链接设置（Typecho 风格：每种类型单选预设 + 自定义格式 + 实时预览）
   html += '<div id="settings-permalink" class="settings-panel" style="display:none"><div class="card"><h3 class="card-title">永久链接设置</h3>' +
-    '<div class="form-group"><label>文章路径</label><select id="s8" onchange="togglePermalinkCustom(\'post\', this.value)">' + plOpts + '</select></div>' +
-    '<div class="form-group" id="s8-custom-wrap" style="display:' + (plIsPreset ? 'none' : 'block') + '"><label>自定义文章路径</label><input id="s8-custom" value="' + escape(plIsPreset ? '' : plCurrent) + '" placeholder="/archives/{slug}/"></div>' +
-    '<div class="form-group"><label>分类路径</label><select id="s15" onchange="togglePermalinkCustom(\'cat\', this.value)">' + catOpts + '</select></div>' +
-    '<div class="form-group" id="s15-custom-wrap" style="display:' + (catIsPreset ? 'none' : 'block') + '"><label>自定义分类路径</label><input id="s15-custom" value="' + escape(catIsPreset ? '' : catCurrent) + '" placeholder="/category/{slug}/"></div>' +
-    '<div class="form-group"><label>标签路径</label><select id="s16" onchange="togglePermalinkCustom(\'tag\', this.value)">' + tagOpts + '</select></div>' +
-    '<div class="form-group" id="s16-custom-wrap" style="display:' + (tagIsPreset ? 'none' : 'block') + '"><label>自定义标签路径</label><input id="s16-custom" value="' + escape(tagIsPreset ? '' : tagCurrent) + '" placeholder="/tag/{slug}/"></div>' +
-    '<div class="form-hint">可用变量：{cid} 文章 ID · {slug} 别名 · {category} 分类别名 · {year} 年份 · {month} 月份 · {mid} 分类/标签 ID</div>' +
+    '<p class="form-hint">每种内容类型都可以单独选择预设或填写自定义格式。保存后新链接立即生效，旧链接仍可通过原有路径访问。</p>';
+  for (const group of PERMALINK_GROUPS) {
+    const current = o[group.option] || group.defaultPattern;
+    const isPreset = group.presets.some(preset => preset[0] === current);
+    html += '<div class="permalink-group" data-pl-group="' + group.key + '">' +
+      '<div class="permalink-label">' + escape(group.label) + '</div>' +
+      '<div class="permalink-options">' +
+      group.presets.map(preset => '<label class="permalink-option"><input type="radio" name="pl-' + group.key + '" value="' + escape(preset[0]) + '"' + (isPreset && current === preset[0] ? ' checked' : '') + '><span>' + escape(preset[1]) + '</span></label>').join('') +
+      '<label class="permalink-option"><input type="radio" name="pl-' + group.key + '" value="__custom__"' + (isPreset ? '' : ' checked') + '><span>自定义格式</span></label>' +
+      '</div>' +
+      '<div class="permalink-custom"><input id="pl-custom-' + group.key + '" value="' + escape(isPreset ? '' : current) + '" placeholder="' + escape(group.defaultPattern) + '"' + (isPreset ? ' disabled' : '') + '><button type="button" class="btn btn-sm btn-outline" data-pl-reset="' + group.key + '">恢复默认</button></div>' +
+      '<div class="form-hint">' + escape(group.hint) + '</div>' +
+      '<div class="permalink-preview">示例：<code id="pl-preview-' + group.key + '"></code></div></div>';
+  }
+  for (const item of BUILTIN_PATHS) {
+    html += '<div class="form-group"><label for="' + item.key + '">' + item.label + '</label><input id="' + item.key + '" value="' + escape(o[item.key] || item.defaultPath) + '" placeholder="' + item.defaultPath + '"></div>';
+  }
+  html += '<p class="form-hint">上线提示：修改永久链接或下面两个内置路径后，若站点走 Nginx 静态壳，需要 reload nginx（<code>nginx -s reload</code>）让 <code>/sitemap.xml</code>、<code>/robots.txt</code> 的反代生效；旧链接仍可按原路径访问。</p>' +
+    '<div class="permalink-conflict" id="pl-conflict" role="status" style="display:none"></div>' +
+    '<div class="form-group"><label for="pl-resolve-url">粘贴 URL 试解析</label><div class="permalink-custom"><input id="pl-resolve-url" type="url" placeholder="https://example.com/archives/..."><button type="button" class="btn btn-sm btn-outline" data-pl-resolve>解析</button></div><div class="form-hint" id="pl-resolve-result" role="status"></div></div>' +
     '<button class="btn btn-primary" onclick="saveSettings()">保存设置</button></div></div>';
-  
   document.getElementById('content').innerHTML = html;
+  PERMALINK_GROUPS.forEach(group => renderPermalinkPreview(group.key));
+  bindPermalinkControls();
+  renderPermalinkConflicts();
   setTopbar('');
 }
 window.switchSettingsTab = (tab, button) => {
@@ -1606,20 +2711,87 @@ window.switchSettingsTab = (tab, button) => {
   document.querySelectorAll('.settings-panel').forEach(el => el.style.display = 'none');
   document.getElementById('settings-' + tab).style.display = 'block';
 };
-function permalinkValue(selectId, customId) {
-  const sel = document.getElementById(selectId);
-  if (!sel) return '';
-  if (sel.value === '__custom__') {
-    const c = document.getElementById(customId);
-    return c ? c.value.trim() : '';
+function permalinkPicked(key) {
+  const group = PERMALINK_GROUPS.find(item => item.key === key);
+  const picked = document.querySelector('input[name="pl-' + key + '"]:checked');
+  if (!picked) return group ? group.defaultPattern : '';
+  if (picked.value === '__custom__') {
+    const custom = document.getElementById('pl-custom-' + key);
+    return custom ? custom.value.trim() : '';
   }
-  return sel.value;
+  return picked.value;
 }
-window.togglePermalinkCustom = (type, value) => {
-  const map = { post: 's8', cat: 's15', tag: 's16' };
-  const wrap = document.getElementById(map[type] + '-custom-wrap');
-  if (wrap) wrap.style.display = value === '__custom__' ? 'block' : 'none';
+function permalinkPreview(pattern, group) {
+  if (!pattern) return '（尚未填写自定义格式）';
+  const fill = (text, token, value) => text.split(token).join(value);
+  let result = pattern;
+  result = fill(result, '{cid}', '42');
+  result = fill(result, '{mid}', group.key === 'category' ? '7' : '9');
+  result = fill(result, '{slug}', group.sample);
+  result = fill(result, '{category}', 'notes');
+  result = fill(result, '{year}', '2026');
+  result = fill(result, '{month}', '10');
+  result = fill(result, '{day}', '20');
+  return result;
+}
+window.renderPermalinkPreview = (key) => {
+  const group = PERMALINK_GROUPS.find(item => item.key === key);
+  const target = document.getElementById('pl-preview-' + key);
+  if (!group || !target) return;
+  target.textContent = permalinkPreview(permalinkPicked(key), group);
 };
+window.resetPermalink = (key) => {
+  const group = PERMALINK_GROUPS.find(item => item.key === key);
+  if (!group) return;
+  const radio = document.querySelector('input[name="pl-' + key + '"][value="' + group.defaultPattern + '"]');
+  if (radio) radio.checked = true;
+  const custom = document.getElementById('pl-custom-' + key);
+  if (custom) { custom.value = ''; custom.disabled = true; }
+  renderPermalinkPreview(key);
+};
+function bindPermalinkControls() {
+  document.querySelectorAll('.permalink-option input[type=radio]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      const key = radio.name.replace('pl-', '');
+      const custom = document.getElementById('pl-custom-' + key);
+      if (custom) custom.disabled = radio.value !== '__custom__';
+      renderPermalinkPreview(key);
+    });
+  });
+  document.querySelectorAll('input[id^=pl-custom-]').forEach(input => {
+    input.addEventListener('input', () => renderPermalinkPreview(input.id.replace('pl-custom-', '')));
+  });
+  document.querySelectorAll('button[data-pl-reset]').forEach(button => {
+    button.addEventListener('click', () => resetPermalink(button.getAttribute('data-pl-reset')));
+  });
+  document.querySelectorAll('input[name^="pl-"]').forEach(input => input.addEventListener('change', renderPermalinkConflicts));
+  document.querySelectorAll('input[id^=pl-custom-]').forEach(input => input.addEventListener('input', renderPermalinkConflicts));
+  document.querySelector('[data-pl-resolve]')?.addEventListener('click', async () => {
+    const input = document.getElementById('pl-resolve-url');
+    const target = document.getElementById('pl-resolve-result');
+    if (!input || !target) return;
+    try {
+      const response = await api('/admin/permalinks/resolve', { method: 'POST', body: { url: input.value.trim() } });
+      const result = response?.result;
+      target.textContent = result ? result.type + ' · ' + result.slug + ' · ' + result.id : '解析不到';
+    } catch (error) { target.textContent = '解析不到'; }
+  });
+}
+function renderPermalinkConflicts() {
+  const target = document.getElementById('pl-conflict');
+  if (!target) return;
+  const fill = pattern => {
+    const values = { cid: '42', mid: '42', slug: 'sample', category: 'sample-category', year: '2026', month: '10', day: '20' };
+    return pattern.replace(/\{([^{}]+)\}/g, (token, key) => values[key] || token);
+  };
+  const patterns = PERMALINK_GROUPS.map(group => ({ key: group.key, pattern: fill(permalinkPicked(group.key)) }));
+  const conflicts = [];
+  for (let left = 0; left < patterns.length; left++) for (let right = left + 1; right < patterns.length; right++) {
+    if (patterns[left].pattern && patterns[left].pattern === patterns[right].pattern) conflicts.push(patterns[left].key + ' 与 ' + patterns[right].key);
+  }
+  target.textContent = conflicts.length ? '路径模板可能互相遮蔽：' + conflicts.join('、') + '。仍可保存。' : '';
+  target.style.display = conflicts.length ? 'block' : 'none';
+}
 window.saveSettings = async () => {
   const items = [
     { key: 'site_name', value: document.getElementById('s1') ? document.getElementById('s1').value : '' },
@@ -1628,16 +2800,21 @@ window.saveSettings = async () => {
     { key: 'posts_per_page', value: document.getElementById('s4') ? document.getElementById('s4').value : '' },
     { key: 'allow_register', value: document.getElementById('s6') ? document.getElementById('s6').value : '' },
     { key: 'comment_moderation', value: document.getElementById('s7') ? document.getElementById('s7').value : '' },
-    { key: 'permalink', value: permalinkValue('s8', 's8-custom') },
+    { key: 'permalink', value: permalinkPicked('post') },
+    { key: 'page_pattern', value: permalinkPicked('page') },
     { key: 'comment_display', value: document.getElementById('s9') ? document.getElementById('s9').value : '' },
     { key: 'comments_disabled', value: document.getElementById('s10') ? document.getElementById('s10').value : '' },
     { key: 'comments_per_page', value: document.getElementById('s11') ? document.getElementById('s11').value : '' },
     { key: 'excerpt_length', value: document.getElementById('s12') ? document.getElementById('s12').value : '' },
     { key: 'excerpt_type', value: document.getElementById('s13') ? document.getElementById('s13').value : '' },
     { key: 'posts_order', value: document.getElementById('s14') ? document.getElementById('s14').value : '' },
-    { key: 'category_prefix', value: permalinkValue('s15', 's15-custom') },
-    { key: 'tag_prefix', value: permalinkValue('s16', 's16-custom') },
+    { key: 'category_prefix', value: permalinkPicked('category') },
+    { key: 'tag_prefix', value: permalinkPicked('tag') },
+    ...BUILTIN_PATHS.map(item => ({ key: item.key, value: document.getElementById(item.key)?.value.trim() || '' })),
   ];
+  for (const group of PERMALINK_GROUPS) {
+    if (!permalinkPicked(group.key)) return toast(group.label + '不能为空', 'error');
+  }
   try { await api('/admin/options', { method: 'PUT', body: items }); toast('已保存'); } catch (e) { toast(e.message, 'error'); }
 };
 
@@ -1778,7 +2955,7 @@ function mdToHtml(md) {
     const header = rows[0].split('|').filter((_, i, a) => i > 0 && i < a.length - 1).map(s => s.trim());
     const body = rows.slice(2).map(r => r.split('|').filter((_, i, a) => i > 0 && i < a.length - 1).map(s => s.trim()));
     let t = '<table><thead><tr>';
-    for (const h of header) t += '<th>' + h + '</th>';
+    for (const h of header) t += '<th scope="col">' + h + '</th>';
     t += '</tr></thead><tbody>';
     for (const row of body) {
       t += '<tr>';
@@ -1858,7 +3035,8 @@ async function loadPluginMenus() {
     section.style.display = items.length ? '' : 'none';
   } catch (e) { /* 插件菜单加载失败不影响后台 */ }
 }
-document.getElementById('logout-btn').onclick = () => { localStorage.removeItem('lill_token'); location.href = '/admin/login'; };
+document.getElementById('logout-btn').onclick = () => { stopSystemPolling(); localStorage.removeItem('lill_token'); location.href = '/admin/login'; };
+if (typeof window.addEventListener === 'function') window.addEventListener('pagehide', stopSystemPolling);
 
 // 未登录直接跳登录页：没有 token 时连 /auth/me 都不发，认证失败也不发起任何后台请求，
 // 避免后台控制台刷一堆 401（对标 Typecho 后台的干净加载）
@@ -1905,6 +3083,7 @@ window.renderSettings = renderSettings;
 async function renderPlugins() {
   const r = await api('/admin/plugins');
   const plugins = r || [];
+  selectedPlugins.clear();
   setTopbar('<input type="file" id="plugin-install-input" accept=".zip" style="display:none">'
     + '<button class="btn btn-primary" onclick="document.getElementById(\'plugin-install-input\').click()">+ 上传插件</button>');
   const fi = document.getElementById('plugin-install-input');
@@ -1917,7 +3096,7 @@ async function renderPlugins() {
     const actions = settingsBtn
       + '<button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button>'
       + ' <button class="btn btn-sm btn-outline" style="color:#dc2626;border-color:#fca5a5" onclick="uninstallPlugin(\'' + escape(p.dir) + '\',\'' + escape(p.name || p.dir) + '\')">卸载</button>';
-    return '<tr><td><strong>' + escape(p.name || p.dir) + '</strong><br><small style="color:#64748b">' + escape(p.dir) + '</small></td>'
+    return '<tr><td><input type="checkbox" aria-label="选择插件" class="plugin-check" value="' + escape(p.dir) + '" onchange="togglePluginCheck(this.value, this.checked)"></td><td><strong>' + escape(p.name || p.dir) + '</strong><br><small style="color:#64748b">' + escape(p.dir) + '</small></td>'
       + '<td>' + escape(p.version || '-') + '</td>'
       + '<td>' + escape(p.description || '-') + (p.author ? '<br><small style="color:#94a3b8">作者：' + escape(p.author) + '</small>' : '') + '</td>'
       + '<td><span class="badge ' + (p.active ? 'badge-success' : 'badge-secondary') + '">' + (p.active ? '已启用' : '未启用') + '</span></td>'
@@ -1929,11 +3108,40 @@ async function renderPlugins() {
     + '入口需导出 <code>activate(ctx)</code> 与 <code>deactivate(ctx)</code>。详见 <code>docs/插件开发指南.md</code>。</p></div>';
 
   document.getElementById('content').innerHTML = hint
-    + '<div class="table-container"><table><thead><tr><th>名称</th><th>版本</th><th>描述</th><th>状态</th><th>操作</th></tr></thead><tbody>'
-    + (rows || '<tr><td colspan="5"><div class="empty">暂无插件，点击右上角上传安装</div></td></tr>')
+    + '<div class="toolbar"><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllPlugins(this.checked)"> 选择本页插件</label></div><div id="plugin-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页插件" type="checkbox" onchange="toggleAllPlugins(this.checked)"></th><th scope="col">名称</th><th scope="col">版本</th><th scope="col">描述</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="6"><div class="empty">暂无插件，点击右上角上传安装</div></td></tr>')
     + '</tbody></table></div>';
   labelTableRows();
+  updatePluginSelection();
 }
+function updatePluginSelection() {
+  const bar = document.getElementById('plugin-selection');
+  if (!bar) return;
+  const checks = [...document.querySelectorAll('.plugin-check')];
+  checks.forEach(el => { el.checked = selectedPlugins.has(el.value); });
+  const count = checks.filter(el => el.checked).length;
+  document.querySelectorAll('input[onchange="toggleAllPlugins(this.checked)"]').forEach(el => {
+    el.checked = checks.length > 0 && count === checks.length;
+    el.indeterminate = count > 0 && count < checks.length;
+  });
+  bar.innerHTML = selectedPlugins.size ? '<div class="batch-bar" role="group" aria-label="批量操作"><span aria-live="polite">已选 ' + selectedPlugins.size + ' 项</span><button class="btn btn-sm btn-outline" onclick="batchPlugins(\'activate\')">批量启用</button><button class="btn btn-sm btn-outline" onclick="batchPlugins(\'deactivate\')">批量禁用</button><button class="btn btn-sm btn-danger" onclick="batchPlugins(\'uninstall\')">批量卸载</button><button class="btn btn-sm btn-outline" onclick="clearPluginSelection()">取消选择</button></div>' : '';
+}
+window.togglePluginCheck = (dir, checked) => { if (checked) selectedPlugins.add(dir); else selectedPlugins.delete(dir); updatePluginSelection(); };
+window.toggleAllPlugins = checked => { if (checked) document.querySelectorAll('.plugin-check').forEach(el => selectedPlugins.add(el.value)); else selectedPlugins.clear(); updatePluginSelection(); };
+window.clearPluginSelection = () => { selectedPlugins.clear(); updatePluginSelection(); };
+window.batchPlugins = async action => {
+  const view = activeView;
+  const dirs = [...selectedPlugins];
+  if (!dirs.length) return toast('请先选择插件', 'error');
+  if (action === 'uninstall' && !confirm('确定卸载选中的 ' + dirs.length + ' 个插件？目录会移动到回收区。')) return;
+  try {
+    const result = await api('/admin/plugins/batch', { method: 'POST', body: { dirs, action } });
+    toast(result.skipped.length ? '完成 ' + result.updated.length + ' 项，跳过 ' + result.skipped.length + ' 项' : '操作完成，共 ' + result.updated.length + ' 项');
+    selectedPlugins.clear();
+    await loadPluginMenus();
+    refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
 window.renderPlugins = renderPlugins;
 window.renderPluginMenuPanel = renderPluginMenuPanel;
 
