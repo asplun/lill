@@ -54,7 +54,7 @@ P1 优先处理内容正确性、安全和基础可用性；P2 补齐日常管�
 | 内容列表筛选与批量操作 | **已闭环**：文章/页面列表具备状态筛选、关键词与分类筛选、全选与本页选择，批量动作覆盖发布、转草稿、删除、移动分类、置顶/取消置顶，并给出逐条结果反馈（成功/跳过/失败计数） | Typecho 列表同样支持筛选与批量动作；lill 已在同一工具条内实现，无额外设计差异。 |
 | 评论按文章查看 | **已闭环**：评论页筛选区新增「文章」下拉（`app.js` 的 `commentPostId`，请求带 `postId=`），与状态、关键词筛选可组合，重置会一并清空 | Typecho 支持针对某篇内容管理评论；lill 用筛选下拉实现同等入口，不引入折叠式分组布局。 |
 | 附件编辑与替换 | **已闭环**：后台附件页可编辑文件名、缩略名、替代文本、描述，并原位替换文件（保留原链接与扩展名，重算尺寸与缩略图）；接口为 `PUT /api/v1/admin/media/:id` 与 `POST /api/v1/admin/media/:id/replace`，`media` 表补 `slug`/`description` 列（含历史库 `ensureColumn` 升级） | Typecho 可编辑标题、缩略名、描述，并原位替换文件。lill 已对齐编辑与替换流程；不含 WP 裁图等额外需求。 |
-| 备份恢复 | **已闭环（数据库）**：备份页对 `.db` 备份提供「恢复」，二次确认 + 输入「恢复」后才执行；`POST /api/v1/admin/backup/restore` 先 `quick_check` 校验来源、要求 `users` 表存在，再自动生成 `lill-backup-before-restore-*.db` 安全快照，按表列交集在单事务内覆盖；附件需手工解压对应 `lill-uploads-*.zip` | Typecho 可恢复自身内容备份，但不等同于完整站点快照；跨数据库和附件的原子快照、Typecho 格式导入仍未实现（lill 目前只恢复数据库，附件目录需另行解压覆盖）。 |
+| 备份恢复 | **已闭环（数据库 + 附件 + Typecho 导入）**：备份页对 `.db` 与 `lill-uploads-*.zip` 都提供「恢复」，二次确认 + 输入「恢复」后才执行；`POST /api/v1/admin/backup/restore` 对数据库先 `quick_check` 校验来源、要求 `users` 表存在，再自动生成 `lill-backup-before-restore-*.db` 安全快照，按表列交集在单事务内覆盖；对附件包先用 `unzip -Z1` 列条目，拦截 `/` 开头或含 `..` 段的 zip-slip，再自动生成 `lill-uploads-before-restore-*.zip` 快照后用 `unzip -o` 覆盖 `UPLOAD_DIR`，返回覆盖文件数并写操作日志（`backend/routes/admin/system.js:227`、`frontend/public/admin/app.js:1608`、测试 `backend/test/backup-integrity.test.js:420`） | Typecho 只能恢复自身内容备份，不等同于完整站点快照；lill 现在数据库与附件包都能一键恢复，且两者都先留恢复前快照。差别：附件恢复是覆盖式（备份包里的同名文件被覆盖，备份后新增的附件不会被删除）。Typecho 导出现已可直接导入：备份页底部「从 Typecho 导入」卡片粘贴导出文件全文，接口 `POST /api/v1/admin/import/typecho`（body `{ text, dryRun }`，`dryRun` 默认 `true`，只返回文章/页面/分类/标签/跳过条数不落库）；落库时内容 ID 固定为 `typecho-<post_id>`，已存在相同 ID 或相同别名整条跳过、不覆盖，同一份导出重复导入幂等；分类按名称匹配、缺失即建（slug 冲突追加 `-2`、`-3`…），标签同名复用，独立页面不挂分类。解析器 `backend/lib/typecho-import.js`、路由 `backend/routes/admin/import.js`、测试 `backend/test/typecho-import.test.js`。 |
 
 ## 2026-10-21 补齐记录（在这些差距行之上新增）
 
@@ -63,6 +63,7 @@ P1 优先处理内容正确性、安全和基础可用性；P2 补齐日常管�
 | 后台批量操作 | 文章/页面支持 发布、转草稿、删除、移动分类、置顶/取消置顶；分类/标签/附件/用户/小工具/主题支持批量操作；评论支持批量审核与批量删除；日志、备份、插件页补批量入口。接口集中在 `backend/routes/admin/{content,taxonomy,media,users,widgets,themes,comments,system}.js`，前端在 `frontend/public/admin/app.js` 的 `update*Selection` / `batch*` 系列。 |
 | 永久链接设置 | 分文章/独立页面/分类/标签四组预设 + 自定义，附变量说明、实时预览、恢复默认、冲突提示与粘贴 URL 试解析（`POST /api/v1/admin/permalinks/resolve`）；新增 `page_pattern`（独立页面路径）与 `archive_path`/`search_path`。 |
 | 附件编辑与替换 | 见上表该行；测试锁在 `backend/test/batch-operations.test.js` 的 media editor 用例。 |
+| Typecho 导入 | 备份页新增「从 Typecho 导入」卡片（`frontend/public/admin/app.js` 的 `typechoImportCard`/`runTypechoImport`），接口 `POST /api/v1/admin/import/typecho`；内容 ID `typecho-<post_id>`、别名去重、`dryRun` 默认预览，重复导入只跳过不覆盖。 |
 
 本表用于确认差距和实现边界，不表示所有差异都已补齐，也不是穷尽所有差异的功能承诺。
 

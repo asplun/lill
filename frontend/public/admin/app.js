@@ -1605,14 +1605,67 @@ async function renderBackup() {
     (b.size / 1024).toFixed(1) + ' KB</td><td>' + escape(new Date(b.created_at).toLocaleString('zh-CN')) +
     '</td><td><button class="btn btn-sm btn-outline" onclick="downloadBackup(' + jsArg(b.name) + ')">下载</button>' +
     (/\.db$/.test(b.name) ? ' <button class="btn btn-sm btn-danger" onclick="restoreBackup(' + jsArg(b.name) + ')">恢复</button>' : '') +
+    (/\.zip$/.test(b.name) ? ' <button class="btn btn-sm btn-danger" onclick="restoreUploads(' + jsArg(b.name) + ')">恢复附件</button>' : '') +
     '</td></tr>').join('');
   document.getElementById('content').innerHTML = '<div class="card"><h3 class="card-title">站点备份</h3>' +
     '<p>数据库和附件分别打包。数据库包含账号及配置，请将下载的备份妥善保存。</p></div>' +
     '<div id="backup-progress" aria-live="polite"></div>' +
     '<div class="toolbar"><label class="mobile-batch-select"><input type="checkbox" onchange="toggleAllBackups(this.checked)"> 选择本页备份</label></div><div id="backup-selection"></div><div class="table-container"><table><thead><tr><th scope="col"><input aria-label="选择本页备份" type="checkbox" onchange="toggleAllBackups(this.checked)"></th><th scope="col">文件</th><th scope="col">大小</th><th scope="col">创建时间</th><th scope="col">操作</th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="5"><div class="empty">暂无备份，点击创建备份</div></td></tr>') + '</tbody></table></div>';
+    (rows || '<tr><td colspan="5"><div class="empty">暂无备份，点击创建备份</div></td></tr>') + '</tbody></table></div>' + typechoImportCard();
   updateBackupSelection();
 }
+
+// Typecho 导入：先预览（dryRun）确认条数，再执行；后端按 typecho-<id> 与别名去重，重复导入只跳过。
+function typechoImportCard() {
+  return '<div class="card"><h3 class="card-title">从 Typecho 导入</h3>'
+    + '<p>粘贴 Typecho 后台「备份」导出的 .txt 文件内容。先预览确认条数，再执行导入：内容 ID 固定为 typecho-&lt;原 ID&gt;，已存在相同 ID 或别名的条目会被跳过，不会覆盖现有文章。</p>'
+    + '<label for="typecho-import-text">Typecho 导出文件内容</label>'
+    + '<textarea id="typecho-import-text" rows="8" spellcheck="false" placeholder="粘贴 Typecho 备份文件的全部内容"></textarea>'
+    + '<div class="toolbar"><button class="btn btn-outline" onclick="previewTypechoImport()">预览导入</button>'
+    + '<button class="btn btn-primary" onclick="importTypecho()">执行导入</button></div>'
+    + '<div id="typecho-import-result" aria-live="polite"></div></div>';
+}
+
+function typechoImportCounts(data) {
+  return '文章 ' + (Number(data.posts) || 0) + ' 篇、页面 ' + (Number(data.pages) || 0)
+    + ' 个、新分类 ' + (Number(data.categories) || 0) + ' 个、新标签 ' + (Number(data.tags) || 0)
+    + ' 个、跳过 ' + (Number(data.skipped) || 0) + ' 条';
+}
+
+async function runTypechoImport(dryRun) {
+  const textarea = document.getElementById('typecho-import-text');
+  const target = document.getElementById('typecho-import-result');
+  if (!textarea) return;
+  const text = textarea.value.trim();
+  if (!text) return toast('请先粘贴 Typecho 导出文件内容', 'error');
+  const previewButton = document.querySelector('button[onclick="previewTypechoImport()"]');
+  const importButton = document.querySelector('button[onclick="importTypecho()"]');
+  const buttons = [previewButton, importButton].filter(Boolean);
+  if (buttons.some(button => button.disabled)) return;
+  buttons.forEach(button => { button.disabled = true; });
+  if (target) target.textContent = dryRun ? '正在解析…' : '正在导入…';
+  try {
+    const result = await api('/admin/import/typecho', { method: 'POST', body: { text, dryRun } });
+    const counts = typechoImportCounts(result);
+    if (dryRun) {
+      if (target) target.innerHTML = '<div class="batch-bar" role="status"><span>' + escape('预览结果：' + counts) + '（尚未写入，点击执行导入才会落库）</span></div>';
+      toast('预览完成：' + counts);
+    } else {
+      toast('已导入：' + counts);
+      refreshView(activeView);
+    }
+  } catch (e) {
+    if (target) target.textContent = e.message;
+    toast(e.message, 'error');
+  } finally {
+    buttons.forEach(button => { button.disabled = false; });
+  }
+}
+window.previewTypechoImport = () => runTypechoImport(true);
+window.importTypecho = async () => {
+  if (!confirm('确定导入粘贴的 Typecho 内容？已存在的相同 ID 或别名会被跳过，不会覆盖现有内容。')) return;
+  await runTypechoImport(false);
+};
 
 function updateBackupSelection() {
   const bar = document.getElementById('backup-selection');
@@ -1683,6 +1736,18 @@ window.restoreBackup = async name => {
     toast(result.message || ('已从 ' + result.restored + ' 恢复 ' + result.tables + ' 张表，请重新登录'), 'success');
     if (confirm('数据库已恢复。是否立即刷新页面并重新登录？')) location.reload();
     else refreshView(view);
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.restoreUploads = async name => {
+  if (!/\.zip$/.test(name)) return toast('请选择附件备份文件（.zip）', 'error');
+  if (!confirm('将用附件备份 ' + name + ' 覆盖当前附件目录。\n恢复前会自动为当前附件生成一份安全快照，但同名文件会被备份中的版本覆盖。确定继续？')) return;
+  if (!confirm('再次确认：恢复会替换附件目录中的同名文件，备份之后上传的附件不会被删除。')) return;
+  const typed = prompt('请输入「恢复」两个字以确认操作');
+  if (typed !== '恢复') return toast('已取消恢复');
+  try {
+    const result = await api('/admin/backup/restore', { method: 'POST', body: { name }, timeout: 180000 });
+    toast(result.message || ('已从 ' + result.restored + ' 恢复 ' + result.files + ' 个附件文件'), 'success');
+    setTimeout(() => location.reload(), 1200);
   } catch (e) { toast(e.message, 'error'); }
 };
 window.downloadBackup = async name => {
