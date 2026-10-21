@@ -224,16 +224,64 @@ const copyTableIntoLiveDatabase = (sourcePath, tables) => {
     }
   };
 
+  const restoreUploadsBackup = async (auth, name, zipPath, req, res) => {
+    if (!ctx.UPLOAD_DIR) throw new Error('备份缺少运行上下文 UPLOAD_DIR');
+    const uploadsDir = resolve(ctx.UPLOAD_DIR);
+    const backupDir = getBackupDir();
+    mkdirSync(uploadsDir, { recursive: true });
+    // 先列条目：既用于回执里的文件数，也拦截 zip-slip（绝对路径或以 .. 开头的路径段）。
+    let entries;
+    try {
+      const listing = await runFile('unzip', ['-Z1', zipPath], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
+      entries = listing.stdout.split(/\r?\n/).filter(entry => entry.length > 0);
+    } catch (e) {
+      return error(res, '备份包无法读取，已放弃恢复: ' + e.message, 400);
+    }
+    if (entries.some(entry => entry.startsWith('/') || entry.split(/[\\/]/).includes('..'))) {
+      return error(res, '备份包内含非法路径，已放弃恢复', 400);
+    }
+    // 解压前先给当前附件目录做安全快照，失败即取消，保证覆盖后可回退。
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomBytes(6).toString('hex');
+    const safetyName = 'lill-uploads-before-restore-' + stamp + '.zip';
+    const safetyPath = join(backupDir, safetyName);
+    const stagedSafety = join(backupDir, 'uploads-before-restore-' + stamp + '.pending');
+    const needsSnapshot = readdirSync(uploadsDir).length > 0;
+    if (needsSnapshot) {
+      try {
+        await runFile('zip', ['-q', '-r', '-y', stagedSafety, '.'], { cwd: uploadsDir, timeout: 120000 });
+        if (!statSync(stagedSafety).size) throw new Error('附件快照为空');
+        chmodSync(stagedSafety, 0o600);
+        renameSync(stagedSafety, safetyPath);
+      } catch (e) {
+        try { unlinkSync(stagedSafety); } catch { /* the staging file may not exist */ }
+        return error(res, '恢复前快照失败，已取消恢复: ' + e.message, 500);
+      }
+    }
+    try {
+      await runFile('unzip', ['-o', '-q', zipPath, '-d', uploadsDir], { timeout: 120000 });
+    } catch (e) {
+      return error(res, '附件恢复失败: ' + e.message, 500);
+    }
+    logAction(auth.id, 'backup.restore.uploads', name + ' → 覆盖 ' + entries.length + ' 个文件', req);
+    return json(res, {
+      restored: name,
+      safetyBackup: needsSnapshot ? safetyName : null,
+      files: entries.length,
+      message: '附件已从备份恢复，覆盖 ' + entries.length + ' 个文件',
+    });
+  };
+
   route('POST', '/api/v1/admin/backup/restore', async (req, res) => {
     const auth = await authenticate(req);
     const body = await parseBody(req);
     const name = typeof body.name === 'string' ? body.name.trim() : '';
-    if (!name || name.split(/[\\/]/).pop() !== name || !isBackupName(name) || !name.endsWith('.db')) {
-      return error(res, '请选择数据库备份文件（.db）', 400);
+    if (!name || name.split(/[\\/]/).pop() !== name || !isBackupName(name)) {
+      return error(res, '请选择 .db 或 .zip 备份文件', 400);
     }
     const backupDir = getBackupDir();
     const sourcePath = join(backupDir, name);
     if (!existsSync(sourcePath)) return error(res, '备份不存在', 404);
+    if (name.endsWith('.zip')) return restoreUploadsBackup(auth, name, sourcePath, req, res);
     if (!ctx.DB_PATH) throw new Error('备份缺少运行上下文 DB_PATH');
 
     // 校验来源备份可读且完整，避免用坏文件覆盖现有数据。
@@ -267,7 +315,7 @@ const copyTableIntoLiveDatabase = (sourcePath, tables) => {
       restored: name,
       safetyBackup: safetyName,
       tables: copied.length,
-      message: '数据库已从备份恢复，请重新登录；附件目录需另行解压备份的 uploads 压缩包',
+      message: '数据库已从备份恢复，请重新登录；附件如需回滚，可在备份列表对 uploads 备份执行「恢复附件」',
     });
   });
 

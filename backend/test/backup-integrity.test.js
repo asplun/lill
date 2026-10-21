@@ -412,6 +412,52 @@ test('backup restore replaces live data and keeps a pre-restore safety copy', as
 
   for (const name of ['../private.db', 'lill-uploads-x.zip', 'missing.db', '']) {
     const bad = await api.request('POST', '/api/v1/admin/backup/restore', { headers: api.headers, body: { name } });
+    // A missing but well-formed .zip name now reaches the restore branch and must be reported as 404.
     assert.ok([400, 404].includes(bad.status), name + ': ' + bad.status);
+  }
+});
+
+test('uploads restore puts archived attachments back, snapshots the current uploads and refuses traversal entries', async t => {
+  const api = await startBackupApi(t);
+  const attachment = join(api.uploadsDir, 'restore-me.txt');
+  await writeFile(attachment, 'attachment captured by backup');
+  await mkdir(join(api.uploadsDir, 'nested'), { recursive: true });
+  await writeFile(join(api.uploadsDir, 'nested', 'deep.txt'), 'nested attachment');
+  const backup = await createBackup(api);
+  assert.ok(backup.uploads, JSON.stringify(backup));
+  const zipName = basename(backup.uploads.path);
+  assert.match(zipName, /^lill-uploads-[\w-]+\.zip$/);
+  // Remove one attachment while leaving another one in place, so the pre-restore snapshot has content.
+  await rm(attachment);
+
+  const restore = await api.request('POST', '/api/v1/admin/backup/restore', { headers: api.headers, body: { name: zipName } });
+  assert.equal(restore.status, 200, JSON.stringify(restore.payload));
+  assert.equal(restore.payload.data.restored, zipName);
+  assert.ok(restore.payload.data.files >= 2, JSON.stringify(restore.payload));
+  assert.match(restore.payload.data.message, /附件已从备份恢复/);
+  assert.match(restore.payload.data.safetyBackup, /^lill-uploads-before-restore-[\w-]+\.zip$/);
+  assert.equal(await readFile(attachment, 'utf8'), 'attachment captured by backup');
+  assert.equal(await readFile(join(api.uploadsDir, 'nested', 'deep.txt'), 'utf8'), 'nested attachment');
+
+  const listed = await api.request('GET', '/api/v1/admin/backup/list', { headers: api.headers });
+  const names = listed.payload.data.map(item => item.name);
+  assert.ok(names.includes(restore.payload.data.safetyBackup), names.join(','));
+  const live = new DatabaseSync(api.dbPath, { readOnly: true });
+  try { assert.equal(live.prepare("SELECT COUNT(*) AS n FROM logs WHERE action = 'backup.restore.uploads'").get().n, 1); }
+  finally { live.close(); }
+
+  const rollback = await api.request('POST', '/api/v1/admin/backup/restore', { headers: api.headers, body: { name: restore.payload.data.safetyBackup } });
+  assert.equal(rollback.status, 200, JSON.stringify(rollback.payload));
+  assert.equal(await readFile(attachment, 'utf8'), 'attachment captured by backup');
+
+  let hasPython = true;
+  try { execFileSync('python3', ['-c', 'import zipfile'], { stdio: 'ignore' }); } catch { hasPython = false; }
+  if (hasPython) {
+    const evilName = 'lill-uploads-evil.zip';
+    execFileSync('python3', ['-c', 'import sys, zipfile\nwith zipfile.ZipFile(sys.argv[1], "w") as archive:\n    archive.writestr("../escaped.txt", "must never be written")\n', join(dirname(backup.path), evilName)]);
+    const evil = await api.request('POST', '/api/v1/admin/backup/restore', { headers: api.headers, body: { name: evilName } });
+    assert.equal(evil.status, 400, JSON.stringify(evil.payload));
+    assert.match(evil.payload.message, /非法路径/);
+    await assert.rejects(stat(join(dirname(api.uploadsDir), 'escaped.txt')), { code: 'ENOENT' });
   }
 });
