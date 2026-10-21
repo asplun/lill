@@ -48,3 +48,9 @@ frontend/themes/trim3/
 
 # Managed worktree scratch
 .worktrees/
+
+# Local artifacts
+.backup/
+Solbrin.zip
+reports/
+agent-workflow/
