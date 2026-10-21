@@ -461,3 +461,17 @@ test('uploads restore puts archived attachments back, snapshots the current uplo
     await assert.rejects(stat(join(dirname(api.uploadsDir), 'escaped.txt')), { code: 'ENOENT' });
   }
 });
+
+test('uploads restore rejects ZIP symbolic links before extracting them', async t => {
+  const api = await startBackupApi(t);
+  const backup = await createBackup(api);
+  const symlinkName = 'lill-uploads-symlink.zip';
+  execFileSync('python3', ['-c', 'import sys, zipfile\nzi = zipfile.ZipInfo("link.txt"); zi.external_attr = (0o120777 << 16)\nzipfile.ZipFile(sys.argv[1], "w").writestr(zi, "/etc/passwd")\n', join(dirname(backup.path), symlinkName)]);
+
+  const result = await api.request('POST', '/api/v1/admin/backup/restore', {
+    headers: api.headers, body: { name: symlinkName },
+  });
+  assert.equal(result.status, 400, JSON.stringify(result.payload));
+  assert.match(result.payload.message, /符号链接/);
+  await assert.rejects(stat(join(api.uploadsDir, 'link.txt')), { code: 'ENOENT' });
+});

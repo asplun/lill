@@ -240,6 +240,16 @@ const copyTableIntoLiveDatabase = (sourcePath, tables) => {
     if (entries.some(entry => entry.startsWith('/') || entry.split(/[\\/]/).includes('..'))) {
       return error(res, '备份包内含非法路径，已放弃恢复', 400);
     }
+    let infoLine = '';
+    try {
+      const info = await runFile('zipinfo', ['-l', zipPath], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
+      infoLine = info.stdout;
+    } catch (e) {
+      return error(res, '备份包无法读取，已放弃恢复: ' + e.message, 400);
+    }
+    if (infoLine.split(/\r?\n/).some(line => /^l[-rwxsStT]{9}\s/.test(line))) {
+      return error(res, '备份包内含符号链接条目，已放弃恢复', 400);
+    }
     // 解压前先给当前附件目录做安全快照，失败即取消，保证覆盖后可回退。
     const stamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomBytes(6).toString('hex');
     const safetyName = 'lill-uploads-before-restore-' + stamp + '.zip';
