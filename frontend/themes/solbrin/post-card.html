@@ -1,0 +1,12 @@
+<a class="sr-post-card" href="{$post.url}" data-sr-story data-title="{$post.title}" data-description="{$post.excerpt|strip|truncate:72}" data-cover="{$post.cover_image|default:'/themes/solbrin/assets/home-mist.jpg'}" data-category="{$post.category_slug}" data-url="{$post.url}">
+  <img class="sr-post-card__cover" src="{$post.cover_image|default:'/themes/solbrin/assets/home-mist.jpg'}" alt="" loading="lazy" decoding="async">
+  <span class="sr-post-card__veil" aria-hidden="true"></span>
+  <span class="sr-post-card__top">
+    <span class="sr-post-card__category">{$post.category_name|default:'手记'}</span>
+    <time datetime="{$post.published_at}">{$post.published_at|date:'Y.m.d'}</time>
+  </span>
+  <span class="sr-post-card__body">
+    <strong>{$post.title}</strong>
+    {if $post.excerpt}<small>{$post.excerpt|strip|truncate:58}</small>{/if}
+  </span>
+</a>

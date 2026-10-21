@@ -1,0 +1,23 @@
+{include header}
+<main class="sr-reading sr-listing" id="main-content" tabindex="-1">
+  <header class="sr-page-head">
+    <p class="sr-page-head__eyebrow">搜索</p>
+    <h1>{$keyword|default:'搜索'}</h1>
+    {if $pagination.total > 0}<p>找到 {$pagination.total} 篇文章。</p>{else}<p>没有找到相关文章。</p>{/if}
+  </header>
+  {if $posts.length}
+  <div class="sr-list">
+    {loop $posts as $post}{include post-card}{/loop}
+  </div>
+  {include pagination}
+  {else}
+  <div class="sr-search-empty">
+    <p>换一个关键词试试。</p>
+    <form action="/search" method="get" role="search">
+      <input type="search" name="q" value="{$keyword}" placeholder="搜索文章" aria-label="搜索文章">
+      <button type="submit">搜索</button>
+    </form>
+  </div>
+  {/if}
+</main>
+{include footer}

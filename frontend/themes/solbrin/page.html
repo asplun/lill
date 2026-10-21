@@ -1,0 +1,12 @@
+{include header}
+<main class="sr-reading" id="main-content" tabindex="-1">
+  <article class="sr-article sr-article--page">
+    <header class="sr-article__head">
+      <p class="sr-article__eyebrow">页面</p>
+      <h1>{$post.title}</h1>
+    </header>
+    <div class="sr-article__content">{$post.html_content|raw}</div>
+    {include comments}
+  </article>
+</main>
+{include footer}

@@ -1,0 +1,74 @@
+{include header}
+<main class="sr-reading sr-reading--post" id="main-content" tabindex="-1">
+  <div class="page-progress" data-sr-progress aria-hidden="true"></div>
+  <article class="article-shell">
+    <div class="article-read">
+      <aside class="article-toc" data-sr-toc hidden aria-label="文章目录">
+        <p class="eyebrow">本页目录</p>
+        <nav data-sr-toc-list></nav>
+      </aside>
+
+      <div class="article-body">
+        <p class="eyebrow">{$post.category_name|default:'Notes'}</p>
+        <h1>{$post.title}</h1>
+        <div class="article-meta">
+          <time datetime="{$post.published_at}">{$post.published_at|date:'Y-m-d'}</time>
+          <span class="dot" aria-hidden="true"></span>
+          {if $theme.show_author && $post.author_nickname}<span>{$post.author_nickname}</span><span class="dot" aria-hidden="true"></span>{/if}
+          {if $theme.show_views}<span>{$post.view_count} 次阅读</span>{/if}
+          {if $post.readTime}<span class="dot" aria-hidden="true"></span><span>约 {$post.readTime} 分钟</span>{/if}
+          {if $theme.show_category && $post.category_name}<a class="tag" href="{$post.category_url|default:'/archive'}">{$post.category_name}</a>{/if}
+          {if $theme.show_tags && $post.tags.length}
+          {loop $post.tags as $tag}<a class="tag" href="{if $tag.url}{$tag.url}{else}/archive{/if}">{$tag.name}</a>{/loop}
+          {/if}
+        </div>
+
+        <div class="prose">{$post.html_content|raw}</div>
+
+        {if $theme.show_prevnext && ($post.prev || $post.next)}
+        <nav class="pager" aria-label="相邻文章">
+          {if $post.prev}<a href="{$post.prev.url}"><span class="k">上一篇</span><span class="v">{$post.prev.title}</span></a>{else}<span></span>{/if}
+          {if $post.next}<a class="next" href="{$post.next.url}"><span class="k">下一篇</span><span class="v">{$post.next.title}</span></a>{else}<span></span>{/if}
+        </nav>
+        {/if}
+      </div>
+
+      <aside class="reader-tools" aria-label="阅读工具">
+        <div class="reader-tools__actions">
+          <button type="button" data-reader-action="share">分享</button>
+          <button type="button" data-reader-action="print">打印</button>
+        </div>
+        <details class="reader-settings">
+          <summary><span>阅读设置</span></summary>
+          <div class="reader-settings__body">
+            <div class="reader-setting">
+              <div class="reader-setting__head">
+                <label for="readerFontSize">字号</label>
+                <output data-reader-output="fontSize">17 px</output>
+              </div>
+              <input id="readerFontSize" type="range" min="15" max="21" step="1" value="17" data-reader-setting="fontSize">
+            </div>
+            <div class="reader-setting">
+              <div class="reader-setting__head">
+                <label for="readerLineHeight">行高</label>
+                <output data-reader-output="lineHeight">1.80</output>
+              </div>
+              <input id="readerLineHeight" type="range" min="1.55" max="2.05" step="0.05" value="1.8" data-reader-setting="lineHeight">
+            </div>
+            <div class="reader-setting">
+              <div class="reader-setting__head">
+                <label for="readerContentWidth">正文宽度</label>
+                <output data-reader-output="contentWidth">750 px</output>
+              </div>
+              <input id="readerContentWidth" type="range" min="640" max="860" step="10" value="750" data-reader-setting="contentWidth">
+            </div>
+            <button class="reader-settings__reset" type="button" data-reader-reset>恢复默认</button>
+          </div>
+        </details>
+        <p class="reader-tools__feedback" role="status" aria-live="polite" data-reader-feedback></p>
+      </aside>
+    </div>
+    {include comments}
+  </article>
+</main>
+{include footer}

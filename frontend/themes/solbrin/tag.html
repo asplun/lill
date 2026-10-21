@@ -1,0 +1,17 @@
+{include header}
+<main class="sr-reading sr-listing" id="main-content" tabindex="-1">
+  <header class="sr-page-head">
+    <p class="sr-page-head__eyebrow">标签</p>
+    <h1>{$tag.name}</h1>
+    <p>{$tag.post_count} 篇文章</p>
+  </header>
+  {if $posts.length}
+  <div class="sr-list">
+    {loop $posts as $post}{include post-card}{/loop}
+  </div>
+  {include pagination}
+  {else}
+  <p class="sr-empty">这个标签下还没有文章。</p>
+  {/if}
+</main>
+{include footer}
