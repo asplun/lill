@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build default-theme-only installation archives from an exact Git revision."""
+"""Build installation archives (bundled themes only) from an exact Git revision."""
 import argparse
 import gzip
 import hashlib
@@ -13,6 +13,9 @@ import tarfile
 import tempfile
 import time
 import zipfile
+
+
+BUNDLED_THEMES = {"default", "solbrin"}
 
 
 def run(*args, cwd):
@@ -43,7 +46,7 @@ def main():
                     raise ValueError("Unsupported source archive entry: " + member.name)
                 if path.parts[0] == ".superpowers" or path.parts[:2] == ("docs", "superpowers"):
                     continue
-                if path.parts[:2] == ("frontend", "themes") and len(path.parts) > 2 and path.parts[2] != "default":
+                if path.parts[:2] == ("frontend", "themes") and len(path.parts) > 2 and path.parts[2] not in BUNDLED_THEMES:
                     raise ValueError("Third-party theme tracked in core: " + member.name)
                 if any(part in {".git", ".backup", "node_modules", "uploads", "data", "cache"} for part in path.parts):
                     raise ValueError("Runtime content tracked in core: " + member.name)
@@ -68,8 +71,9 @@ def main():
         ]:
             subprocess.run(command, cwd=project / "frontend", env=env, check=True)
         dist = project / "frontend/dist"
-        if sorted(p.name for p in (dist / "themes").iterdir()) != ["default"]:
-            raise ValueError("Build output contains an unexpected theme")
+        built_themes = sorted(p.name for p in (dist / "themes").iterdir())
+        if "default" not in built_themes or any(t not in BUNDLED_THEMES for t in built_themes):
+            raise ValueError("Build output contains an unexpected theme: " + ", ".join(built_themes))
         # Keep the full source theme, including its server extension; build output
         # deliberately omits backend/, so never replace it with the public copy.
         for path in dist.iterdir():
@@ -98,7 +102,7 @@ def main():
             "version": version, "commit": commit,
             "source_date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp)),
             "node": run("node", "--version", cwd=project),
-            "themes": ["default"], "prebuilt_frontend": True,
+            "themes": built_themes, "prebuilt_frontend": True,
         }, ensure_ascii=False, indent=2) + "\n")
 
         paths = [project, *sorted(project.rglob("*"))]
