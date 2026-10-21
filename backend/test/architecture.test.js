@@ -20,7 +20,7 @@ test('admin entry registers the complete management route set exactly once', () 
   const router = createRouter();
   registerAdmin(router, context());
   const routes = [...router.routes.values()].filter(route => route.pattern.startsWith('/api/v1/admin/'));
-  assert.equal(routes.length, 96);
+  assert.equal(routes.length, 97);
   assert.equal(new Set(router.routes.keys()).size, routes.length);
   for (const route of routes) {
     assert.equal(route.auth, true, route.pattern);
@@ -191,6 +191,22 @@ test('system module owns dashboard stats, logs, backups, system health, and site
     'POST:/api/v1/admin/backup/restore',
     'POST:/api/v1/admin/logs/batch',
   ].sort());
+});
+import { register as registerImport } from '../routes/admin/import.js';
+
+test('import module owns the Typecho import route', () => {
+  const router = createRouter();
+  registerImport(router, context(), { route: (method, path, fn) => router.route(method, path, fn, { auth: true, roles: ['admin'] }) });
+  assert.deepEqual([...router.routes.keys()], ['POST:/api/v1/admin/import/typecho']);
+});
+
+test('admin entry exposes the Typecho import route to admins only', () => {
+  const router = createRouter();
+  registerAdmin(router, context());
+  const route = router.routes.get('POST:/api/v1/admin/import/typecho');
+  assert.ok(route, 'POST:/api/v1/admin/import/typecho');
+  assert.equal(route.auth, true);
+  assert.deepEqual(route.roles, ['admin']);
 });
 import { register as registerWidgets } from '../routes/admin/widgets.js';
 

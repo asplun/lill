@@ -9,6 +9,7 @@ import { register as registerSettings } from './settings.js';
 import { register as registerThemes } from './themes.js';
 import { register as registerPlugins } from './plugins.js';
 import { register as registerSystem } from './system.js';
+import { register as registerImport } from './import.js';
 import { register as registerWidgets } from './widgets.js';
 import { register as registerEditorExtensions } from './editor-extensions.js';
 import { createAdminHelpers } from './shared.js';
@@ -49,5 +50,6 @@ export function register(router, ctx) {
   registerThemes(router, ctx, helpers);
   registerPlugins(router, ctx, helpers);
   registerSystem(router, ctx, helpers);
+  registerImport(router, ctx, helpers);
   registerWidgets(router, ctx, helpers);
 }
