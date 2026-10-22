@@ -2,6 +2,7 @@
 import { withTransaction } from './shared.js';
 import { mergeThemeEditorFields, normalizeEditorFieldSchema, readThemeEditorFields } from '../../lib/theme-editor-fields.js';
 import { mergePluginEditorFields, readPluginEditorFields } from '../../lib/plugin-editor-ext.js';
+import * as pageCache from '../../lib/page-cache.js';
 
 export function register(router, ctx, helpers) {
   const { db, json, error, parseBody, validators, uid, slugify, renderMD, plainText, authenticate, triggerHook, hashPwd } = ctx;
@@ -331,6 +332,7 @@ export function register(router, ctx, helpers) {
     });
     logAction(auth.id, 'post.create', '创建文章: ' + body.title, req);
     const created = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
+    try { pageCache.clearAll(); } catch {}
     try { triggerHook('post.saved', created, { isNew: true }); } catch {}
     json(res, created, 201);
   });
@@ -425,6 +427,7 @@ export function register(router, ctx, helpers) {
     });
     logAction(auth.id, 'post.update', '更新文章: ' + (body.title || exist.title), req);
     const updated = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id);
+    try { pageCache.clearAll(); } catch {}
     try { triggerHook('post.saved', updated, { isNew: false }); } catch {}
     json(res, updated);
   });
@@ -521,6 +524,7 @@ export function register(router, ctx, helpers) {
     });
     logAction(auth.id, 'post.restore', '恢复修订: ' + (version.title || exist.title), req);
     const updated = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.id);
+    try { pageCache.clearAll(); } catch {}
     try { triggerHook('post.saved', updated, { isNew: false }); } catch {}
     json(res, updated);
   });

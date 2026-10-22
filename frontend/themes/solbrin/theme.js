@@ -471,7 +471,7 @@
     var initial = {
       title: title ? title.textContent : '',
       description: description ? description.textContent : '',
-      href: signature ? signature.getAttribute('href') : '#about'
+      href: signature ? signature.getAttribute('href') : ''
     };
     var config = {
       type: hero.getAttribute('data-sr-hero-type') || 'image',

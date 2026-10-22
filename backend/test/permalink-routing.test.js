@@ -134,6 +134,22 @@ test('invalid historical permalink rules generate reachable legacy paths', async
   assert.equal(boot.payload.data.data.post.id, 'post-id');
 });
 
+test('legacy search paths resolve decoded keywords and preserve an explicit query', async t => {
+  const { api } = await setup(t);
+  for (const path of ['/search/%E5%8D%9A%E5%AE%A2/', '/index.php/search/%E5%8D%9A%E5%AE%A2/']) {
+    const boot = await api.request('GET', '/api/v1/site/bootstrap?path=' + encodeURIComponent(path));
+    assert.equal(boot.status, 200, path + ': ' + JSON.stringify(boot.payload));
+    assert.equal(boot.payload.data.page.type, 'search');
+    assert.equal(boot.payload.data.page.query.q, '博客');
+  }
+  const explicit = await api.request('GET', '/api/v1/site/bootstrap?path=%2Fsearch%2F%E5%8D%9A%E5%AE%A2%2F&q=override');
+  assert.equal(explicit.payload.data.page.type, 'search');
+  assert.equal(explicit.payload.data.page.query.q, 'override');
+  const empty = await api.request('GET', '/api/v1/site/bootstrap?path=%2Fsearch%2F%E5%8D%9A%E5%AE%A2%2F&q=');
+  assert.equal(empty.payload.data.page.type, 'search');
+  assert.equal(empty.payload.data.page.query.q, '博客');
+});
+
 test('content names matching archive and search fall back without taking over builtin pages', async t => {
   const { api, db, set } = await setup(t);
   assert.equal((await set([{ key: 'permalink', value: '/{slug}/' }])).status, 200);

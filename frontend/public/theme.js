@@ -325,6 +325,12 @@
   var qs = new URLSearchParams(location.search);
   var pageNum = parseInt(qs.get('page')) || 1;
   var keyword = qs.get('q') || '';
+  if (!keyword) {
+    var legacySearchPath = routePath.match(/^\/search\/(.+?)\/?$/);
+    if (legacySearchPath) {
+      try { keyword = decodeURIComponent(legacySearchPath[1]); } catch (e) { keyword = legacySearchPath[1]; }
+    }
+  }
   var month = qs.get('month') || '';
 
   function setLoading() {
@@ -378,6 +384,26 @@
 
   function applyHead(boot) {
     var site = boot.site || {}, page = boot.page || {}, theme = boot.theme || {};
+    function syncFavicons() {
+      var href = theme.faviconUrl;
+      if (!href) return;
+      var links = Array.prototype.slice.call(document.querySelectorAll('link[rel~="icon"]'));
+      if (!links.length) {
+        var link = document.createElement('link');
+        link.rel = 'icon';
+        link.href = href;
+        document.head.appendChild(link);
+        return;
+      }
+      links.forEach(function (link, index) {
+        if (index === 0) {
+          link.setAttribute('href', href);
+          link.removeAttribute('type');
+        } else {
+          link.parentNode.removeChild(link);
+        }
+      });
+    }
     var brand = theme.seoSiteName || site.name || 'lill';
     var title = page.title || site.name || '';
     document.title = (page.type === 'index' || !title) ? brand : (title + ' - ' + brand);
@@ -399,6 +425,7 @@
       headDiv.innerHTML = boot.head_html;
       while (headDiv.firstChild) document.head.appendChild(headDiv.firstChild);
     }
+    syncFavicons();
     var assets = boot.themeAssets || {};
     if (!assets.head) return Promise.resolve();
     return fetchText(assetUrl(boot.themeId, 'head.html')).then(function (headSrc) {
@@ -407,6 +434,7 @@
       var tmp = document.createElement('div');
       tmp.innerHTML = html;
       Array.prototype.slice.call(tmp.childNodes).forEach(function (n) { document.head.appendChild(n); });
+      syncFavicons();
     });
   }
 

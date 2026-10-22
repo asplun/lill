@@ -12,6 +12,7 @@ import { PUBLIC_POST_WHERE, PUBLISHED_POST_WHERE, publicOptions, isUnlocked, unl
 import { readingPolicy, postsOrderSql, excerptFor, commentPagination } from '../lib/reading-policy.js';
 import { pagePath, readPermalinkOptions, permalinkPath, resolvePermalink } from '../lib/permalinks.js';
 import { readThemeEditorFields } from '../lib/theme-editor-fields.js';
+import * as pageCache from '../lib/page-cache.js';
 
 const __themeDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'themes');
 
@@ -313,8 +314,19 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
     ]).get(frontPath);
     if (builtin) { type = builtin; slug = ''; }
     else {
+      const legacySearch = frontPath.match(/^(?:\/index\.php)?\/search\/(.+?)\/?$/);
+      if (legacySearch) {
+        type = 'search';
+        slug = '';
+        if (!url.searchParams.get('q')) {
+          try { url.searchParams.set('q', decodeURIComponent(legacySearch[1])); }
+          catch { url.searchParams.set('q', legacySearch[1]); }
+        }
+      }
       const legacyHtmlPage = frontPath.match(/^\/(?:index\.php\/)?([\w-]+)\.html$/);
-      let resolved = legacyHtmlPage
+      let resolved = legacySearch
+        ? { type: 'search', slug: '' }
+        : legacyHtmlPage
         ? { type: 'page', slug: legacyHtmlPage[1] }
         : resolvePermalink(db, frontPath);
       // A proxy may rewrite a one-segment page alias to the page shell.
@@ -485,6 +497,7 @@ route('GET', '/api/v1/site/bootstrap', async (req, res) => {
       if (type === 'post' || type === 'page') {
         const comments = await readComments(req, post, {
           page: url.searchParams.get('commentPage'), sort: url.searchParams.get('commentSort'),
+          pageSize: type === 'page' ? 500 : undefined,
         });
         data.comments = comments.items;
         data.commentFlat = comments.commentFlat;
@@ -870,9 +883,17 @@ async function readComments(req, post, options = {}) {
   const parent = db.prepare(`${select} WHERE c.post_id = ? AND c.id = ? AND c.status = 'approved'`);
   const viewer = await optionalUser(req);
   const pageRows = [...rows];
+  const appendReplies = parentId => {
+    const replies = children.all(post.id, parentId);
+    for (const reply of replies) {
+      pageRows.push(reply);
+      appendReplies(reply.id);
+    }
+    return replies;
+  };
   const items = rows.map(row => {
-    const replies = display === 'threaded' ? children.all(post.id, row.id) : [];
-    pageRows.push(...replies);
+    const replies = display === 'threaded' ? appendReplies(row.id) : [];
+    if (display !== 'threaded') pageRows.push(...children.all(post.id, row.id));
     return { ...shapeComment(row, post.author_id, viewer), replies: replies.map(reply => shapeComment(reply, post.author_id, viewer)), reply_count: replies.length };
   });
   const flat = pageRows.slice().sort((a, b) => {
@@ -1022,6 +1043,7 @@ route('POST', '/api/v1/comments', async (req, res) => {
       res.setHeader('Set-Cookie', prev ? [].concat(prev, ck) : ck);
     } catch (e) { /* cookie 写失败不影响评论提交 */ }
   }
+  try { pageCache.clearAll(); } catch {}
   try { if (typeof triggerHook === 'function') triggerHook('comment.saved', row, { isNew: true }); } catch {}
   json(res, { id, status, pending: status !== 'approved', comment: shapeComment(row, post.author_id, user) }, 201);
 });

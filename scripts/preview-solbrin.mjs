@@ -132,7 +132,7 @@ async function main() {
     );
     assert.equal(desktopGeometry.card.y, desktopGeometry.hero.y + desktopGeometry.hero.height, 'cards start at the end of the hero');
     assert.ok(desktopGeometry.card.height <= 168, 'cards stay compact');
-    assert.equal(await page.locator('[data-sr-title]').textContent(), '个人手记', 'hero keeps the original title');
+    assert.equal(await page.locator('[data-sr-title]').textContent(), 'Solbrin', 'hero shows the site name by default');
     await page.screenshot({ path: '/tmp/solbrin-home.png' });
     const choiceCount = await page.locator('.sr-sheet').count();
     await page.locator('.sr-deck').hover();

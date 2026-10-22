@@ -51,8 +51,8 @@ export function avatarOf(row) {
   if (mail) {
     const hash = md5hex(mail);
     return {
-      avatar: 'https://' + GRAVATAR_HOSTS[0] + hash + '?d=mp&s=100',
-      avatarHosts: GRAVATAR_HOSTS.slice(1).map(h => 'https://' + h + hash + '?d=mp&s=100')
+      avatar: 'https://' + GRAVATAR_HOSTS[0] + hash + '?d=identicon&s=40',
+      avatarHosts: GRAVATAR_HOSTS.slice(1).map(h => 'https://' + h + hash + '?d=identicon&s=40')
     };
   }
   return { avatar: '', avatarHosts: [] };

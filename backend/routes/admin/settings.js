@@ -1,6 +1,7 @@
 /** Site option management routes. */
 import { readPermalinkOptions, resolvePermalink, validatePermalinkOptions } from '../../lib/permalinks.js';
 import { withTransaction } from './shared.js';
+import * as pageCache from '../../lib/page-cache.js';
 export function register(router, ctx, helpers) {
   const { db, json, parseBody, uid, authenticate, triggerHook } = ctx;
   const { route } = helpers;
@@ -42,6 +43,7 @@ export function register(router, ctx, helpers) {
       if (existing) db.prepare("UPDATE options SET value = ?, autoload = ?, updated_at = datetime('now') WHERE key = ?").run(item.value ?? '', autoload, item.key);
       else db.prepare('INSERT INTO options (id, key, value, autoload) VALUES (?, ?, ?, ?)').run(uid(), item.key, item.value ?? '', autoload);
     } });
+    try { pageCache.clearAll(); } catch {}
     try { triggerHook('options.saved', items); } catch {}
     json(res, { updated: items.length });
   });

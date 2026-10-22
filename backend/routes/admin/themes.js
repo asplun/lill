@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { listZipEntries, readZipEntry, safeEntryPath } from '../../lib/zip.js';
 import { runThemeMigrations } from '../../lib/theme-runtime.js';
 import { listNavigationItems } from '../../lib/navigation.js';
+import * as pageCache from '../../lib/page-cache.js';
 
 const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const THEME_ALLOWED_EXT = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.txt', '.md', '.map', '.xml', '.webmanifest']);
@@ -160,6 +161,7 @@ export function register(router, ctx, helpers) {
       ? themeRuntime.updateConfig(params.themeId, config, body)
       : { ...config, ...body };
     db.prepare('UPDATE themes SET config = ? WHERE theme_id = ?').run(JSON.stringify(merged), params.themeId);
+    try { pageCache.clearAll(); } catch {}
     try { ctx.settings?.invalidate?.(); } catch {}
     json(res, merged);
   });

@@ -26,6 +26,7 @@ import { createSettings } from './lib/settings.js';
 import { createMail } from './lib/mail.js';
 import { createSecurity } from './lib/security.js';
 import { createCoreProviders } from './lib/providers.js';
+import * as pageCache from './lib/page-cache.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = parseInt(process.env.PORT) || 3000;
@@ -555,6 +556,35 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // 页面缓存：只缓存 bootstrap GET 的 200 响应。
+  if (req.method === 'GET' && path === '/api/v1/site/bootstrap') {
+    res.setHeader('Vary', 'Cookie, Authorization');
+    if (process.env.NODE_TEST_CONTEXT || req.headers.cookie || req.headers.authorization || req.url.includes('admin')) {
+      res.setHeader('X-Cache', 'BYPASS');
+    } else {
+      const cached = pageCache.get(req.url);
+      if (cached) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'X-Cache': 'HIT', 'Cache-Control': 'no-cache, must-revalidate' });
+        res.end(cached);
+        return;
+      }
+      const chunks = [];
+      const rawWriteHead = res.writeHead.bind(res);
+      const rawWrite = res.write.bind(res);
+      const rawEnd = res.end.bind(res);
+      res.writeHead = (statusCode, ...args) => {
+        res.setHeader('X-Cache', 'MISS');
+        return rawWriteHead(statusCode, ...args);
+      };
+      res.write = (chunk, ...rest) => { if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); return rawWrite(chunk, ...rest); };
+      res.end = (chunk, ...rest) => {
+        if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        if (res.statusCode === 200 && chunks.length) pageCache.set(req.url, Buffer.concat(chunks));
+        return rawEnd(chunk, ...rest);
+      };
+    }
+  }
+
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   // 上传文件（带安全检查）
