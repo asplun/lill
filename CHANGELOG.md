@@ -1,5 +1,20 @@
 # 更新记录
 
+## v1.3.3 — 2026-10-23
+
+### 新增
+
+- 插件可通过 `hasMenu` 声明后台菜单，并用 `openPluginPanel` 打开自定义后台页；宝塔部署指南新增八步手把手教程（`baota:start` 段）。
+
+### 修复
+
+- 安全：插件 `/api/v1/<plugin>/...` 路由默认游客可访问；后台路由必须显式传入第四参 `true` 才启用鉴权。已为 qqmusic-cookie 的 `/admin`、`/status`、`/log` 与 trim3-core 的 `/last-comment` 补上鉴权，并新增 `backend/test/plugin-route-auth.test.js` 扫描测试。
+- Typecho 导入内容主键 `typecho-<id>` 在 `/archives/{cid}/` 下不再被误判为重复路径。
+
+### 优化
+
+- 后台成功写请求统一失效 bootstrap 缓存；补齐后台缺失的样式类与 `--muted` 变量。
+
 ## v1.3.2 — 2026-10-21
 
 ### 新增
