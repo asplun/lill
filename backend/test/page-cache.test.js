@@ -67,3 +67,39 @@ test('page cache stores bytes and clearAll invalidates them', () => {
   pageCache.clearAll();
   assert.equal(pageCache.get('/bootstrap'), null);
 });
+
+test('admin writes invalidate the bootstrap cache', async t => {
+  const previousNodeTestContext = process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_TEST_CONTEXT;
+  let api;
+  try {
+    api = await startApiServer();
+  } finally {
+    if (previousNodeTestContext === undefined) delete process.env.NODE_TEST_CONTEXT;
+    else process.env.NODE_TEST_CONTEXT = previousNodeTestContext;
+  }
+  t.after(api.stop);
+  const install = await api.request('POST', '/api/v1/install', { body: {
+    site_name: 'Cache Test', site_url: 'http://localhost', admin_username: 'cache-admin',
+    admin_password: 'test-password-123', admin_email: 'cache@example.test',
+  }});
+  assert.equal(install.status, 200);
+  const session = install.payload.data;
+  const headers = {
+    authorization: `Bearer ${session.token}`,
+    'x-csrf-token': session.csrfToken,
+  };
+  const path = '/api/v1/site/bootstrap?type=index&cache_invalidate=1';
+  const first = await api.request('GET', path);
+  const second = await api.request('GET', path);
+  assert.equal(first.headers.get('x-cache'), 'MISS');
+  assert.equal(second.headers.get('x-cache'), 'HIT');
+
+  const created = await api.request('POST', '/api/v1/admin/categories', {
+    headers,
+    body: { name: 'Cache invalidation', slug: 'cache-invalidation' },
+  });
+  assert.equal(created.status, 201);
+  const afterWrite = await api.request('GET', path);
+  assert.equal(afterWrite.headers.get('x-cache'), 'MISS');
+});

@@ -640,6 +640,10 @@ const server = http.createServer(async (req, res) => {
       req.url = url.pathname + url.search;
     }
     await matched.fn(req, res, matched.params);
+    // 成功的写请求都可能改变前台数据，统一在这里失效 bootstrap 缓存，避免逐个路由补漏。
+    if (req.method !== 'GET' && path.startsWith('/api/v1/') && res.statusCode < 400) {
+      try { pageCache.clearAll(); } catch {}
+    }
     if (!timedOut) logRequest(req.method, path, 200, Date.now() - startTime);
   } catch (e) {
     // Timed-out/disconnected handlers can finish late; never send a second error.
