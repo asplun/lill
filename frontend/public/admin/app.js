@@ -3155,8 +3155,13 @@ async function renderPlugins() {
   if (fi) fi.onchange = (e) => uploadPlugin(e.target);
 
   const rows = plugins.map(p => {
-    const settingsBtn = p.hasSettings
-      ? '<button class="btn btn-sm btn-primary" onclick="openPluginSettings(\'' + escape(p.dir) + '\')">设置</button> '
+    /* 「设置」统一走 renderPluginMenuPanel：它优先拉插件自定义页（GET /api/v1/<dir>/admin），
+       拉不到才回落 settings 表单。否则插件即便提供了自定义页，用户从列表点「设置」也只会
+       看到自动生成的表单，与原插件界面不一致。
+       有 settings 或有注册后台菜单的插件都给出入口。 */
+    const hasPanel = p.hasSettings || p.hasMenu;
+    const settingsBtn = hasPanel
+      ? '<button class="btn btn-sm btn-primary" onclick="openPluginPanel(\'' + escape(p.dir) + '\')">设置</button> '
       : '';
     const actions = settingsBtn
       + '<button class="btn btn-sm btn-outline" onclick="togglePlugin(\'' + escape(p.dir) + '\')">' + (p.active ? '禁用' : '启用') + '</button>'
@@ -3219,6 +3224,30 @@ async function renderPluginMenuPanel(id) {
   let plugins = [];
   plugins = (await api('/admin/plugins')) || [];
   const p = plugins.find(x => x.dir === id);
+  try {
+    const res = await fetch('/api/v1/' + encodeURIComponent(id) + '/admin', {
+      headers: { Authorization: 'Bearer ' + window.lillAPI.getToken() },
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('text/html')) {
+      const html = await res.text();
+      if (html.trim()) {
+        c.innerHTML = '<div class="plugin-custom-page">' + html + '</div>';
+        /* innerHTML 注入的 <script> 浏览器不会执行（DOM 规范），必须逐个重建替换。
+           内联脚本重建后会自动执行；带 data-plugin-src 的换成外链脚本。 */
+        c.querySelectorAll('.plugin-custom-page script').forEach(old => {
+          const script = document.createElement('script');
+          const ext = old.getAttribute('data-plugin-src');
+          if (ext) script.src = ext;
+          else script.textContent = old.textContent || '';
+          old.replaceWith(script);
+        });
+        return;
+      }
+    }
+  } catch (_) {
+    // 自定义页面不可用时静默回落到设置页或原提示。
+  }
   if (p && p.hasSettings) return renderPluginSettings(id);
   c.innerHTML = '<div class="card"><h3 class="card-title">插件页面</h3>'
     + '<p style="color:#64748b">插件「' + escape(p ? (p.name || id) : id) + '」注册了后台菜单，但没有可打开的后台页面。</p>'
@@ -3249,6 +3278,9 @@ async function renderPluginSettings(dir) {
   c.innerHTML = html;
 }
 window.openPluginSettings = dir => showView('plugin-settings:' + dir, () => renderPluginSettings(dir), true);
+
+/* 插件「设置」入口：优先插件自定义页，回落自动表单（同 renderPluginMenuPanel 的优先级）。 */
+window.openPluginPanel = dir => showView('plugin:' + dir, () => renderPluginMenuPanel(dir), true);
 
 window.savePluginSettings = async (dir) => {
   const body = readSettingsForm('data-ps-key');

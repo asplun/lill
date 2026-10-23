@@ -35,6 +35,8 @@ export function register(router, ctx, helpers) {
             dir: entry.name,
             active: active ? !!active.active : false,
             hasSettings: Array.isArray(settings) && settings.length > 0,
+            /* 插件是否注册了后台菜单（有自定义面板的插件靠它给入口）。 */
+            hasMenu: Array.isArray(_adminMenus) && _adminMenus.some(m => m && m.plugin === entry.name),
           });
         } catch { /* invalid plugin manifests remain hidden until fixed */ }
       }

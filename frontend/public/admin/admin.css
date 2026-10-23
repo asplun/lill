@@ -3,7 +3,7 @@
   --primary:#23282b;--primary-light:#4c585e;--primary-dark:#10171b;--primary-bg:#e2e9eb;
   --danger:#b53d40;--danger-dark:#922c30;--success:#28694b;--warning:#986620;
   --bg:#eaf0f1;--surface:rgba(255,255,255,.68);--surface-2:#f1f5f5;--surface-3:#e3eaec;
-  --text:#232c31;--text-light:#566871;--text-lighter:#62757e;--text-secondary:#566871;
+  --text:#232c31;--text-light:#566871;--text-lighter:#62757e;--text-secondary:#566871;--muted:#62757e;
   --border:#d0dcdf;--border-light:rgba(183,201,207,.4);
   --radius:24px;--radius-sm:10px;--radius-lg:32px;
   --shadow-sm:0 1px 2px #213f4705;--shadow:0 3px 18px #24434c03;
@@ -289,6 +289,20 @@ td.actions .btn{margin:3px 0}
 .loading{display:flex;align-items:center;justify-content:center;gap:12px;min-height:240px}
 .spinner{width:28px;height:28px;border:2px solid #b9cdd5;border-top-color:#334f5b;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* 后台遗漏样式补齐 */
+.post-check,.page-check,.log-check,.backup-check,.cat-check,.tag-check,.cmt-check,.media-check,.user-check,.plugin-check,.theme-checkbox,.widget-checkbox{accent-color:var(--primary);margin:0;vertical-align:middle;flex:0 0 auto}
+.settings-panel,.version-meta,.plugin-custom-page{min-width:0}
+.pending-list{display:flex;flex-direction:column}
+.pending-list .pending-item:last-child{border-bottom:0;padding-bottom:0}
+.muted{color:var(--text-light)}
+.mfi{font-size:34px;line-height:1;color:#5d7681;user-select:none}
+.theme-version,.theme-author{font-variant-numeric:tabular-nums}
+.version-row+.version-row{border-top:1px solid var(--border-light)}
+.permalink-conflict{margin:12px 0;padding:10px 14px;border:1px solid #e0b4b4;border-radius:12px;background:#fdf3f3;color:#8f2f2f;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.plugin-custom-page img{max-width:100%;height:auto}
+.theme-editor-group,.plugin-editor-group{margin-bottom:12px}
+.navigation-status{position:absolute}
 
 @media(min-width:1800px){.sidebar{width:204px}.main{margin-left:204px}}
 @media(max-width:1200px){
