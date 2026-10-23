@@ -2,10 +2,9 @@
 /**
  * 横向导航像素级对齐取证（1440×1000）
  *
- * 用法：node backend/test/nav-pixel-parity.cjs
+ * 用法：PLAYWRIGHT_PATH=/path/to/playwright/index.js ORIGIN_URL=https://origin.example/ TEST_URL=https://test.example/ node backend/test/nav-pixel-parity.cjs
  *
- * 目的：把 test.abohe.cn（lill + trim3）首页横向导航与基准站 abohe.cn
- * （原 Typecho + TriM3）在**同一视口**下逐元素量一遍，量的是真实
+ * 目的：把测试站首页横向导航与基准站在**同一视口**下逐元素量一遍，量的是真实
  * getBoundingClientRect / getComputedStyle，不是读 CSS 文件猜。
  *
  * 量什么：.home-menu / .home-menu-item / .profile-card / .tri-notice 的
@@ -16,12 +15,18 @@
  */
 'use strict';
 
-const { chromium } = require('/Users/lilun/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const requiredEnv = ['PLAYWRIGHT_PATH', 'ORIGIN_URL', 'TEST_URL'];
+const missingEnv = requiredEnv.filter((name) => !process.env[name]);
+if (missingEnv.length) {
+  console.error('Missing required environment variables: ' + missingEnv.join(', '));
+  process.exit(1);
+}
+const { chromium } = require(process.env.PLAYWRIGHT_PATH);
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME = process.env.CHROME_PATH;
 const VIEWPORT = { width: 1440, height: 1000 };
-const ORIGIN_URL = 'https://abohe.cn/';
-const TEST_URL = 'https://test.abohe.cn/';
+const ORIGIN_URL = process.env.ORIGIN_URL;
+const TEST_URL = process.env.TEST_URL;
 const SHOT = '/tmp/nav-parity-after.png';
 
 /* 阈值：与任务卡 ## 验收 一致 */
@@ -110,7 +115,7 @@ async function measure(browser, url, tag) {
 function fmt(n) { return Number(n).toFixed(2); }
 
 (async function main() {
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch(CHROME ? { executablePath: CHROME, headless: true } : { headless: true });
   let origin, test;
   try {
     origin = await measure(browser, ORIGIN_URL, 'origin');

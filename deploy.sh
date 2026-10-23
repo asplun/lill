@@ -1,17 +1,34 @@
 #!/bin/bash
 # lill 安全部署脚本
-# 用法: ./deploy.sh
+# 用法: SERVER=root@host REMOTE=/www/wwwroot/lill HEALTH_BASE_URL=https://example.com PM2_APP=lill-main ./deploy.sh
 #
 # 历史坑：旧版本用 `find ... | while read` 上传页面，而 scp/ssh 会读走循环的
 # stdin，导致循环第一次迭代后就结束——除了首个 index.html，其余页面从未真正
 # 上传过。现在改为 rsync 整目录同步 + 同步后 MD5 校验，不一致直接报错退出。
 set -euo pipefail
 
-SERVER="root@1.15.71.117"
-REMOTE="/www/wwwroot/lill-v2"
+SERVER="${SERVER:-}"
+REMOTE="${REMOTE:-}"
+PM2_APP="${PM2_APP:-lill-backend}"
+if [ -z "$SERVER" ] || [ -z "$REMOTE" ]; then
+  echo "用法: SERVER=root@host REMOTE=/www/wwwroot/lill HEALTH_BASE_URL=https://example.com ./deploy.sh" >&2
+  exit 1
+fi
 LOCAL="$(cd "$(dirname "$0")" && pwd)"
-NODE="/Users/lilun/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin"
-PNPM="/Users/lilun/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm"
+NODE="${NODE:-$(dirname "$(command -v node 2>/dev/null || true)")}"
+if [ -z "$NODE" ] || [ ! -x "$NODE/node" ]; then
+  echo "❌ 未找到 node；请将 node 所在目录设置为 NODE，或加入 PATH" >&2
+  exit 1
+fi
+PNPM="${PNPM:-$(command -v pnpm 2>/dev/null || true)}"
+if [ -z "$PNPM" ] || [ ! -x "$PNPM" ]; then
+  echo "❌ 未找到 pnpm；请将 pnpm 可执行文件设置为 PNPM，或加入 PATH" >&2
+  exit 1
+fi
+if [ -z "${HEALTH_BASE_URL:-}" ]; then
+  echo "❌ 必须设置 HEALTH_BASE_URL（例如 https://example.com）" >&2
+  exit 1
+fi
 
 echo "▶ 1. 构建前端"
 cd "$LOCAL/frontend"
@@ -102,12 +119,12 @@ else
 fi
 
 echo "▶ 7. 重启后端"
-ssh "$SERVER" "pm2 restart lill-backend --update-env > /dev/null 2>&1"
+ssh "$SERVER" "pm2 restart $PM2_APP --update-env > /dev/null 2>&1"
 
 echo "▶ 8. 健康检查"
 sleep 2
 check_health() (
-  local path="$1" code attempt base_url="${HEALTH_BASE_URL:-https://test.abohe.cn}"
+  local path="$1" code attempt base_url="${HEALTH_BASE_URL%/}"
   for attempt in 1 2 3 4 5; do
     code=$(curl -s -o /dev/null -w '%{http_code}' "$base_url$path" || true)
     echo "   $path -> $code (attempt $attempt/5)"
@@ -129,7 +146,7 @@ done
 echo "▶ 9. 校验公开主题引擎入口"
 # 只比磁盘文件不能发现面板里遗留的 alias；按浏览器实际使用的 URL 再校验一次。
 EXPECTED_ENGINE=$(shasum -a 256 "$LOCAL/frontend/dist/theme.js" | awk '{print $1}')
-SERVED_ENGINE=$(curl --fail --silent --show-error --max-time 20 "https://test.abohe.cn/theme.js" | shasum -a 256 | awk '{print $1}')
+SERVED_ENGINE=$(curl --fail --silent --show-error --max-time 20 "${HEALTH_BASE_URL%/}/theme.js" | shasum -a 256 | awk '{print $1}')
 if [ "$SERVED_ENGINE" != "$EXPECTED_ENGINE" ]; then
   echo "❌ /theme.js 未返回通用主题引擎，请删除 Nginx 中指向具体主题脚本的 alias。"
   exit 1
