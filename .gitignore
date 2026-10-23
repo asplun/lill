@@ -42,6 +42,7 @@ frontend/.backup/
 frontend/dist.old.*/
 frontend/themes/_legacy-default/
 frontend/themes/trim3/
+frontend/themes/solbrin/
 
 # Staging dirs
 *.staging-*

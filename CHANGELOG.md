@@ -29,7 +29,7 @@
 - 12 个列表页补齐批量操作：文章、页面、分类、标签、评论、附件、用户、插件、主题、小工具、日志、备份，动作含发布、转草稿、置顶、移动分类、启用/禁用、删除、恢复等，并逐条反馈成功与跳过原因。
 - 永久链接设置重做：文章、独立页面（`page_pattern`）、分类、标签四组分别配置，提供 Typecho 风格预设、自定义模板与实时预览；新增 `{day}` 等变量提示，四组键任一非法即整体拒绝保存。
 - 归档路径、搜索路径可配置（`archive_path`/`search_path`），后端生成 `sitemap.xml`、`robots.txt` 与 RSS，部署文档补上对应 Nginx 转发。
-- 发行包改为打包仓库内置主题（`default` 与 `solbrin`，`scripts/package-release.py` 用 `BUNDLED_THEMES` 白名单校验），`RELEASE.json` 记录构建提交与主题列表。
+- 发行包改为打包仓库内置主题（`default`，`scripts/package-release.py` 用 `BUNDLED_THEMES` 白名单校验），`RELEASE.json` 记录构建提交与主题列表。
 
 ### 修复与稳定性
 

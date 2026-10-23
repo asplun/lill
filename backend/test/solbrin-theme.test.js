@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import vm from 'node:vm';
 import { startApiServer } from './helpers/api-server.js';
 
 const themeDir = new URL('../../frontend/themes/solbrin/', import.meta.url);
+const themeAvailable = existsSync(themeDir);
 const defaultThemeDir = new URL('../../frontend/themes/default/', import.meta.url);
 
 async function templateSet() {
@@ -53,7 +55,7 @@ function scope(overrides = {}) {
   };
 }
 
-test('Solbrin manifest and settings page expose the complete configuration contract', async () => {
+test('Solbrin manifest and settings page expose the complete configuration contract', { skip: !themeAvailable && 'solbrin 是第三方主题，未安装时跳过' }, async () => {
   const manifest = JSON.parse(await readFile(new URL('theme.json', themeDir), 'utf8'));
   assert.equal(manifest.id, 'solbrin');
   assert.equal(manifest.name, 'Solbrin');
@@ -75,7 +77,7 @@ test('Solbrin manifest and settings page expose the complete configuration contr
   assert.match(settingsScript, /beforeunload/);
 });
 
-test('Solbrin templates render real data, stable links, and working comments', async () => {
+test('Solbrin templates render real data, stable links, and working comments', { skip: !themeAvailable && 'solbrin 是第三方主题，未安装时跳过' }, async () => {
   const { templates, engine } = await templateSet();
   const render = (name, overrides) => engine.render(templates[name], templates, scope(overrides));
 
@@ -149,7 +151,7 @@ test('Solbrin templates render real data, stable links, and working comments', a
   assert.match(notFound, /\/archive/);
 });
 
-test('Solbrin installs, activates, preserves its navigation, and renders through Lill', async t => {
+test('Solbrin installs, activates, preserves its navigation, and renders through Lill', { skip: !themeAvailable && 'solbrin 是第三方主题，未安装时跳过' }, async t => {
   const api = await startApiServer({
     prepareThemes: async themesDir => {
       await cp(defaultThemeDir, join(themesDir, 'default'), { recursive: true });

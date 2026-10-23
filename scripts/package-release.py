@@ -15,7 +15,7 @@ import time
 import zipfile
 
 
-BUNDLED_THEMES = {"default", "solbrin"}
+BUNDLED_THEMES = {"default"}
 
 
 def run(*args, cwd):
