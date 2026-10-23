@@ -50,7 +50,7 @@ def main():
                     raise ValueError("Third-party theme tracked in core: " + member.name)
                 if any(part in {".git", ".backup", "node_modules", "uploads", "data", "cache"} for part in path.parts):
                     raise ValueError("Runtime content tracked in core: " + member.name)
-                if path.name.startswith(".env") or re.search(r"\.(?:db|sqlite)(?:-\w+)?$", path.name):
+                if (path.name.startswith(".env") and not path.name.endswith(".example")) or re.search(r"\.(?:db|sqlite)(?:-\w+)?$", path.name):
                     raise ValueError("Private runtime file tracked in core: " + member.name)
                 tar.extract(member, project)
 
