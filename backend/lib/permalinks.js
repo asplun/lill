@@ -97,6 +97,12 @@ function templateFor(type, options) {
   return withDefaults(options)[KEYS[type]];
 }
 
+function cidOf(item) {
+  const raw = String((item && item.id) || '').trim();
+  const m = /^typecho-(\d+)$/i.exec(raw);
+  return m ? m[1] : raw;
+}
+
 function dateParts(item) {
   const raw = item.published_at || item.created_at;
   if (!raw) return {};
@@ -175,8 +181,8 @@ export function findPageByPath(db, segments) {
 export function permalinkPath(type, item, category = null, options = {}) {
   const compiled = compile(type, templateFor(type, options));
   const values = type === 'post' || type === 'page'
-    ? { cid: item.id, slug: item.slug, category: category?.slug ?? item.category_slug, ...dateParts(item) }
-    : { mid: item.id, slug: item.slug };
+    ? { cid: cidOf(item), slug: item.slug, category: category?.slug ?? item.category_slug, ...dateParts(item) }
+    : { mid: cidOf(item), slug: item.slug };
   const path = render(compiled, values);
   if (path) return path;
   const legacy = render(compile(type, '/' + type + '/{slug}'), { slug: item.slug });
@@ -205,7 +211,7 @@ function captures(compiled, segments) {
 function lookup(db, type, values) {
   if (type === 'post' || type === 'page') {
     const where = [], args = [type];
-    if (values.cid !== undefined) { where.push('p.id = ?'); args.push(values.cid); }
+    if (values.cid !== undefined) { where.push('(p.id = ? OR p.id = ?)'); args.push(values.cid, 'typecho-' + values.cid); }
     if (values.slug !== undefined) { where.push('p.slug = ?'); args.push(values.slug); }
     if (!where.length) return null;
     return db.prepare(`SELECT p.id, p.type, p.slug, p.published_at, p.created_at, c.slug AS category_slug
@@ -237,10 +243,10 @@ export function resolvePermalink(db, path, options = readPermalinkOptions(db)) {
       const item = lookup(db, type, values);
       if (!item) continue;
       const canonical = render(compiled, {
-        cid: item.id, mid: item.id, slug: item.slug,
+        cid: cidOf(item), mid: cidOf(item), slug: item.slug,
         category: item.category_slug, ...dateParts(item),
       });
-      if (!canonical || JSON.stringify(pathSegments(canonical)) !== JSON.stringify(segments)) continue;
+      if (!canonical || (JSON.stringify(pathSegments(canonical)) !== JSON.stringify(segments) && !(values.cid === item.id && /^typecho-\d+$/i.test(String(item.id))))) continue;
       const result = { type, slug: item.slug, id: item.id };
       matches.set(type + ':' + item.id, result);
     }
