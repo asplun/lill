@@ -315,6 +315,9 @@
   var pageType = app.getAttribute('data-page') || 'index';
   var htmlMatch = location.pathname.match(/^\/(?:index\.php\/)?([\w-]+)\.html$/i);
   var routePath = htmlMatch ? location.pathname : location.pathname.replace(/^\/index\.php(?=\/|$)/i, '').replace(/\.html$/i, '');
+  /* 后端按 path 反解永久链接（线上是 /archives/{slug}.html），.html 是链接的一部分；
+     routePath 为了解析 slug 去掉了 .html，不能再拿它当 path 发给 bootstrap，否则 404。 */
+  var bootstrapPath = location.pathname.replace(/^\/index\.php(?=\/|$)/i, '');
   if (htmlMatch) pageType = 'page';
   var segs = routePath.split('/').filter(Boolean);
   var slugRaw = htmlMatch ? htmlMatch[1] : pageType === 'page' && segs.length === 1 ? segs[0]
@@ -382,6 +385,49 @@
     return attempt(0);
   }
 
+  // 去重注入 <head>：同 href 的样式/图标、同名 meta、title、同 src 脚本只保留一份
+  // 主题 darkmode-prepaint.js 会在解析阶段用 document.write 先写一遍 CSS，
+  // 引擎随后 fetch head.html 再注入时若不去重，每次加载都会解析两份 CSS、出现两个 title。
+  function appendHeadUnique(node) {
+    if (!node || node.nodeType === 3) return;
+    if (node.nodeType !== 1) { document.head.appendChild(node); return; }
+    var tag = node.tagName;
+    if (tag === 'LINK') {
+      var href = node.getAttribute('href');
+      var rel = (node.getAttribute('rel') || '').toLowerCase();
+      if (href && (rel === 'stylesheet' || rel === 'icon' || rel === 'alternate' || rel === 'preconnect' || rel === 'dns-prefetch')) {
+        var dup = Array.prototype.some.call(document.head.querySelectorAll('link'), function (el) {
+          return el.getAttribute('href') === href && (el.getAttribute('rel') || '') === (node.getAttribute('rel') || '');
+        });
+        if (dup) return;
+      }
+      document.head.appendChild(node);
+      return;
+    }
+    if (tag === 'META') {
+      if (node.getAttribute('charset')) { if (document.head.querySelector('meta[charset]')) return; }
+      var name = node.getAttribute('name');
+      if (name && document.head.querySelector('meta[name="' + name + '"]')) return;
+      var prop = node.getAttribute('property');
+      if (prop && document.head.querySelector('meta[property="' + prop + '"]')) return;
+      document.head.appendChild(node);
+      return;
+    }
+    if (tag === 'TITLE') { if (document.head.querySelector('title')) return; document.head.appendChild(node); return; }
+    if (tag === 'STYLE') {
+      if (node.id && document.getElementById(node.id)) return;
+      document.head.appendChild(node);
+      return;
+    }
+    if (tag === 'SCRIPT') {
+      var src = node.getAttribute('src');
+      if (src && Array.prototype.some.call(document.head.querySelectorAll('script[src]'), function (el) { return el.getAttribute('src') === src; })) return;
+      document.head.appendChild(node);
+      return;
+    }
+    document.head.appendChild(node);
+  }
+
   function applyHead(boot) {
     var site = boot.site || {}, page = boot.page || {}, theme = boot.theme || {};
     function syncFavicons() {
@@ -423,7 +469,7 @@
     if (boot.head_html) {
       var headDiv = document.createElement('div');
       headDiv.innerHTML = boot.head_html;
-      while (headDiv.firstChild) document.head.appendChild(headDiv.firstChild);
+      while (headDiv.firstChild) appendHeadUnique(headDiv.firstChild);
     }
     syncFavicons();
     var assets = boot.themeAssets || {};
@@ -433,7 +479,7 @@
       var html = Engine.render(headSrc, {}, { site: site, theme: theme, page: page, options: boot.options || {}, nav: boot.nav || [] });
       var tmp = document.createElement('div');
       tmp.innerHTML = html;
-      Array.prototype.slice.call(tmp.childNodes).forEach(function (n) { document.head.appendChild(n); });
+      Array.prototype.slice.call(tmp.childNodes).forEach(function (n) { appendHeadUnique(n); });
       syncFavicons();
     });
   }
@@ -471,12 +517,13 @@
     });
   }
 
-  function loadThemeScript(themeId, assets) {
+  function loadThemeScript(themeId, assets, version) {
     if (assets && assets.script === false) return Promise.resolve();
     return new Promise(function (resolve) {
       var url = assetUrl(themeId, 'theme.js');
       var s = document.createElement('script');
-      s.src = url + '?_=' + Date.now();
+      // 用版本号做缓存键：theme.js 约 67KB，之前每次带时间戳导致每次整页加载都重新下载
+      s.src = url + '?v=' + encodeURIComponent(version || '1');
       s.onload = resolve; s.onerror = resolve;
       document.body.appendChild(s);
     });
@@ -594,7 +641,7 @@
         var css = document.createElement('link');
         css.rel = 'stylesheet';
         css.href = assetUrl(themeId, 'style.css') + '?v=' + encodeURIComponent((boot.themeMeta || {}).version || '1');
-        document.head.appendChild(css);
+        appendHeadUnique(css);
       }
 
       var html;
@@ -604,7 +651,7 @@
       app.innerHTML = html;
       applyThemeBody(scope);
       enhance();
-      return loadThemeScript(themeId, boot.themeAssets);
+      return loadThemeScript(themeId, boot.themeAssets, (boot.themeMeta || {}).version);
     });
   }
 
@@ -616,7 +663,7 @@
     '&page=' + pageNum +
     '&commentPage=' + (parseInt(qs.get('commentPage')) || 1) +
     '&commentSort=' + encodeURIComponent(qs.get('commentSort') || '') +
-    '&path=' + encodeURIComponent(routePath || '/') +
+    '&path=' + encodeURIComponent(bootstrapPath || '/') +
     '&q=' + encodeURIComponent(keyword) +
     '&month=' + encodeURIComponent(month) +
     '&album=' + encodeURIComponent(qs.get('album') || '') +

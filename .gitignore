@@ -19,6 +19,8 @@ backend/server.js.bak*
 
 # Environment & logs
 .env
+backend/.env
+backend/data/jwt-secret.txt
 *.log
 npm-debug.log*
 pnpm-debug.log*
@@ -44,6 +46,11 @@ frontend/themes/_legacy-default/
 frontend/themes/trim3/
 frontend/themes/solbrin/
 scripts/*-solbrin.*
+
+# 第三方插件单独安装，不入库
+backend/plugins/trim3-core/
+backend/plugins/qqmusic-cookie/
+backend/plugins/dogyun-url-auth/
 
 # Staging dirs
 *.staging-*

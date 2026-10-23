@@ -4,7 +4,8 @@
 #   blog.example.com     → 你的域名
 #   /www/wwwroot/lill    → 你的实际部署路径（1Panel 常见为 /opt/1panel/www/sites/lill）
 #
-# 宝塔：网站 → 站点 → 配置文件 → 整体替换
+# 宝塔：不要整体替换 vhost（会抹掉面板托管的证书/伪静态/验证目录）。
+#       用「伪静态」粘贴 deploy/baota-rewrite.conf，步骤见 docs/部署指南.md 5.1
 # 1Panel：网站 → 站点 → 配置文件 → 在 server{} 内加入 location 段（或整体替换）
 #
 # ⚠️ root 指向 frontend/，不是 frontend/dist/

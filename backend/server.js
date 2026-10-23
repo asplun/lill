@@ -5,8 +5,8 @@
 import http from 'node:http';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-import { mkdirSync, readFile, readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { mkdirSync, readFile, readFileSync, readdirSync, existsSync, writeFileSync, chmodSync } from 'node:fs';
+import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { scryptSync, randomBytes } from 'node:crypto';
@@ -29,22 +29,40 @@ import { createCoreProviders } from './lib/providers.js';
 import * as pageCache from './lib/page-cache.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+try {
+  for (const line of readFileSync(join(__dirname, '.env'), 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2].replace(/^(?:"(.*)"|'(.*)')$/, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted);
+  }
+} catch (e) { if (e.code !== 'ENOENT') throw e; }
+const DATA_DIR = process.env.DATA_DIR || join(__dirname, 'data');
 const PORT = parseInt(process.env.PORT) || 3000;
-const DB_PATH = process.env.DB_PATH || join(__dirname, 'data', 'lill.db');
+const HOST = process.env.HOST || '0.0.0.0';
+const FRONTEND_URL = process.env.FRONTEND_URL || '';
+const DB_PATH = process.env.DB_PATH || join(DATA_DIR, 'lill.db');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || join(__dirname, 'uploads');
 const THEMES_DIR = process.env.THEMES_DIR || join(__dirname, '..', 'frontend', 'themes');
 const PLUGINS_DIR = process.env.PLUGINS_DIR || join(__dirname, 'plugins');
-const JWT_SECRET = process.env.JWT_SECRET || (() => {
-  const s = require('node:crypto').randomBytes(32).toString('hex');
-  console.warn('⚠️  JWT_SECRET 未设置，已生成随机密钥（重启后失效）');
-  return s;
-})();
+
+mkdirSync(dirname(DB_PATH), { recursive: true });
+mkdirSync(DATA_DIR, { recursive: true });
+const JWT_SECRET_PATH = join(DATA_DIR, 'jwt-secret.txt');
+let JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  try { JWT_SECRET = readFileSync(JWT_SECRET_PATH, 'utf8').trim(); }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (!JWT_SECRET) {
+    JWT_SECRET = require('node:crypto').randomBytes(32).toString('hex');
+    writeFileSync(JWT_SECRET_PATH, JWT_SECRET, { mode: 0o600, flag: 'wx' });
+    chmodSync(JWT_SECRET_PATH, 0o600);
+  }
+}
 
 mkdirSync(join(DB_PATH, '..'), { recursive: true });
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;');
+db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=200;');
 
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS users (
@@ -377,7 +395,7 @@ function readThemeManifest(themeId) {
 
 // 必要配置项（幂等，兼容已有数据库）
 {
-  const defaults = { site_name: 'lill 博客', site_description: '一个轻量可扩展的博客系统', site_url: 'http://test.abohe.cn', posts_per_page: '10', allow_register: 'false', comment_moderation: 'true', active_theme: 'default', permalink: '/archives/{cid}/', page_pattern: '/page/{slug}', category_prefix: '/category/{slug}/', tag_prefix: '/tag/{slug}/' };
+  const defaults = { site_name: 'lill 博客', site_description: '一个轻量可扩展的博客系统', site_url: '', posts_per_page: '10', allow_register: 'false', comment_moderation: 'true', active_theme: 'default', permalink: '/archives/{cid}/', page_pattern: '/page/{slug}', category_prefix: '/category/{slug}/', tag_prefix: '/tag/{slug}/' };
   let seeded = 0;
   for (const [k, v] of Object.entries(defaults)) {
     if (!db.prepare('SELECT id FROM options WHERE key = ?').get(k)) {
@@ -527,11 +545,15 @@ registerThemeExtensions(router, ctx, themeExts, resolveActiveTheme, (res) => err
 const activePlugins = await loadPlugins(PLUGINS_DIR, ctx);
 ctx._activePlugins = activePlugins;
 cleanupPluginLoadCopies(PLUGINS_DIR, activePlugins);
-const REQUEST_TIMEOUT = 20000; // 请求级超时兜底：避免个别慢请求让前端长时间转圈
+const REQUEST_TIMEOUT = 12000; // 请求级超时兜底：先于前端 15 秒超时返回
 const server = http.createServer(async (req, res) => {
   const startTime = Date.now();
   const path = req.url.split('?')[0];
-  const requestTimeout = req.method === 'POST' && path === '/api/v1/admin/backup' ? 150000 : REQUEST_TIMEOUT;
+  const requestTimeout = path === '/api/v1/admin/backup' || path === '/api/v1/admin/backup/restore'
+    ? 150000
+    : path.startsWith('/api/v1/admin/import/') || path === '/api/v1/admin/media/upload'
+      ? 120000
+      : REQUEST_TIMEOUT;
   let timedOut = false;
 
   // 兜底超时：到点仍未响应则返回 503，前端可立即提示而非一直等待
@@ -546,7 +568,20 @@ const server = http.createServer(async (req, res) => {
   res.on('close', () => clearTimeout(guard));
 
   // CORS + 安全响应头
-  const ALLOWED_ORIGIN = process.env.FRONTEND_URL || 'https://test.abohe.cn';
+  const siteUrl = settings.siteUrl();
+  const requestOrigin = req.headers.origin;
+  const forwardedProto = req.headers['x-forwarded-proto']?.split(',')[0].trim();
+  const requestHost = req.headers.host;
+  const sameOrigin = requestOrigin && requestHost && forwardedProto
+    ? `${forwardedProto}://${requestHost}`
+    : requestOrigin && requestHost
+      ? `${req.socket.encrypted ? 'https' : 'http'}://${requestHost}`
+      : '';
+  const configuredFrontend = FRONTEND_URL;
+  const allowedOrigins = new Set([siteUrl, sameOrigin, configuredFrontend].filter(Boolean));
+  const ALLOWED_ORIGIN = requestOrigin && allowedOrigins.has(requestOrigin)
+    ? requestOrigin
+    : siteUrl || sameOrigin || `${req.socket.encrypted ? 'https' : 'http'}://${requestHost}`;
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
@@ -666,6 +701,6 @@ server.requestTimeout = 30000;
 server.headersTimeout = 15000;
 server.keepAliveTimeout = 30000;
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, HOST, () => {
   console.log(`\n  🪴 lill v2 API 服务\n  http://localhost:${PORT}/api/v1\n`);
 });

@@ -82,7 +82,7 @@ setTimeout(() => {
     await writeFile(clock, `
 const schedule = globalThis.setTimeout;
 globalThis.setTimeout = (fn, delay, ...args) => schedule(fn,
-  delay === 20000 ? ${guardClock === 'disconnect' ? 3000 : 400}
+  delay === 12000 ? ${guardClock === 'disconnect' ? 3000 : 400}
     : delay === 150000 ? ${guardClock === 'timeout' ? 400 : 3000} : delay, ...args);
 `);
     args.push('--import', clock);

@@ -1,5 +1,29 @@
 # 更新记录
 
+## v1.4.0 — 2026-10-23
+
+### 新增
+
+- 后端支持 `backend/.env` 进程配置（`PORT`/`HOST`/`JWT_SECRET`/`FRONTEND_URL`/`DATA_DIR`/`UPLOAD_DIR`），`ecosystem.config.cjs` 不再写死端口与密钥，进程级配置只改一处；新增 `.env.example`。
+- JWT 密钥未配置时首次生成并持久化到 `backend/data/jwt-secret.txt`（0600），重启不再让所有登录失效。
+
+### 修复
+
+- CORS 兜底不再写死域名：允许集合由后台设置 `site_url`、同源 Host 与显式 `FRONTEND_URL` 组成，只回显集合内的 Origin；站点地址完全由后台「设置 → 站点 URL」决定，安装默认值改为空字符串。
+- 请求级兜底超时 20000ms → 12000ms，先于前端 15s 超时返回可读 503；备份与恢复 150s、导入与附件上传 120s 单独放宽。
+- SQLite 补 `PRAGMA wal_autocheckpoint=200`，避免主库文件长期停留在 4KB、数据全部压在 `-wal` 里。
+- 宝塔伪静态模板（`deploy/baota-rewrite.conf`）与 Nginx 示例补全 `sitemap.xml`、`robots.txt` 转发。
+
+### 优化
+
+- 主题 `theme.js` 改用版本号做缓存键（原 `?=_时间戳` 导致约 67KB 每次整页加载都重下）；`<head>` 注入按 href/name/property 去重，避免 darkmode 预置脚本与 `head.html` 重复解析 CSS、出现两个 `<title>`。
+- bootstrap 请求改用未剥掉后缀的 path，修复自定义永久链接以 `.html` 结尾时被解析成 404 的问题。
+
+### 升级提示
+
+- 覆盖文件后重启后端即可，无数据库结构变更。进程参数写 `backend/.env`（可不存在），站点地址仍在后台设置里维护；改了 `PORT` 记得同步 Nginx `proxy_pass`。
+
+
 ## v1.3.3 — 2026-10-23
 
 ### 新增

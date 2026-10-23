@@ -1,4 +1,4 @@
-# lill 博客系统 v1.3.3
+# lill 博客系统 v1.4.0
 
 轻量、可扩展、前后端分离的博客系统。后端使用 Node.js 原生 `node:http` + `node:sqlite` 提供 REST API，前端使用 Astro 4 构建静态外壳，后台由原生 JavaScript 驱动。
 
@@ -17,7 +17,7 @@
 
 v1.3.2 补齐了 Typecho 1.3 对照清单里列出的全部差距：多分类、页面层级与排序、服务端草稿与修订、自定义字段、附件编辑替换、备份恢复以及 Typecho 导入，逐项状态见[功能对照与实现边界](docs/Typecho1.3功能对照.md)。
 
-v1.3.3 新增插件自定义后台页，并明确插件后台路由必须显式鉴权的安全约定；后台成功写请求统一失效缓存，附宝塔八步部署教程，并兼容 Typecho 导入内容永久链接。
+v1.4.0 收敛部署配置：进程参数统一放在 `backend/.env`（`PORT`/`HOST`/`JWT_SECRET` 等），未设置密钥时首次生成并持久化，重启不再掉登录；CORS 与站点地址只认后台「设置 → 站点 URL」，代码与部署模板里不再出现具体域名；请求兜底超时改为 12 秒（备份 150 秒、导入与附件 120 秒），SQLite 补 WAL 自动 checkpoint，主题脚本按版本号缓存并对 `<head>` 去重注入。
 
 当前未默认注册 Service Worker，不承诺离线使用；多语言、CDN 和主题在线编辑器也不作为已完成能力。主题文件读写 API 已存在，界面流程需另行验证。
 
@@ -86,11 +86,11 @@ v1.3.3 新增插件自定义后台页，并明确插件后台路由必须显式�
 
 ### 方式一：发布包部署
 
-从 [GitHub Releases](https://github.com/asplun/lill/releases) 下载 `lill-v1.3.3.zip` 或 `lill-v1.3.3.tar.gz`。两者顶层目录均为 `lill/`，包含仓库跟踪的源码和直接位于 `frontend/` 的预构建静态文件，包内没有 `frontend/dist/`。
+从 [GitHub Releases](https://github.com/asplun/lill/releases) 下载 `lill-v1.4.0.zip` 或 `lill-v1.4.0.tar.gz`。两者顶层目录均为 `lill/`，包含仓库跟踪的源码和直接位于 `frontend/` 的预构建静态文件，包内没有 `frontend/dist/`。
 
 ```bash
 # 在空目录解压，勿覆盖运行中的站点
-tar -xzf lill-v1.3.3.tar.gz
+tar -xzf lill-v1.4.0.tar.gz
 cd lill/backend
 npm install --omit=dev
 # 使用 pnpm 时改为：pnpm install --prod --frozen-lockfile
@@ -105,7 +105,7 @@ GitHub 自动生成的 `Source code` 归档是源码快照，需按下方源码�
 ```bash
 git clone https://github.com/asplun/lill.git
 cd lill
-git checkout v1.3.3
+git checkout v1.4.0
 cd backend
 npm install --omit=dev
 # 后端也可使用：pnpm install --prod --frozen-lockfile
@@ -124,7 +124,7 @@ rsync -a --exclude='/themes/' dist/ ./
 维护者可在源码根目录使用[发布打包脚本](scripts/package-release.py)：
 
 ```bash
-python3 scripts/package-release.py --ref v1.3.3 --output /tmp/lill-release
+python3 scripts/package-release.py --ref v1.4.0 --output /tmp/lill-release
 ```
 
 脚本从指定 Git 引用导出干净源码，仅构建默认主题，将静态产物合并到包内 `frontend/`，输出 ZIP、tar.gz 和 `SHA256SUMS`；运行脚本需要 Python 3、Node.js 和 pnpm，安装生成的发布包不需要构建。发布流程见[发布说明](docs/发布说明.md)。
@@ -159,7 +159,7 @@ lill/
 
 | 文档 | 内容 |
 |---|---|
-| [发布说明](docs/发布说明.md) | v1.3.3 变更、发布包与升级说明 |
+| [发布说明](docs/发布说明.md) | v1.4.0 变更、发布包与升级说明 |
 | [更新日志](CHANGELOG.md) | 版本变更记录 |
 | [部署指南](docs/部署指南.md) | 宝塔面板 / 1Panel 面板 / 裸机部署、升级维护、问题排查 |
 | [主题开发指南](docs/主题开发指南.md) | 主题目录结构、`theme.json` 规范、模板标签、设置控件 |

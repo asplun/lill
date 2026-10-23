@@ -8,15 +8,6 @@ module.exports = {
     instances: 1,
     autorestart: true,
     watch: false,
-    max_memory_restart: '300M',
-    env: {
-      NODE_ENV: 'production',
-      PORT: 3000,
-      HOST: '127.0.0.1',
-      // ⚠️ 生产环境务必设置固定 JWT_SECRET，否则每次重启后所有登录会失效。
-      // 生成随机密钥：openssl rand -hex 32
-      // 然后把生成的值填在下面（不要提交到 Git）：
-      // JWT_SECRET: '这里填你生成的密钥',
-    }
+    max_memory_restart: '300M'
   }]
 };

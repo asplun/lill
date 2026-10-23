@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, rm, readFile, stat, writeFile, chmod } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { startApiServer } from './helpers/api-server.js';
 
 const password = 'policy-test-password-123';
 const auth = session => ({ authorization: 'Bearer ' + session.token, 'x-csrf-token': session.csrfToken });
 
-async function setup(t) {
-  const api = await startApiServer();
+async function setup(t, options = {}) {
+  const api = await startApiServer(options);
   t.after(api.stop);
   const installed = await api.request('POST', '/api/v1/install', { body: {
     site_name: 'Public policies', site_url: 'http://localhost',
@@ -34,6 +40,142 @@ test('public options and bootstrap exclude legacy plugin and internal autoload v
     assert.equal(options.site_name, 'Public title');
     assert.equal(Object.hasOwn(options, 'installed'), false);
   }
+});
+
+test('server loads PORT, HOST, DATA_DIR, UPLOAD_DIR and FRONTEND_URL from backend .env', async t => {
+  const tempDir = await mkdtemp(join(tmpdir(), 'lill-dotenv-test-'));
+  const envFile = join(resolve(import.meta.dirname, '..'), '.env');
+  const originalEnv = await readFile(envFile).catch(() => null);
+  const portProbe = createServer();
+  portProbe.listen(0, '127.0.0.1');
+  await once(portProbe, 'listening');
+  const { port } = portProbe.address();
+  await new Promise((resolveClose, reject) => portProbe.close(error => error ? reject(error) : resolveClose()));
+  const dataDir = join(tempDir, 'persistent-data');
+  const uploadDir = join(tempDir, 'persistent-uploads');
+  await writeFile(envFile, `PORT=${port}\nHOST=127.0.0.1\nDATA_DIR=${dataDir}\nUPLOAD_DIR=${uploadDir}\nJWT_SECRET=\nFRONTEND_URL=https://env-frontend.example.test\n`);
+  await chmod(envFile, 0o600);
+  t.after(async () => {
+    if (originalEnv) await writeFile(envFile, originalEnv);
+    else await rm(envFile, { force: true });
+    await rm(tempDir, { recursive: true, force: true });
+  });
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: resolve(import.meta.dirname, '..'),
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !['PORT', 'HOST', 'DATA_DIR', 'UPLOAD_DIR', 'JWT_SECRET', 'FRONTEND_URL'].includes(key))),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); });
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let response;
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    try { response = await fetch(baseUrl + '/api/v1/install/status'); if (response.status === 200) break; } catch {}
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
+  }
+  assert.equal(response?.status, 200);
+  assert.equal((await fetch(baseUrl + '/api/v1/options/public', { headers: { origin: 'https://env-frontend.example.test' } })).headers.get('access-control-allow-origin'), 'https://env-frontend.example.test');
+  const secretPath = join(dataDir, 'jwt-secret.txt');
+  const secret = await readFile(secretPath, 'utf8');
+  assert.ok(secret.length >= 32);
+  assert.equal((await stat(secretPath)).mode & 0o777, 0o600);
+  await fetch(baseUrl + '/api/v1/install/status');
+  child.kill('SIGKILL');
+  await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
+  const restarted = spawn(process.execPath, ['server.js'], {
+    cwd: resolve(import.meta.dirname, '..'),
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !['PORT', 'HOST', 'DATA_DIR', 'UPLOAD_DIR', 'JWT_SECRET', 'FRONTEND_URL'].includes(key))),
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  try {
+    const restartDeadline = Date.now() + 10000;
+    while (Date.now() < restartDeadline) {
+      try { if ((await fetch(baseUrl + '/api/v1/install/status')).status === 200) break; } catch {}
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
+    }
+    assert.equal(await readFile(secretPath, 'utf8'), secret);
+    assert.equal((await fetch(baseUrl + '/api/v1/options/public', { headers: { origin: 'https://env-frontend.example.test' } })).headers.get('access-control-allow-origin'), 'https://env-frontend.example.test');
+  } finally { restarted.kill('SIGKILL'); await new Promise(resolveDelay => setTimeout(resolveDelay, 100)); }
+});
+
+test('CORS echoes the configured site origin and falls back to the site URL for other origins', async t => {
+  const tempDir = await mkdtemp(join(tmpdir(), 'lill-cors-policy-test-'));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const portProbe = createServer();
+  portProbe.listen(0, '127.0.0.1');
+  await once(portProbe, 'listening');
+  const { port } = portProbe.address();
+  await new Promise((resolveClose, reject) => portProbe.close(error => error ? reject(error) : resolveClose()));
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const dbPath = join(tempDir, 'lill.db');
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: resolve(import.meta.dirname, '..'),
+    env: { ...process.env, PORT: String(port), DB_PATH: dbPath, UPLOAD_DIR: join(tempDir, 'uploads'),
+      THEMES_DIR: join(tempDir, 'themes'), PLUGINS_DIR: join(tempDir, 'plugins'), DATA_DIR: join(tempDir, 'data'),
+      FRONTEND_URL: 'https://frontend.example.test' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+      await once(child, 'exit');
+    }
+  });
+  const request = async (method, path, options = {}) => {
+    const response = await fetch(baseUrl + path, { method, headers: options.headers, signal: AbortSignal.timeout(5000),
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body), headers: { 'content-type': 'application/json', ...options.headers } }) });
+    const text = await response.text();
+    let payload;
+    try { payload = JSON.parse(text); } catch { payload = text; }
+    return { status: response.status, payload, headers: response.headers };
+  };
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error('API server exited before readiness');
+    try { if ((await request('GET', '/api/v1/install/status')).status === 200) break; } catch {}
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
+  }
+  const installed = await request('POST', '/api/v1/install', { body: {
+    site_name: 'CORS policy', site_url: '', admin_username: 'admin',
+    admin_email: 'admin@example.test', admin_password: password,
+  } });
+  assert.equal(installed.status, 200);
+  const installDb = new DatabaseSync(dbPath);
+  assert.equal(installDb.prepare("SELECT value FROM options WHERE key = 'site_url'").get().value, '');
+  installDb.close();
+  const persistedSecretPath = join(tempDir, 'data', 'jwt-secret.txt');
+  const persistedSecret = await readFile(persistedSecretPath, 'utf8');
+  assert.ok(persistedSecret.length >= 32);
+  assert.equal((await stat(persistedSecretPath)).mode & 0o777, 0o600);
+  const api = { request };
+  const db = new DatabaseSync(dbPath);
+  t.after(() => db.close());
+  db.prepare("UPDATE options SET value = 'https://origin.example.test' WHERE key = 'site_url'").run();
+
+  const trusted = await api.request('GET', '/api/v1/options/public', {
+    headers: { origin: 'https://origin.example.test' },
+  });
+  assert.equal(trusted.headers.get('access-control-allow-origin'), 'https://origin.example.test');
+
+  const untrusted = await api.request('GET', '/api/v1/options/public', {
+    headers: { origin: 'https://evil.example' },
+  });
+  assert.equal(untrusted.headers.get('access-control-allow-origin'), 'https://origin.example.test');
+
+  const configuredFrontend = await api.request('GET', '/api/v1/options/public', {
+    headers: { origin: baseUrl },
+  });
+  assert.equal(configuredFrontend.headers.get('access-control-allow-origin'), baseUrl);
+
+  const hostFallback = await api.request('GET', '/api/v1/options/public', {
+    headers: { origin: 'http://untrusted.example.test' },
+  });
+  assert.equal(hostFallback.headers.get('access-control-allow-origin'), 'https://origin.example.test');
+  db.prepare("UPDATE options SET value = '' WHERE key = 'site_url'").run();
+  const emptySiteUrl = await api.request('GET', '/api/v1/options/public', {
+    headers: { origin: 'http://untrusted.example.test' },
+  });
+  assert.equal(emptySiteUrl.headers.get('access-control-allow-origin'), baseUrl);
 });
 
 test('separate frontend preflight permits the CSRF header required for authenticated writes', async t => {
