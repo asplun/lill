@@ -27,7 +27,7 @@ test('plugin admin routes explicitly enable authentication', async t => {
     let source;
     try { source = await readFile(new URL(`../plugins/${plugin.name}/index.js`, import.meta.url), 'utf8'); }
     catch { continue; }
-    const routePattern = /ctx\.route\(\s*['"][^'"]+['"]\s*,\s*['"][^'"]*\/admin['"][\s\S]*?\n\s*\}\s*(,\s*true)?\);/g;
+    const routePattern = /ctx\.route\(\s*['"][^'"]+['"]\s*,\s*['"][^'"]*\/(?:admin|last-comment)['"][\s\S]*?\n\s*\}\s*(,\s*true)?\);/g;
     for (const match of source.matchAll(routePattern)) {
       if (!match[1]) offenders.push(`${plugin.name}/index.js: ${match[0].replace(/\s+/g, ' ').slice(0, 180)}`);
     }
